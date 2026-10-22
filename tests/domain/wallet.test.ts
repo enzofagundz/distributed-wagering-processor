@@ -1,0 +1,26 @@
+import { expect, test } from 'bun:test';
+import { DomainError, Money } from '../../src/domain/money';
+import { Wallet } from '../../src/domain/wallet';
+
+const id = '0192f291-27dd-7d3f-8071-5f8685deef37';
+const playerId = '0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1';
+
+test('opens zero balance at version one and exposes immutable state', () => {
+  const wallet = Wallet.open({ id, playerId, initialBalance: Money.zero('BRL') });
+  expect(wallet.toJSON()).toEqual({ id, playerId, balance: { amount: '0.00', currency: 'BRL' }, version: 1 });
+  const timestamp = wallet.createdAt.getTime();
+  wallet.createdAt.setTime(0);
+  expect(wallet.createdAt.getTime()).toBe(timestamp);
+});
+
+test('rejects positive opening before ledger support exists', () => {
+  expect(() => Wallet.open({ id, playerId, initialBalance: Money.from({ amount: '1.00', currency: 'BRL' }) }))
+    .toThrow(new DomainError('INITIAL_BALANCE_MUST_BE_ZERO'));
+});
+
+test('rehydrates persisted state without reopening wallet or resetting version', () => {
+  const wallet = Wallet.rehydrate({ id, playerId, balance: Money.from({ amount: '12.34', currency: 'BRL' }), version: 7, createdAt: new Date(1000), updatedAt: new Date(2000) });
+  expect(wallet.balance.toString()).toBe('12.34');
+  expect(wallet.version).toBe(7);
+  expect(wallet.updatedAt.getTime()).toBe(2000);
+});
