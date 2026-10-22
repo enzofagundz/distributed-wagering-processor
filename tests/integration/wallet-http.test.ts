@@ -112,3 +112,45 @@ test('failure at outbox insertion rolls back wallet, transaction and ledger, all
   }
   expect((await post(body)).status).toBe(201);
 });
+
+test('nested HTTP validation rejects extra fields and non-text money without consuming identity', async () => {
+  const body = input('12.34');
+  for (const [initialBalance, code] of [
+    [{ ...body.initialBalance, extra: true }, 'INVALID_WALLET_PAYLOAD'],
+    [{ currency: 'BRL' }, 'INVALID_WALLET_PAYLOAD'],
+    [{ amount: 12.34, currency: 'BRL' }, 'INVALID_AMOUNT'],
+    [{ amount: null, currency: 'BRL' }, 'INVALID_AMOUNT'],
+    [{ amount: '12.34', currency: null }, 'INVALID_CURRENCY'],
+    [{ amount: '1e2', currency: 'BRL' }, 'INVALID_AMOUNT'],
+    [{ amount: '12.34', currency: 'bad' }, 'INVALID_CURRENCY'],
+    [[], 'INVALID_WALLET_PAYLOAD'],
+  ] as const) {
+    const response = await post({ ...body, initialBalance });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ code });
+  }
+  expect((await post(body)).status).toBe(201);
+});
+
+test('unexpected unique failure is generic 500, not wallet conflict, and rolls back opening', async () => {
+  const body = input('23.45');
+  const name = `fail_unique_${crypto.randomUUID().replaceAll('-', '')}`;
+  await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$
+    begin
+      if exists (select 1 from wallets where id = new.aggregate_id and player_id = '${body.playerId}'::uuid)
+        then raise exception 'private database detail' using errcode = '23505', constraint = 'unexpected_outbox_unique'; end if;
+      return new;
+    end $$`);
+  await orm.em.execute(`create trigger ${name} before insert on outbox_messages for each row execute function ${name}()`);
+  try {
+    const response = await post(body);
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ statusCode: 500, message: 'Internal server error' });
+    expect(await orm.em.execute('select id from wallets where player_id = ?', [body.playerId])).toEqual([]);
+    expect(await orm.em.execute('select id from wager_transactions where player_id = ?', [body.playerId])).toEqual([]);
+  } finally {
+    await orm.em.execute(`drop trigger ${name} on outbox_messages`);
+    await orm.em.execute(`drop function ${name}()`);
+  }
+  expect((await post(body)).status).toBe(201);
+});

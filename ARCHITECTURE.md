@@ -14,7 +14,7 @@ Bun 1.3.14, TypeScript 5.9 estrito, NestJS 11.1.16 e MikroORM 6.6.8. Versões fi
 
 PostgreSQL 17.6 protege unicidade por `(player_id, currency)`, saldo não negativo e exclusão de NaN; versão positiva e colunas obrigatórias também são constraints. Valores decimais fora da escala são rejeitados na entrada HTTP; SQL direto em `numeric(30,2)` segue arredondamento do PostgreSQL e não é contrato de entrada pública.
 
-Abertura usa `EntityManager.fork().transactional()`: wallet é persistida antes dos INSERTs SQL de auditoria, todos usando o EntityManager transacional. Commit precede resposta. Constraint única `(player_id, currency)` arbitra requests concorrentes sem pré-consulta ou lock global. Falha anterior ao commit desfaz tudo; reenvio após commit retorna 409, não replay da abertura.
+Abertura usa `EntityManager.fork().transactional()`: `EntitySchema` separados mapeiam wallet, OPENING, ledger e outbox. Escritas ordinárias usam `create`/`persistAndFlush`, sem INSERT SQL no serviço. Flushes ordenados confirmam wallet, depois OPENING, depois ledger e por fim eventos dentro da mesma transação; flush envia SQL, mas não antecipa commit. A ordem explícita preserva FKs compostas mantidas nas migrations, sem duplicar essas relações no domínio. Commit precede resposta. Constraint única `(player_id, currency)` arbitra requests concorrentes sem pré-consulta ou lock global. Falha anterior ao commit desfaz tudo; reenvio após commit retorna 409, não replay da abertura.
 
 Saldo zero não cria transação, ledger ou evento. Saldo positivo cria uma transação interna `OPENING` já `PROCESSED`, um lançamento `CREDIT` de zero até o saldo inicial, versão 1 e eventos `WagerTransactionProcessed`/`WalletBalanceChanged` pendentes na outbox. Classes concretas serializam envelope versionado e MoneyProps; correlação é o ID interno da OPENING. OPENING não possui identidade de provedor, rodada ou jogo fictícios; ainda não existe endpoint de submissão de apostas.
 
@@ -24,10 +24,11 @@ Locks de movimentação, idempotência de apostas e estratégia inbox/outbox con
 
 ## Fronteiras, falhas e limites
 
-- HTTP valida objeto e allowlist; domínio valida identidade UUID, dinheiro e saldo inicial não negativo. Resposta não expõe campos persistidos protegidos.
+- HTTP usa `OpenWalletDto` e DTO monetário aninhado, `ValidationPipe`, `ValidateNested` e `Type`. Whitelist rejeita campos extras; conversão implícita desativada preserva dinheiro textual. `expectedType` é explícito: a execução TypeScript pelo Bun não deve depender de inferência de metadata do parâmetro.
+- DTO valida formato e estrutura do contrato. Domínio continua validando identidade UUID, dinheiro e saldo inicial não negativo, inclusive para futuros canais não HTTP. DTO não substitui invariantes.
 - 400: `INVALID_WALLET_PAYLOAD`, `INVALID_IDENTITY`, `INVALID_AMOUNT`, `INVALID_CURRENCY`, `INITIAL_BALANCE_NEGATIVE`.
-- 404: `WALLET_NOT_FOUND`; 409: `WALLET_ALREADY_EXISTS`.
-- Falha inesperada de infraestrutura: 500 genérico do NestJS, sem SQL/credenciais na resposta. Taxonomia transitória 503 será necessária quando forem entregues operações financeiras/retries; não implementada neste ticket.
+- `DomainErrorFilter` centraliza allowlist de erros conhecidos: 404 `WALLET_NOT_FOUND`; 409 `WALLET_ALREADY_EXISTS`. Somente a constraint de player/moeda é traduzida para duplicata; outra violação de unicidade é falha inesperada.
+- Falha inesperada de infraestrutura ou código de domínio desconhecido: 500 genérico do NestJS, sem SQL/credenciais na resposta. Taxonomia transitória 503 será necessária quando forem entregues operações financeiras/retries; não implementada neste ticket.
 - Sem apostas, transições de apostas, publisher, SQS, autenticação, health ou métricas neste incremento. Eventos ficam persistidos, não publicados. Autenticação e ponto de extensão pertencem ao ticket 27; serviço local não é seguro para exposição pública.
 - `SIGINT`/`SIGTERM` fecham HTTP antes de encerrar pool. Sem consumer ou ack neste estágio.
 
@@ -41,6 +42,17 @@ Alternativa descartada: INSERTs independentes ou imutabilidade apenas TypeScript
 
 Schema de transações restringe este incremento a OPENING/PROCESSED; não simula estados futuros nem retries. Outbox registra envelope e `published_at` nulo; publisher e política de retry serão entregues em tickets próprios, sem publicação antes do commit.
 
+## D-004 — Contrato HTTP e ambiente reproduzível (adotada)
+
+DTO é contrato de transporte, não entidade de domínio. `class-validator` 0.14.2 e `class-transformer` 0.5.1 integram validação aninhada ao NestJS 11.1.16; mensagens de validação carregam códigos existentes, sem refletir valores recebidos. Erros estruturais têm precedência sobre formato. Erros inesperados não são convertidos em 400.
+
+Unit of Work acompanha registros de persistência e organiza seu envio ao PostgreSQL. Não substitui transação nem constraints: atomicidade vem da transação externa; unicidade, FKs, aritmética e imutabilidade continuam no schema. SQL direto permanece apropriado para migrations, inspeção e testes de constraints, não para as escritas ordinárias deste fluxo.
+
+Compose executa imagem `oven/bun:1.3.14` com dependências do lockfile. Host usa portas publicadas; containers usam DNS de serviço. `HOST=0.0.0.0` é necessário dentro do container, mas publicação `127.0.0.1:3000:3000` limita acesso no host. Execução no host mantém bind padrão `127.0.0.1`. Isso não implementa autenticação.
+
+Bun executa TypeScript sem comprovar correção estática: `bun run typecheck` continua obrigatório no host de desenvolvimento. Imagem instala somente dependências de produção e executa código-fonte; migrations são comando explícito antes do startup.
+
+
 
 ## Referências consultadas
 
@@ -51,3 +63,7 @@ Schema de transações restringe este incremento a OPENING/PROCESSED; não simul
 - [MikroORM 6.6 transações](https://mikro-orm.io/docs/6.6/transactions): transação explícita inclui Unit of Work e SQL customizado; flush interno não antecipa commit externo.
 - [PostgreSQL 17 constraints](https://www.postgresql.org/docs/17/ddl-constraints.html): CHECK para aritmética local, UNIQUE e FKs para relações.
 - [PostgreSQL 17 trigger functions](https://www.postgresql.org/docs/17/plpgsql-trigger.html): exceção aborta UPDATE/DELETE/TRUNCATE de auditoria.
+- [NestJS validation](https://docs.nestjs.com/techniques/validation): DTOs, whitelist, `exceptionFactory` e rejeição de campos extras; APIs verificadas com NestJS 11.1.16.
+- [NestJS exception filters](https://docs.nestjs.com/exception-filters): filtro centralizado com `BaseExceptionFilter` preserva tratamento genérico de falhas inesperadas.
+- [Bun Docker](https://bun.sh/guides/ecosystem/docker): imagem oficial, instalação com lockfile e execução do código-fonte; projeto fixa versão em vez da tag genérica do exemplo.
+- [MikroORM 6.6 Unit of Work](https://mikro-orm.io/docs/6.6/unit-of-work): persistência e flush não substituem fronteira transacional.

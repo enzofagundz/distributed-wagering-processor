@@ -3,6 +3,9 @@ import { UniqueConstraintViolationException } from '@mikro-orm/core';
 import { DomainError, Money, type MoneyProps } from './domain/money';
 import { Wallet } from './domain/wallet';
 import { walletSchema } from './persistence/wallet-record';
+import { wagerTransactionSchema } from './persistence/wager-transaction-record';
+import { walletLedgerEntrySchema } from './persistence/wallet-ledger-entry-record';
+import { outboxMessageSchema } from './persistence/outbox-message-record';
 import { WalletLedgerEntry } from './domain/wallet-ledger-entry';
 import { WagerTransactionProcessed, WalletBalanceChanged } from './domain/opening-events';
 
@@ -25,22 +28,31 @@ export class WalletService {
         });
         await em.persistAndFlush(record);
         if (!entry) return;
-        await em.execute(`insert into wager_transactions
-          (id, wallet_id, player_id, currency, amount, kind, status, created_at)
-          values (?, ?, ?, ?, ?, 'OPENING', 'PROCESSED', ?)`,
-          [entry.transactionId, wallet.id, wallet.playerId, wallet.currency, entry.money.toString(), entry.createdAt]);
-        await em.execute(`insert into wallet_ledger_entries
-          (id, wallet_id, transaction_id, direction, amount, currency, balance_before, balance_after, created_at)
-          values (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [entry.id, wallet.id, entry.transactionId, entry.direction,
-            entry.money.toString(), entry.money.currency, entry.balanceBefore.toString(), entry.balanceAfter.toString(), entry.createdAt]);
-        for (const event of [WagerTransactionProcessed.from(wallet, entry), WalletBalanceChanged.from(wallet, entry)]) {
-          await em.execute(`insert into outbox_messages (id, aggregate_id, event_type, payload, occurred_at)
-            values (?, ?, ?, ?::jsonb, ?)`,
-            [event.eventId, wallet.id, event.eventType, JSON.stringify(event.toJSON()), event.occurredAt]);
-        }
+        const transaction = em.create(wagerTransactionSchema, {
+          id: entry.transactionId, walletId: wallet.id, playerId: wallet.playerId,
+          currency: wallet.currency, amount: entry.money.toString(),
+          kind: 'OPENING', status: 'PROCESSED', createdAt: entry.createdAt,
+        });
+        await em.persistAndFlush(transaction);
+        const ledgerEntry = em.create(walletLedgerEntrySchema, {
+          id: entry.id, walletId: wallet.id, transactionId: entry.transactionId,
+          direction: entry.direction, amount: entry.money.toString(), currency: entry.money.currency,
+          balanceBefore: entry.balanceBefore.toString(), balanceAfter: entry.balanceAfter.toString(),
+          createdAt: entry.createdAt,
+        });
+        await em.persistAndFlush(ledgerEntry);
+        const messages = [WagerTransactionProcessed.from(wallet, entry), WalletBalanceChanged.from(wallet, entry)]
+          .map(event => em.create(outboxMessageSchema, {
+            id: event.eventId, aggregateId: wallet.id, eventType: event.eventType,
+            payload: event.toJSON(), occurredAt: event.occurredAt,
+          }));
+        await em.persistAndFlush(messages);
       });
     } catch (error) {
-      if (error instanceof UniqueConstraintViolationException) throw new DomainError('WALLET_ALREADY_EXISTS');
+      if (error instanceof UniqueConstraintViolationException
+        && 'constraint' in error && error.constraint === 'wallets_player_currency_unique') {
+        throw new DomainError('WALLET_ALREADY_EXISTS');
+      }
       throw error;
     }
     return wallet;
