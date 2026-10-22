@@ -1,12 +1,13 @@
 import 'reflect-metadata';
 import { Body, Controller, Get, Inject, Module, Param, Post } from '@nestjs/common';
 import { APP_FILTER, NestFactory } from '@nestjs/core';
-import type { MikroORM } from '@mikro-orm/postgresql';
+import { MikroORM } from '@mikro-orm/postgresql';
 import { DomainError } from './domain/money';
 import { DomainErrorFilter } from './domain-error.filter';
 import { OpenWalletDto, openWalletValidation } from './open-wallet.dto';
 import { uuidPattern } from './domain/wallet';
 import { WalletService } from './wallet-service';
+import { databaseConfig } from './persistence/config';
 
 @Controller('wallets')
 class WalletController {
@@ -24,14 +25,19 @@ class WalletController {
   }
 }
 
+@Module({
+  controllers: [WalletController],
+  providers: [
+    { provide: MikroORM, useFactory: () => MikroORM.init(databaseConfig()) },
+    { provide: WalletService, useFactory: (orm: MikroORM) => new WalletService(orm), inject: [MikroORM] },
+    { provide: APP_FILTER, useClass: DomainErrorFilter },
+  ],
+})
+export class AppModule {}
+
 export async function createApplication(orm: MikroORM) {
-  @Module({
-    controllers: [WalletController],
-    providers: [
-      { provide: WalletService, useValue: new WalletService(orm) },
-      { provide: APP_FILTER, useClass: DomainErrorFilter },
-    ],
-  })
-  class AppModule {}
-  return NestFactory.create(AppModule, { logger: false });
+  return NestFactory.create({
+    module: AppModule,
+    providers: [{ provide: MikroORM, useValue: orm }],
+  }, { logger: false });
 }

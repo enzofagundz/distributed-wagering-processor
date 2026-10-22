@@ -1,0 +1,11 @@
+{
+  "projects": [
+    { "name": "app", "type": "application", "root": ".", "entryModule": "src/app.ts", "moduleExport": "AppModule" }
+  ],
+  "defaultProject": "app",
+  "agents": [],
+  "architecture": "hexagonal",
+  "auth": "none",
+  "testLayout": "central",
+  "evaluate": { "enabled": false }
+}

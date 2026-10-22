@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "nest-boost": {
+      "command": "bun",
+      "args": ["run", "nest-boost", "mcp"]
+    }
+  }
+}
