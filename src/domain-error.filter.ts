@@ -5,6 +5,7 @@ import { DomainError } from './domain/money';
 const statusByCode: Readonly<Record<string, number>> = {
   INVALID_WALLET_PAYLOAD: 400,
   INVALID_IDENTITY: 400,
+  INVALID_LEDGER_QUERY: 400,
   INVALID_AMOUNT: 400,
   INVALID_CURRENCY: 400,
   INITIAL_BALANCE_NEGATIVE: 400,

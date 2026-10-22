@@ -8,6 +8,8 @@ import { walletLedgerEntrySchema } from './persistence/wallet-ledger-entry-recor
 import { outboxMessageSchema } from './persistence/outbox-message-record';
 import { WalletLedgerEntry } from './domain/wallet-ledger-entry';
 import { WagerTransactionProcessed, WalletBalanceChanged } from './domain/opening-events';
+import { uuidPattern } from './domain/wallet';
+import type { WalletLedgerEntryRecord } from './persistence/wallet-ledger-entry-record';
 
 export class WalletService {
   constructor(private readonly orm: MikroORM) {}
@@ -66,5 +68,40 @@ export class WalletService {
       balance: Money.from({ amount: record.balance, currency: record.currency }),
       version: record.version, createdAt: record.createdAt, updatedAt: record.updatedAt,
     });
+  }
+
+  async ledger(walletId: string, query: { limit: number; cursor: string | undefined }) {
+    await this.get(walletId);
+    const em = this.orm.em.fork();
+    let cursorId: string | undefined;
+    if (query.cursor !== undefined) {
+      cursorId = Buffer.from(query.cursor, 'base64url').toString('utf8');
+      if (!uuidPattern.test(cursorId) || Buffer.from(cursorId).toString('base64url') !== query.cursor
+        || !await em.findOne(walletLedgerEntrySchema, { id: cursorId, walletId }, { fields: ['id'] })) {
+        throw new DomainError('INVALID_LEDGER_QUERY');
+      }
+    }
+    const records = await em.execute<WalletLedgerEntryRecord[]>(`
+      select e.id, e.wallet_id as "walletId", e.transaction_id as "transactionId", e.direction,
+        e.amount::text, e.currency, e.balance_before::text as "balanceBefore",
+        e.balance_after::text as "balanceAfter", e.created_at as "createdAt"
+      from wallet_ledger_entries e where e.wallet_id = ?
+      ${cursorId ? `and (e.created_at, e.id) > (
+        select created_at, id from wallet_ledger_entries where wallet_id = ? and id = ?
+      )` : ''}
+      order by e.created_at asc, e.id asc limit ?`,
+    cursorId ? [walletId, walletId, cursorId, query.limit + 1] : [walletId, query.limit + 1]);
+    const hasMore = records.length > query.limit;
+    if (hasMore) records.pop();
+    return {
+      items: records.map(record => ({
+        id: record.id, walletId: record.walletId, transactionId: record.transactionId,
+        direction: record.direction, money: { amount: record.amount, currency: record.currency },
+        balanceBefore: { amount: record.balanceBefore, currency: record.currency },
+        balanceAfter: { amount: record.balanceAfter, currency: record.currency },
+        createdAt: record.createdAt,
+      })),
+      nextCursor: hasMore ? Buffer.from(records[records.length - 1]!.id).toString('base64url') : null,
+    };
   }
 }

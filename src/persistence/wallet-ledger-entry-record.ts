@@ -26,6 +26,6 @@ export const walletLedgerEntrySchema = new EntitySchema<WalletLedgerEntryRecord>
     balanceAfter: { type: 'decimal', precision: 30, scale: 2 },
     createdAt: { type: 'Date', columnType: 'timestamptz' },
   },
-  indexes: [{ name: 'wallet_ledger_entries_wallet_id_index', properties: ['walletId'] }],
+  indexes: [{ name: 'wallet_ledger_entries_wallet_order_index', properties: ['walletId', 'createdAt', 'id'] }],
   uniques: [{ name: 'wallet_ledger_entries_transaction_wallet_unique', properties: ['transactionId', 'walletId'] }],
 });

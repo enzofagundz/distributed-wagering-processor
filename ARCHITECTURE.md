@@ -52,6 +52,21 @@ Compose executa imagem `oven/bun:1.3.14` com dependências do lockfile. Host usa
 
 Bun executa TypeScript sem comprovar correção estática: `bun run typecheck` continua obrigatório no host de desenvolvimento. Imagem instala somente dependências de produção e executa código-fonte; migrations são comando explícito antes do startup.
 
+## D-005 — Consulta estável do ledger (adotada)
+
+`GET /wallets/:walletId/ledger` usa keyset crescente por `(created_at, id)`. UUID é desempate único; índice `(wallet_id, created_at, id)` atende filtro e ordenação. Migration `20261022000300` substitui o índice simples de wallet; `down` restaura o índice anterior, sem tocar dados.
+
+Cursor opaco é o ID UUID do último lançamento retornado, codificado em base64url canônico. Não é token de autorização nem possui assinatura: cliente não deve interpretá-lo; servidor aceita somente ID existente na mesma wallet. Alterá-lo para outro lançamento da mesma wallet escolhe outra posição de leitura, sem permitir escrita ou acesso a outra wallet. Não há autenticação neste estágio.
+
+Consulta parametrizada pelo MikroORM compara tuplas no PostgreSQL, buscando timestamp diretamente do lançamento apontado pelo cursor. Não converte timestamp em `Date` para retomar página: isso perderia microssegundos do PostgreSQL e poderia repetir ou omitir linhas. A resposta mantém timestamp textual com offset e dinheiro como string decimal. Leitura busca `limit + 1`, devolve no máximo `limit` e só emite `nextCursor` quando há outro lançamento.
+
+`LedgerQueryDto` com `@Query` e `ValidationPipe` segue convenção existente: `expectedType` explícito, whitelist estrita e conversão implícita desativada. Limite textual canônico 1–100, padrão 50; conversão explícita para número ocorre apenas no tamanho da página, nunca no dinheiro. Erros de query retornam 400 `INVALID_LEDGER_QUERY`; identidade inválida continua 400; wallet ausente é 404, distinta de histórico vazio 200. Consulta não escreve em wallet, ledger, transação ou outbox.
+
+Alternativa descartada: `OFFSET`, que desloca páginas quando há inserções antes da posição lida. Keyset preserva lançamentos existentes em ordem, inclusive empates e microssegundos, mas não mantém snapshot entre requests. Novas linhas posteriores ao cursor podem aparecer; linhas inseridas retroativamente antes dele só aparecem em nova travessia. Ledger append-only mantém âncora do cursor válida; reiniciar processo não perde posição porque âncora vive no PostgreSQL.
+
+Teste pela fronteira HTTP real, com PostgreSQL em container. Banco exclusivo por execução permite preparar múltiplos lançamentos sem modificar banco compartilhado: somente nessa fixture remove-se unicidade de OPENING por wallet, pois schema atual ainda restringe transações a OPENING. Histórico sintético verifica leitura, não implementação de apostas ou consistência financeira de movimentações futuras. Trigger de imutabilidade, aritmética, FKs e unicidade de lançamento/transação permanecem ativos. Usuário local de teste exige permissão de criar banco; teardown remove banco exclusivo.
+
+
 
 
 ## Referências consultadas
@@ -67,3 +82,4 @@ Bun executa TypeScript sem comprovar correção estática: `bun run typecheck` c
 - [NestJS exception filters](https://docs.nestjs.com/exception-filters): filtro centralizado com `BaseExceptionFilter` preserva tratamento genérico de falhas inesperadas.
 - [Bun Docker](https://bun.sh/guides/ecosystem/docker): imagem oficial, instalação com lockfile e execução do código-fonte; projeto fixa versão em vez da tag genérica do exemplo.
 - [MikroORM 6.6 Unit of Work](https://mikro-orm.io/docs/6.6/unit-of-work): persistência e flush não substituem fronteira transacional.
+- [NestJS validation](https://docs.nestjs.com/techniques/validation): consulta via Context7 para `ValidationPipe`, whitelist e `exceptionFactory`; compatibilidade comprovada no NestJS 11.1.16 por HTTP real. Nest Boost MCP inspecionou rotas e DI existentes e confirmou nova rota em processo novo; servidor persistente anterior manteve snapshot antigo.
