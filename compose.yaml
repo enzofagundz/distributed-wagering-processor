@@ -1,4 +1,15 @@
 services:
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://wagering:wagering@postgres:5432/wagering
+      HOST: 0.0.0.0
+      PORT: "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
   postgres:
     image: postgres:17.6-alpine
     environment:

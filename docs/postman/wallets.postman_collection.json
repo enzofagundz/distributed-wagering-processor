@@ -1,0 +1,1664 @@
+{
+  "info": {
+    "_postman_id": "95a545f1-6ee0-40a6-87e1-613f99b2c733",
+    "name": "Distributed Wagering Processor — Wallet HTTP",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Contratos HTTP implementados: abertura e consulta de carteira, leitura de ledger. Selecione environment Local e execute as pastas em ordem. Os exemplos salvos são ilustrativos, derivados de código e testes; não são capturas de execução. Sem autenticação no contrato atual. Manual: docs/postman/README.md."
+  },
+  "auth": {
+    "type": "noauth"
+  },
+  "item": [
+    {
+      "name": "1 — Abertura positiva, duplicata e auditoria",
+      "item": [
+        {
+          "name": "01 — Abrir carteira positiva",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets"
+              ]
+            },
+            "description": "Gera novo UUID playerId em cada envio e captura walletId somente após validar 201. Valor acima de Number.MAX_SAFE_INTEGER continua string. Persiste uma carteira, uma OPENING, um CREDIT e dois eventos de outbox pendentes; a resposta não expõe transação nem eventos.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{playerId}}\",\n  \"initialBalance\": {\n    \"amount\": \"9007199254740993.01\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set(\"playerId\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.environment.unset(\"walletId\");",
+                  "pm.environment.unset(\"ledgerCursor\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Carteira preserva identidade, dinheiro exato e versão\", function () {",
+                  "  pm.response.to.have.status(201);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);",
+                  "  pm.expect(body.playerId).to.eql(pm.environment.get(\"playerId\"));",
+                  "  pm.expect(body.balance).to.eql({ amount: \"9007199254740993.01\", currency: \"BRL\" });",
+                  "  pm.expect(body.version).to.eql(1);",
+                  "  pm.environment.set(\"walletId\", body.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "201 Created — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Gera novo UUID playerId em cada envio e captura walletId somente após validar 201. Valor acima de Number.MAX_SAFE_INTEGER continua string. Persiste uma carteira, uma OPENING, um CREDIT e dois eventos de outbox pendentes; a resposta não expõe transação nem eventos.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"initialBalance\": {\n    \"amount\": \"9007199254740993.01\",\n    \"currency\": \"BRL\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"id\": \"11111111-1111-4111-8111-111111111111\",\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"balance\": {\n    \"amount\": \"9007199254740993.01\",\n    \"currency\": \"BRL\"\n  },\n  \"version\": 1\n}"
+            }
+          ]
+        },
+        {
+          "name": "02 — Consultar carteira positiva",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/{{walletId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets",
+                "{{walletId}}"
+              ]
+            },
+            "description": "Requer 01. Confere saldo exato e versão 1."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Carteira preserva identidade, dinheiro exato e versão\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);",
+                  "  pm.expect(body.playerId).to.eql(pm.environment.get(\"playerId\"));",
+                  "  pm.expect(body.balance).to.eql({ amount: \"9007199254740993.01\", currency: \"BRL\" });",
+                  "  pm.expect(body.version).to.eql(1);",
+                  "  pm.expect(body.id).to.eql(pm.environment.get(\"walletId\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "200 OK — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets/11111111-1111-4111-8111-111111111111",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets",
+                    "11111111-1111-4111-8111-111111111111"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Requer 01. Confere saldo exato e versão 1."
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"id\": \"11111111-1111-4111-8111-111111111111\",\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"balance\": {\n    \"amount\": \"9007199254740993.01\",\n    \"currency\": \"BRL\"\n  },\n  \"version\": 1\n}"
+            }
+          ]
+        },
+        {
+          "name": "03 — Repetir abertura — duplicata 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets"
+              ]
+            },
+            "description": "Requer 01. Reutiliza playerId e BRL sem gerar UUID novo. Duplicidade é por jogador e moeda; não reaplica saldo nem auditoria.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{playerId}}\",\n  \"initialBalance\": {\n    \"amount\": \"9007199254740993.01\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status e código de erro do contrato\", function () {",
+                  "  pm.response.to.have.status(409);",
+                  "  pm.expect(pm.response.json()).to.eql({ code: \"WALLET_ALREADY_EXISTS\" });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "409 Conflict — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Requer 01. Reutiliza playerId e BRL sem gerar UUID novo. Duplicidade é por jogador e moeda; não reaplica saldo nem auditoria.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"initialBalance\": {\n    \"amount\": \"9007199254740993.01\",\n    \"currency\": \"BRL\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "Conflict",
+              "code": 409,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": \"WALLET_ALREADY_EXISTS\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "04 — Consultar carteira após duplicata",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/{{walletId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets",
+                "{{walletId}}"
+              ]
+            },
+            "description": "Requer 01 e 03. Saldo e versão permanecem iguais."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Carteira preserva identidade, dinheiro exato e versão\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);",
+                  "  pm.expect(body.playerId).to.eql(pm.environment.get(\"playerId\"));",
+                  "  pm.expect(body.balance).to.eql({ amount: \"9007199254740993.01\", currency: \"BRL\" });",
+                  "  pm.expect(body.version).to.eql(1);",
+                  "  pm.expect(body.id).to.eql(pm.environment.get(\"walletId\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "200 OK — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets/11111111-1111-4111-8111-111111111111",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets",
+                    "11111111-1111-4111-8111-111111111111"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Requer 01 e 03. Saldo e versão permanecem iguais."
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"id\": \"11111111-1111-4111-8111-111111111111\",\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"balance\": {\n    \"amount\": \"9007199254740993.01\",\n    \"currency\": \"BRL\"\n  },\n  \"version\": 1\n}"
+            }
+          ]
+        },
+        {
+          "name": "05 — Consultar ledger positivo",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/{{walletId}}/ledger?limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets",
+                "{{walletId}}",
+                "ledger"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1"
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{ledgerCursor}}",
+                  "disabled": true,
+                  "description": "Opcional. Deixe desmarcado neste smoke. Só habilite com nextCursor não nulo retornado por esta mesma carteira."
+                }
+              ]
+            },
+            "description": "Requer 01; após 03 comprova que duplicata não adicionou crédito. Cursor fica desabilitado: cursor vazio é inválido. OPENING é a única escrita atual e gera um lançamento; nextCursor null é esperado mesmo com limit=1."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"OPENING mantém um crédito exato, sem próxima página\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.items).to.have.lengthOf(1);",
+                  "  const entry = body.items[0];",
+                  "  pm.expect(entry.walletId).to.eql(pm.environment.get(\"walletId\"));",
+                  "  pm.expect(entry.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);",
+                  "  pm.expect(entry.transactionId).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);",
+                  "  pm.expect(entry.direction).to.eql(\"CREDIT\");",
+                  "  pm.expect(entry.money).to.eql({ amount: \"9007199254740993.01\", currency: \"BRL\" });",
+                  "  pm.expect(entry.balanceBefore).to.eql({ amount: \"0.00\", currency: \"BRL\" });",
+                  "  pm.expect(entry.balanceAfter).to.eql({ amount: \"9007199254740993.01\", currency: \"BRL\" });",
+                  "  pm.expect(entry.createdAt).to.be.a(\"string\");",
+                  "  pm.expect(Number.isNaN(Date.parse(entry.createdAt))).to.eql(false);",
+                  "  pm.expect(body.nextCursor).to.eql(null);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "200 OK — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets/11111111-1111-4111-8111-111111111111/ledger?limit=1",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets",
+                    "11111111-1111-4111-8111-111111111111",
+                    "ledger"
+                  ],
+                  "query": [
+                    {
+                      "key": "limit",
+                      "value": "1"
+                    },
+                    {
+                      "key": "cursor",
+                      "value": "{{ledgerCursor}}",
+                      "disabled": true,
+                      "description": "Opcional. Deixe desmarcado neste smoke. Só habilite com nextCursor não nulo retornado por esta mesma carteira."
+                    }
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Requer 01; após 03 comprova que duplicata não adicionou crédito. Cursor fica desabilitado: cursor vazio é inválido. OPENING é a única escrita atual e gera um lançamento; nextCursor null é esperado mesmo com limit=1."
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"items\": [\n    {\n      \"id\": \"33333333-3333-4333-8333-333333333333\",\n      \"walletId\": \"11111111-1111-4111-8111-111111111111\",\n      \"transactionId\": \"44444444-4444-4444-8444-444444444444\",\n      \"direction\": \"CREDIT\",\n      \"money\": {\n        \"amount\": \"9007199254740993.01\",\n        \"currency\": \"BRL\"\n      },\n      \"balanceBefore\": {\n        \"amount\": \"0.00\",\n        \"currency\": \"BRL\"\n      },\n      \"balanceAfter\": {\n        \"amount\": \"9007199254740993.01\",\n        \"currency\": \"BRL\"\n      },\n      \"createdAt\": \"2026-10-22T12:00:00.000Z\"\n    }\n  ],\n  \"nextCursor\": null\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2 — Abertura zero e histórico vazio",
+      "item": [
+        {
+          "name": "06 — Abrir carteira zero",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets"
+              ]
+            },
+            "description": "UUID e variáveis independentes do fluxo positivo. Não sobrescreve playerId nem walletId. Saldo zero não gera OPENING, ledger ou outbox.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{zeroPlayerId}}\",\n  \"initialBalance\": {\n    \"amount\": \"0.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set(\"zeroPlayerId\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.environment.unset(\"zeroWalletId\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Carteira preserva identidade, dinheiro exato e versão\", function () {",
+                  "  pm.response.to.have.status(201);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);",
+                  "  pm.expect(body.playerId).to.eql(pm.environment.get(\"zeroPlayerId\"));",
+                  "  pm.expect(body.balance).to.eql({ amount: \"0.00\", currency: \"BRL\" });",
+                  "  pm.expect(body.version).to.eql(1);",
+                  "  pm.environment.set(\"zeroWalletId\", body.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "201 Created — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "UUID e variáveis independentes do fluxo positivo. Não sobrescreve playerId nem walletId. Saldo zero não gera OPENING, ledger ou outbox.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"playerId\": \"66666666-6666-4666-8666-666666666666\",\n  \"initialBalance\": {\n    \"amount\": \"0.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"id\": \"55555555-5555-4555-8555-555555555555\",\n  \"playerId\": \"66666666-6666-4666-8666-666666666666\",\n  \"balance\": {\n    \"amount\": \"0.00\",\n    \"currency\": \"BRL\"\n  },\n  \"version\": 1\n}"
+            }
+          ]
+        },
+        {
+          "name": "07 — Consultar carteira zero",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/{{zeroWalletId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets",
+                "{{zeroWalletId}}"
+              ]
+            },
+            "description": "Requer 06. Saldo 0.00, versão 1."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Carteira preserva identidade, dinheiro exato e versão\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);",
+                  "  pm.expect(body.playerId).to.eql(pm.environment.get(\"zeroPlayerId\"));",
+                  "  pm.expect(body.balance).to.eql({ amount: \"0.00\", currency: \"BRL\" });",
+                  "  pm.expect(body.version).to.eql(1);",
+                  "  pm.expect(body.id).to.eql(pm.environment.get(\"zeroWalletId\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "200 OK — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets/55555555-5555-4555-8555-555555555555",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets",
+                    "55555555-5555-4555-8555-555555555555"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Requer 06. Saldo 0.00, versão 1."
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"id\": \"55555555-5555-4555-8555-555555555555\",\n  \"playerId\": \"66666666-6666-4666-8666-666666666666\",\n  \"balance\": {\n    \"amount\": \"0.00\",\n    \"currency\": \"BRL\"\n  },\n  \"version\": 1\n}"
+            }
+          ]
+        },
+        {
+          "name": "08 — Consultar ledger vazio",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/{{zeroWalletId}}/ledger",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets",
+                "{{zeroWalletId}}",
+                "ledger"
+              ]
+            },
+            "description": "Requer 06. Sem parâmetros: limit padrão 50. Histórico vazio retorna 200, não 404."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Carteira zero existe com histórico vazio\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json()).to.eql({ items: [], nextCursor: null });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "200 OK — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets/55555555-5555-4555-8555-555555555555/ledger",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets",
+                    "55555555-5555-4555-8555-555555555555",
+                    "ledger"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Requer 06. Sem parâmetros: limit padrão 50. Histórico vazio retorna 200, não 404."
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"items\": [],\n  \"nextCursor\": null\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3 — Erros do contrato",
+      "item": [
+        {
+          "name": "09 — Abertura com campo extra",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets"
+              ]
+            },
+            "description": "Whitelist rejeita campos extras, não os ignora.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"initialBalance\": {\n    \"amount\": \"9007199254740993.01\",\n    \"currency\": \"BRL\"\n  },\n  \"version\": 9\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status e código de erro do contrato\", function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json()).to.eql({ code: \"INVALID_WALLET_PAYLOAD\" });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "400 Bad Request — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Whitelist rejeita campos extras, não os ignora.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"initialBalance\": {\n    \"amount\": \"9007199254740993.01\",\n    \"currency\": \"BRL\"\n  },\n  \"version\": 9\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": \"INVALID_WALLET_PAYLOAD\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "10 — Abertura com identidade inválida",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"not-a-uuid\",\n  \"initialBalance\": {\n    \"amount\": \"9007199254740993.01\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status e código de erro do contrato\", function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json()).to.eql({ code: \"INVALID_IDENTITY\" });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "400 Bad Request — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"playerId\": \"not-a-uuid\",\n  \"initialBalance\": {\n    \"amount\": \"9007199254740993.01\",\n    \"currency\": \"BRL\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": \"INVALID_IDENTITY\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "11 — Abertura com precisão inválida",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets"
+              ]
+            },
+            "description": "Dinheiro exige string decimal não negativa com exatamente duas casas. Números JSON também são rejeitados.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"initialBalance\": {\n    \"amount\": \"0.001\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status e código de erro do contrato\", function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json()).to.eql({ code: \"INVALID_AMOUNT\" });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "400 Bad Request — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Dinheiro exige string decimal não negativa com exatamente duas casas. Números JSON também são rejeitados.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"initialBalance\": {\n    \"amount\": \"0.001\",\n    \"currency\": \"BRL\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": \"INVALID_AMOUNT\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "12 — Abertura com saldo negativo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets"
+              ]
+            },
+            "description": "No HTTP atual, sinal negativo falha na validação de amount: INVALID_AMOUNT, não INITIAL_BALANCE_NEGATIVE.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"initialBalance\": {\n    \"amount\": \"-0.01\",\n    \"currency\": \"BRL\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status e código de erro do contrato\", function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json()).to.eql({ code: \"INVALID_AMOUNT\" });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "400 Bad Request — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "No HTTP atual, sinal negativo falha na validação de amount: INVALID_AMOUNT, não INITIAL_BALANCE_NEGATIVE.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"initialBalance\": {\n    \"amount\": \"-0.01\",\n    \"currency\": \"BRL\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": \"INVALID_AMOUNT\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "13 — Abertura com moeda inválida",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets"
+              ]
+            },
+            "description": "Moeda precisa pertencer a Intl.supportedValuesOf(\"currency\"); BRL é válido, brl não.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"initialBalance\": {\n    \"amount\": \"1.00\",\n    \"currency\": \"brl\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status e código de erro do contrato\", function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json()).to.eql({ code: \"INVALID_CURRENCY\" });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "400 Bad Request — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Moeda precisa pertencer a Intl.supportedValuesOf(\"currency\"); BRL é válido, brl não.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"playerId\": \"22222222-2222-4222-8222-222222222222\",\n  \"initialBalance\": {\n    \"amount\": \"1.00\",\n    \"currency\": \"brl\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": \"INVALID_CURRENCY\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "14 — Consultar carteira com UUID inválido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/not-a-uuid",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets",
+                "not-a-uuid"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status e código de erro do contrato\", function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json()).to.eql({ code: \"INVALID_IDENTITY\" });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "400 Bad Request — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets/not-a-uuid",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets",
+                    "not-a-uuid"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": ""
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": \"INVALID_IDENTITY\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "15 — Consultar carteira inexistente",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/{{missingWalletId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets",
+                "{{missingWalletId}}"
+              ]
+            },
+            "description": "Gera UUID novo apenas para consulta, sem abrir carteira."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"missingWalletId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status e código de erro do contrato\", function () {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json()).to.eql({ code: \"WALLET_NOT_FOUND\" });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "404 Not Found — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets/77777777-7777-4777-8777-777777777777",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets",
+                    "77777777-7777-4777-8777-777777777777"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Gera UUID novo apenas para consulta, sem abrir carteira."
+              },
+              "status": "Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": \"WALLET_NOT_FOUND\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "16 — Consultar ledger de carteira inexistente",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/{{missingWalletId}}/ledger",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets",
+                "{{missingWalletId}}",
+                "ledger"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"missingWalletId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status e código de erro do contrato\", function () {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json()).to.eql({ code: \"WALLET_NOT_FOUND\" });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "404 Not Found — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets/77777777-7777-4777-8777-777777777777/ledger",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets",
+                    "77777777-7777-4777-8777-777777777777",
+                    "ledger"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": ""
+              },
+              "status": "Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": \"WALLET_NOT_FOUND\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "17 — Consultar ledger com UUID inválido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/not-a-uuid/ledger",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets",
+                "not-a-uuid",
+                "ledger"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status e código de erro do contrato\", function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json()).to.eql({ code: \"INVALID_IDENTITY\" });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "400 Bad Request — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets/not-a-uuid/ledger",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets",
+                    "not-a-uuid",
+                    "ledger"
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": ""
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": \"INVALID_IDENTITY\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "18 — Ledger com limite inválido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/{{walletId}}/ledger?limit=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets",
+                "{{walletId}}",
+                "ledger"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "Requer 01. Limite permitido: inteiro textual entre 1 e 100, sem zeros à esquerda."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status e código de erro do contrato\", function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json()).to.eql({ code: \"INVALID_LEDGER_QUERY\" });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "400 Bad Request — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets/11111111-1111-4111-8111-111111111111/ledger?limit=0",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets",
+                    "11111111-1111-4111-8111-111111111111",
+                    "ledger"
+                  ],
+                  "query": [
+                    {
+                      "key": "limit",
+                      "value": "0"
+                    }
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Requer 01. Limite permitido: inteiro textual entre 1 e 100, sem zeros à esquerda."
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": \"INVALID_LEDGER_QUERY\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "19 — Ledger com cursor inválido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/{{walletId}}/ledger?cursor=bad",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallets",
+                "{{walletId}}",
+                "ledger"
+              ],
+              "query": [
+                {
+                  "key": "cursor",
+                  "value": "bad"
+                }
+              ]
+            },
+            "description": "Requer 01. Cursor deve ser base64url canônico de UUID de um lançamento desta carteira. Vazio, inexistente e de outra carteira também são inválidos."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status e código de erro do contrato\", function () {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json()).to.eql({ code: \"INVALID_LEDGER_QUERY\" });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "400 Bad Request — exemplo ilustrativo",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "http://127.0.0.1:3000/wallets/11111111-1111-4111-8111-111111111111/ledger?cursor=bad",
+                  "host": [
+                    "127",
+                    "0",
+                    "0",
+                    "1"
+                  ],
+                  "path": [
+                    "wallets",
+                    "11111111-1111-4111-8111-111111111111",
+                    "ledger"
+                  ],
+                  "query": [
+                    {
+                      "key": "cursor",
+                      "value": "bad"
+                    }
+                  ],
+                  "protocol": "http",
+                  "port": "3000"
+                },
+                "description": "Requer 01. Cursor deve ser base64url canônico de UUID de um lançamento desta carteira. Vazio, inexistente e de outra carteira também são inválidos."
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": \"INVALID_LEDGER_QUERY\"\n}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
