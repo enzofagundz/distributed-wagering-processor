@@ -1,15 +1,15 @@
 import { MikroORM } from '@mikro-orm/postgresql';
 import { UniqueConstraintViolationException } from '@mikro-orm/core';
-import { DomainError, Money, type MoneyProps } from './domain/money';
-import { Wallet } from './domain/wallet';
-import { walletSchema } from './persistence/wallet-record';
-import { wagerTransactionSchema } from './persistence/wager-transaction-record';
-import { walletLedgerEntrySchema } from './persistence/wallet-ledger-entry-record';
-import { outboxMessageSchema } from './persistence/outbox-message-record';
-import { WalletLedgerEntry } from './domain/wallet-ledger-entry';
-import { WagerTransactionProcessed, WalletBalanceChanged } from './domain/opening-events';
-import { uuidPattern } from './domain/wallet';
-import type { WalletLedgerEntryRecord } from './persistence/wallet-ledger-entry-record';
+import { DomainError, Money, type MoneyProps } from '../domain/money';
+import { Wallet } from '../domain/wallet';
+import { walletSchema } from '../persistence/wallet-record';
+import { wagerTransactionSchema } from '../persistence/wager-transaction-record';
+import { walletLedgerEntrySchema } from '../persistence/wallet-ledger-entry-record';
+import { outboxMessageSchema } from '../persistence/outbox-message-record';
+import { WalletLedgerEntry } from '../domain/wallet-ledger-entry';
+import { WagerTransactionProcessed, WalletBalanceChanged } from '../domain/opening-events';
+import { uuidPattern } from '../domain/wallet';
+import type { WalletLedgerEntryRecord } from '../persistence/wallet-ledger-entry-record';
 
 export class WalletService {
   constructor(private readonly orm: MikroORM) {}

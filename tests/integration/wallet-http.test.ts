@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import type { INestApplication } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/postgresql';
-import { createApplication } from '../../src/app';
+import { createApplication } from '../../src/create-application';
 import { databaseConfig } from '../../src/persistence/config';
 
 const url = process.env.TEST_DATABASE_URL;

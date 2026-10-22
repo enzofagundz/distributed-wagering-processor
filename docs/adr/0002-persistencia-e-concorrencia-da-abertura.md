@@ -28,4 +28,4 @@ Abertura positiva preserva atomicidade entre saldo, auditoria e eventos persisti
 
 A garantia concorrente atual limita-se à criação única por player/moeda; não comprova proteção contra lost update em movimentações ou execução financeira em múltiplas instâncias. A auditoria e seus limites estão no [ADR-0003](0003-auditoria-da-abertura.md).
 
-Referências: [EntitySchema 6.6](https://mikro-orm.io/docs/6.6/entity-schema), [transações 6.6](https://mikro-orm.io/docs/6.6/transactions), [migrations 6.6](https://mikro-orm.io/docs/6.6/migrations) e [constraints PostgreSQL 17](https://www.postgresql.org/docs/17/ddl-constraints.html). Implementação: [WalletService](../../src/wallet-service.ts).
+Referências: [EntitySchema 6.6](https://mikro-orm.io/docs/6.6/entity-schema), [transações 6.6](https://mikro-orm.io/docs/6.6/transactions), [migrations 6.6](https://mikro-orm.io/docs/6.6/migrations) e [constraints PostgreSQL 17](https://www.postgresql.org/docs/17/ddl-constraints.html). Implementação: [WalletService](../../src/wallets/wallet-service.ts).

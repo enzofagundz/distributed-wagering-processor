@@ -1,6 +1,6 @@
 {
   "projects": [
-    { "name": "app", "type": "application", "root": ".", "entryModule": "src/app.ts", "moduleExport": "AppModule" }
+    { "name": "app", "type": "application", "root": ".", "entryModule": "src/app.module.ts", "moduleExport": "PreviewAppModule" }
   ],
   "defaultProject": "app",
   "agents": [],

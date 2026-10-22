@@ -1,7 +1,7 @@
 import { HttpException, ValidationPipe } from '@nestjs/common';
 import { Type } from 'class-transformer';
 import { IsDefined, IsIn, IsObject, IsString, Matches, ValidateNested, type ValidationError } from 'class-validator';
-import { uuidPattern } from './domain/wallet';
+import { uuidPattern } from '../domain/wallet';
 
 class InitialBalanceDto {
   @IsDefined({ message: 'INVALID_AMOUNT' })

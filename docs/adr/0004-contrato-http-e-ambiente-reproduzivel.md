@@ -28,6 +28,6 @@ O domínio permanece reutilizável sem transportar decorators HTTP ou ORM. Repro
 
 O serviço não possui autenticação e não é seguro para exposição pública. Apostas, suas transições, publisher, SQS, health e métricas não integram este incremento. Taxonomia transitória 503 não está implementada; escopo futuro fica na [cobertura do desafio](../../PROGRESS.md) e no [ticket de autenticação](../../.scratch/distributed-wagering-processor/issues/27-limite-autenticacao.md).
 
-Fontes: [DTO de abertura](../../src/open-wallet.dto.ts), [filtro](../../src/domain-error.filter.ts), [startup](../../src/main.ts), [Compose](../../compose.yaml) e [evidências históricas](../verification.md).
+Fontes: [DTO de abertura](../../src/wallets/open-wallet.dto.ts), [filtro](../../src/shared/domain-error.filter.ts), [startup](../../src/main.ts), [Compose](../../compose.yaml) e [evidências históricas](../verification.md).
 
 Referências: [NestJS controllers](https://docs.nestjs.com/controllers) para rotas e códigos padrão 201/200; [NestJS validation](https://docs.nestjs.com/techniques/validation) para DTOs, whitelist e `exceptionFactory`; [NestJS exception filters](https://docs.nestjs.com/exception-filters) para filtro centralizado com `BaseExceptionFilter`; [Unit of Work 6.6](https://mikro-orm.io/docs/6.6/unit-of-work); [Bun Docker](https://bun.sh/guides/ecosystem/docker); [teste upstream de metadata Bun/NestJS](https://github.com/oven-sh/bun/blob/main/test/integration/nest/nest_metadata.test.ts), que não substitui evidência local com Bun 1.3.14.

@@ -1,6 +1,6 @@
 import { ArgumentsHost, Catch, HttpException, type ExceptionFilter } from '@nestjs/common';
 import { BaseExceptionFilter } from '@nestjs/core';
-import { DomainError } from './domain/money';
+import { DomainError } from '../domain/money';
 
 const statusByCode: Readonly<Record<string, number>> = {
   INVALID_WALLET_PAYLOAD: 400,

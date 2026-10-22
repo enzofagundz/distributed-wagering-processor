@@ -6,13 +6,28 @@ Este documento descreve implementação atual, não arquitetura-alvo do desafio.
 
 | Área | Arquivos | Responsabilidade |
 |---|---|---|
-| Bootstrap | `src/main.ts` | Inicializa ORM/HTTP; encerra HTTP antes do pool em SIGINT/SIGTERM |
-| Transporte e DI | `src/app.ts`, `src/*dto.ts`, `src/domain-error.filter.ts` | Três rotas, validação estrutural e tradução de erros conhecidos |
-| Caso de uso e leitura | `src/wallet-service.ts` | Abertura atômica, reidratação de wallet e consulta keyset do ledger |
+| Bootstrap | `src/main.ts` | Inicializa ORM/HTTP; fecha aplicação e pool em sinais ou falha de startup |
+| Criação da aplicação | `src/create-application.ts` | Recebe ORM do chamador e cria aplicação Nest |
+| Composição | `src/app.module.ts`, `src/wallets/wallets.module.ts` | Módulo raiz compõe funcionalidade; WalletsModule registra controller e serviço |
+| Transporte | `src/wallets/wallet.controller.ts`, `src/wallets/*dto.ts` | Três rotas e validação estrutural |
+| Erros compartilhados | `src/shared/domain-error.filter.ts` | Tradução global de erros conhecidos, registrada uma vez pelo módulo raiz |
+| Caso de uso e leitura | `src/wallets/wallet-service.ts` | Abertura atômica, reidratação de wallet e consulta keyset do ledger |
 | Domínio | `src/domain/` | Money, Wallet, WalletLedgerEntry e eventos de abertura; sem NestJS/ORM |
-| Persistência | `src/persistence/*record.ts`, `config.ts` | EntitySchema e configuração do MikroORM |
+| Persistência | `src/persistence/persistence.module.ts`, `*record.ts`, `config.ts` | Provider MikroORM exportado explicitamente, EntitySchema e configuração |
 | Schema | `src/persistence/migrations/` | Constraints, FKs, trigger append-only e índices versionados |
 | Verificação | `tests/domain/`, `tests/integration/` | Invariantes, constraints, atomicidade e fronteira HTTP com PostgreSQL real |
+
+## Composição e injeção
+
+`createApplication(orm)` monta `AppModule.register(orm)` → `WalletsModule.register(orm)` → `PersistenceModule.register(orm)`. Persistência exporta o token `MikroORM`; wallets importa esse módulo e injeta a mesma instância no `WalletService` por factory explícita. Não há provider global, conexão adicional por funcionalidade, configuração mutável compartilhada ou Repository intermediário. Providers de um módulo pai não ficam automaticamente visíveis nos filhos.
+
+Controller recebe HTTP e delega; DTO valida estrutura; serviço coordena domínio e persistência. `Money`, `Wallet` e `WalletLedgerEntry` mantêm invariantes fora do NestJS, e `EntitySchema` continua separado do domínio. Para quem vem de Laravel: controller e service têm papéis semelhantes, mas módulo Nest declara a composição e a visibilidade de dependências; `WalletService` pode acessar ORM diretamente, sem transformar objetos de domínio em models Eloquent. Esse layout é convenção adotada, não obrigação de diretórios do framework.
+
+Chamador continua dono do ORM: execução inicializa em `main.ts`, testes fornecem seus próprios bancos, e `app.close()` não fecha o pool emprestado. Startup com falha ou SIGINT/SIGTERM fecha HTTP antes do pool; ambos os sinais compartilham o mesmo encerramento para não fechar duas vezes. Falhas de criação Nest são propagadas ao chamador, sem saída forçada antes da limpeza. Migrations continuam explícitas.
+
+Nest Boost 0.4.0 exige export de classe, não aceita objeto `DynamicModule`. `PreviewAppModule` compõe a mesma cadeia sem ORM fornecido; a factory padrão fica em persistência, sem executar `databaseConfig` nem inicializar PostgreSQL durante o preview nativo do Nest. `nest-boost.json` aponta para essa classe; `evaluate` permanece desativado. Essa entrada é somente para inspeção: execução e testes usam `createApplication(orm)`. Inspeção de DI não substitui HTTP real com PostgreSQL.
+
+Decisão e alternativas: [ADR-0006](docs/adr/0006-organizacao-modular-nest.md). Contratos financeiros e seam de teste permanecem os mesmos; reorganização não adiciona testes de wiring.
 
 ## Abertura de wallet
 
@@ -69,7 +84,7 @@ Erros conhecidos retornam `{ "code": "..." }`. DTO rejeita campos extras, estrut
 
 ## Decisões
 
-[Índice com rastreabilidade para requisitos](DECISIONS.md). D-001–D-005 foram migradas para ADR-0001–ADR-0005; status e limites preservados. Os ADRs são fonte das justificativas, alternativas e consequências.
+[Índice com rastreabilidade para requisitos](DECISIONS.md). D-001–D-005 foram migradas para ADR-0001–ADR-0005; status e limites preservados. Organização modular adotada no [ADR-0006](docs/adr/0006-organizacao-modular-nest.md). Os ADRs são fonte das justificativas, alternativas e consequências.
 
 ## Ainda não entregue
 
@@ -93,3 +108,4 @@ Setup, migrations e riscos de reversão: [README](README.md). Resultados executa
 - [Bun Docker](https://bun.sh/guides/ecosystem/docker): imagem oficial, instalação com lockfile e execução do código-fonte; projeto fixa versão em vez da tag genérica do exemplo.
 - [MikroORM 6.6 Unit of Work](https://mikro-orm.io/docs/6.6/unit-of-work): persistência e flush não substituem fronteira transacional.
 - [NestJS validation](https://docs.nestjs.com/techniques/validation): consulta via Context7 para `ValidationPipe`, whitelist e `exceptionFactory`; compatibilidade comprovada no NestJS 11.1.16 por HTTP real. Nest Boost MCP inspecionou rotas e DI existentes e confirmou nova rota em processo novo; servidor persistente anterior manteve snapshot antigo.
+- [NestJS modules](https://docs.nestjs.com/modules) e [dynamic modules](https://docs.nestjs.com/fundamentals/dynamic-modules): imports/exports explícitos e metadata dinâmica que estende, não substitui, metadata estática; consulta via Context7 orientou a composição, sem duplicar imports estáticos/dinâmicos da funcionalidade.
