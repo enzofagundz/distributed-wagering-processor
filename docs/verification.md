@@ -42,3 +42,19 @@ Imagem reconstruída com `podman compose build app`: Bun 1.3.14, dependências d
 Processo próprio do host encerrado e container da aplicação parado com `podman compose stop app`; listeners 3121 e 3122 deixaram de responder. Bancos e demais processos preexistentes preservados; dados append-only dos smokes não foram excluídos. Harness temporário existiu somente em memória. Evidências não ampliam garantias para apostas, SQS ou múltiplas instâncias financeiras.
 
 Dois agentes revisaram o diff contra o baseline de forma independente: Standards encontrou zero violações e zero smells materiais; Spec teve zero achados após conferir as 20 histórias e decisões. As revisões foram estáticas, sem repetição de builds ou testes.
+
+## Reconciliação — 2026-10-22
+
+Ticket 04, baseline `4d45f6c939d9bbd0f44119724651cbe922f99ae8`. Bun 1.3.14 e PostgreSQL 17.6 nos containers Podman preexistentes; Docker CLI indisponível, `podman compose ps` confirmou bancos nas portas 55432/55433. Nenhuma dependência ou migration nova.
+
+TDD HTTP/PostgreSQL acordado: primeiro teste falhou com 404 (rota ausente); passou após implementação. Teste divergente falhou com 400 para diferença negativa; comparação exata da diferença SQL eliminou uso indevido do parser monetário de entrada. Execução final focal: `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/reconciliation-http.test.ts`: 3 testes, 28 assertions, zero falhas. Typecheck aprovado antes e depois dessas slices.
+
+`bun run typecheck && TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test`: 80 testes em oito arquivos, 352 assertions, zero falhas. Integração cria/remove banco exclusivo; concorrência usa transação SQL independente com saldo alterado e ledger ainda não inserido, lê estado anterior sem bloqueio e estado novo após commit, para CREDIT e DEBIT. Não comprova movimentações de apostas ou três instâncias.
+
+Smoke separado do teste: `DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55432/wagering PORT=3134 bun run start`. Harness temporário em memória criou wallet com `9007199254740993.01 BRL` (201), reconciliou (200, saldo exato, diferença zero, consistent true, um lançamento) e leu /metrics (200, contador zero). Wallet `cc7fa779-ee06-474f-ac71-6ee01b5381f7`; auditoria preservada no banco local.
+
+Nest Boost: module_graph inspecionou composição existente; servidor MCP persistente manteve três rotas antigas. Processo MCP novo iniciado com `bun run nest-boost mcp` confirmou cinco rotas, incluindo POST reconciliação e GET /metrics; encerrado com SIGTERM após resposta. evaluate não usado. Inspeção não substituiu smoke HTTP. Sem verificação visual do Postman ou rebuild da imagem nesta entrega.
+
+Processo HTTP próprio da porta 3134 encerrado após smoke; bancos e auditoria preservados.
+
+Revisão independente do diff contra baseline: Standards encontrou zero violações e zero smells materiais; Spec encontrou zero achados acionáveis. Agentes fizeram revisão estática, sem reexecutar checks. Commit em main autorizado explicitamente pelo usuário.

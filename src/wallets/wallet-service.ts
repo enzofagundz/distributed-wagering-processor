@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { UniqueConstraintViolationException } from '@mikro-orm/core';
 import { DomainError, Money, type MoneyProps } from '../domain/money';
@@ -12,6 +13,37 @@ import { uuidPattern } from '../domain/wallet';
 import type { WalletLedgerEntryRecord } from '../persistence/wallet-ledger-entry-record';
 
 export class WalletService {
+  private readonly logger = new Logger(WalletService.name);
+  private reconciliationDivergences = 0;
+
+  metrics() {
+    return `# TYPE wallet_reconciliation_divergences_total counter\nwallet_reconciliation_divergences_total ${this.reconciliationDivergences}\n`;
+  }
+
+  async reconcile(walletId: string) {
+    const [row] = await this.orm.em.fork().execute<{
+      currency: string; stored: string; calculated: string; difference: string; entries: string;
+    }[]>(`
+      select w.currency, w.balance::text as stored, totals.balance::text as calculated,
+        (w.balance - totals.balance)::text as difference, totals.entries
+      from wallets w cross join lateral (
+        select coalesce(sum(case when direction = 'CREDIT' then amount else -amount end), 0.00) as balance,
+          count(*)::text as entries
+        from wallet_ledger_entries where wallet_id = w.id
+      ) totals where w.id = ?`, [walletId]);
+    if (!row) throw new DomainError('WALLET_NOT_FOUND');
+    const money = (amount: string) => ({ amount, currency: row.currency });
+    const consistent = row.difference === '0.00';
+    if (!consistent) {
+      this.reconciliationDivergences++;
+      this.logger.warn(JSON.stringify({ event: 'WalletReconciliationDivergence', walletId }));
+    }
+    return {
+      walletId, storedBalance: money(row.stored), calculatedBalance: money(row.calculated),
+      difference: money(row.difference), consistent, checkedEntries: Number(row.entries),
+    };
+  }
+
   constructor(private readonly orm: MikroORM) {}
 
   async open(playerId: string, initialBalance: MoneyProps): Promise<Wallet> {

@@ -2,9 +2,9 @@
 
 Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECHNICAL_CHALLENGE.md), com Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL.
 
-A API permite abrir wallet com saldo zero ou positivo, consultar saldo e paginar o ledger. Abertura positiva persiste wallet, OPENING, CREDIT e dois eventos pendentes em uma transação SQL.
+A API permite abrir wallet com saldo zero ou positivo, consultar saldo, paginar ledger e reconciliar saldo sem reparar dados. Abertura positiva persiste wallet, OPENING, CREDIT e dois eventos pendentes em uma transação SQL.
 
-Apostas, reversões, idempotência de transações, reconciliação HTTP, publisher, SQS/inbox, autenticação, health e métricas estão pendentes. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+Apostas, reversões, idempotência de transações, publisher, SQS/inbox, autenticação e health estão pendentes. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
@@ -53,9 +53,13 @@ curl -i http://127.0.0.1:3000/wallets \
   -d '{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"1000.00","currency":"BRL"}}'
 curl -i http://127.0.0.1:3000/wallets/ID_RETORNADO
 curl -i 'http://127.0.0.1:3000/wallets/ID_RETORNADO/ledger?limit=50'
+curl -i -X POST http://127.0.0.1:3000/wallets/ID_RETORNADO/reconciliation
+curl -i http://127.0.0.1:3000/metrics
 ```
 
 Dinheiro entra e sai como string decimal com duas casas. Abertura retorna 201; consultas, 200; reenvio de abertura para mesmo player/moeda retorna 409, não replay. Saldo zero não gera lançamento. Contratos, exemplos de resposta, erros e paginação: [guia Postman](docs/postman/README.md).
+
+Reconciliação retorna 200 com `walletId`, `storedBalance`, `calculatedBalance`, `difference` (armazenado menos calculado, inclusive negativo), `consistent` e `checkedEntries`. Valores monetários seguem `{amount, currency}`. Wallet ausente retorna 404; UUID inválido, 400. A soma inclui OPENING e débitos/créditos no mesmo snapshot SQL. Não altera saldo, versão ou ledger. `GET /metrics` expõe contador Prometheus `wallet_reconciliation_divergences_total`, sem labels de wallet; soma por instância, reinicia com processo. Cada chamada divergente incrementa contador, inclusive reenvios. Detalhes: [arquitetura](ARCHITECTURE.md#reconciliação).
 
 ## Verificação
 
@@ -71,6 +75,8 @@ bun test
 A integração exige PostgreSQL real e banco dedicado terminado em `_test`; os testes falham se esses requisitos não forem atendidos. Os testes aplicam migrations automaticamente. Fixtures de constraints usam rollback; testes HTTP positivos preservam auditoria append-only com identidades novas por execução.
 
 O teste `tests/integration/ledger-http.test.ts` cria e remove um banco exclusivo `ledger_<uuid>_test`; o usuário precisa de `CREATEDB`. A fixture remove a unicidade de OPENING por wallet somente nesse banco para montar um histórico sintético. Ela mantém as constraints do banco informado e não comprova movimentações de apostas.
+
+`tests/integration/reconciliation-http.test.ts` também exige CREATEDB e remove banco exclusivo após execução. Histórico de crédito/débito é sintético: unicidade de OPENING é removida somente nesse banco; não comprova processamento de apostas.
 
 ### Reversão e parada
 

@@ -1,11 +1,11 @@
 import { Module, type DynamicModule } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { PersistenceModule } from '../persistence/persistence.module';
-import { WalletController } from './wallet.controller';
+import { WalletController, WalletMetricsController } from './wallet.controller';
 import { WalletService } from './wallet-service';
 
 @Module({
-  controllers: [WalletController],
+  controllers: [WalletController, WalletMetricsController],
   providers: [
     { provide: WalletService, useFactory: (orm: MikroORM) => new WalletService(orm), inject: [MikroORM] },
   ],

@@ -9,9 +9,9 @@ Este documento descreve a implementação atual. Os requisitos estão no [enunci
 | Bootstrap | `src/main.ts` | Inicializa ORM/HTTP; fecha aplicação e pool em sinais ou falha de startup |
 | Criação da aplicação | `src/create-application.ts` | Recebe ORM do chamador e cria aplicação Nest |
 | Composição | `src/app.module.ts`, `src/wallets/wallets.module.ts` | Módulo raiz compõe funcionalidade; WalletsModule registra controller e serviço |
-| Transporte | `src/wallets/wallet.controller.ts`, `src/wallets/*dto.ts` | Três rotas e validação estrutural |
+| Transporte | `src/wallets/wallet.controller.ts`, `src/wallets/*dto.ts` | Wallets, reconciliação e métrica Prometheus; validação estrutural |
 | Erros compartilhados | `src/shared/domain-error.filter.ts` | Tradução global de erros conhecidos, registrada uma vez pelo módulo raiz |
-| Caso de uso e leitura | `src/wallets/wallet-service.ts` | Abertura atômica, reidratação de wallet e consulta keyset do ledger |
+| Caso de uso e leitura | `src/wallets/wallet-service.ts` | Abertura atômica, reidratação, ledger keyset e reconciliação em snapshot único |
 | Domínio | `src/domain/` | Money, Wallet, WalletLedgerEntry e eventos de abertura; sem NestJS/ORM |
 | Persistência | `src/persistence/persistence.module.ts`, `*record.ts`, `config.ts` | Provider MikroORM exportado explicitamente, EntitySchema e configuração |
 | Schema | `src/persistence/migrations/` | Constraints, FKs, trigger append-only e índices versionados |
@@ -71,6 +71,19 @@ Wallet é lida por ID e reidratada. Ledger verifica existência da wallet e lê 
 
 Keyset evita deslocamento de linhas existentes, sem manter um snapshot entre consultas. Linhas novas posteriores à âncora podem aparecer; inserções retroativas anteriores exigem nova travessia. O cursor é opaco, mas não é secreto nem funciona como credencial ou mecanismo de autorização. Contrato detalhado e exemplos: [Postman](docs/postman/README.md).
 
+## Reconciliação
+
+Decisão adotada no ticket 04 (§9): um único SELECT parametrizado lê wallet e soma assinada de todo ledger via agregação lateral. CREDIT soma, DEBIT subtrai; histórico vazio vale `0.00`. `numeric` preserva escala e precisão; soma não é limitada novamente a numeric(30,2). Strings monetárias nunca passam por `number`. `difference = storedBalance - calculatedBalance`, podendo ser negativa; `checkedEntries` conta lançamentos, não transações.
+
+O snapshot de comando em READ COMMITTED vê saldo e ledger no mesmo instante, sem bloquear escritor. Uma movimentação atômica concorrente aparece inteira ou não aparece. Alternativa: duas leituras em REPEATABLE READ; descartada por adicionar transação sem benefício para uma única consulta. Duas leituras em READ COMMITTED seriam incorretas. Resultado é diagnóstico daquele instante, não reserva nem garantia sobre escrita posterior.
+
+Nenhuma correção automática, mudança de versão ou escrita financeira. Cada divergência emite mensagem JSON `WalletReconciliationDivergence` via Logger Nest, apenas com walletId, sem saldos, player ou payload; envelope de saída segue logger configurado. Incrementa contador Prometheus sem labels, exposto em GET /metrics no mesmo módulo. Contador por processo, cumulativo por chamada, não persistente e não usado como garantia financeira; coletor deve agregar instâncias e tratar resets. Observabilidade global do §12 permanece pendente.
+
+Teste HTTP com PostgreSQL real cobre zero, abertura além de Number.MAX_SAFE_INTEGER, duas direções de diferença, ausência de reparo, log, contador e transação concorrente parada entre alteração de saldo e inclusão de ledger. Fixture crédito/débito é sintética e isolada, não implementação de BET. Evidências: [verificação](docs/verification.md#reconciliação--2026-10-22).
+
+Referência consultada via Context7: [PostgreSQL 17 — READ COMMITTED](https://www.postgresql.org/docs/17/transaction-iso.html#XACT-READ-COMMITTED), snapshot por comando.
+
+
 ## Falhas HTTP
 
 | Status | Códigos / comportamento |
@@ -88,7 +101,7 @@ Erros conhecidos retornam `{ "code": "..." }`. DTO rejeita campos extras, estrut
 
 ## Ainda não entregue
 
-Apostas e máquina de estados, reversões, referências fora de ordem, replay persistente e hash canônico, inbox/SQS, publishers concorrentes, retry/DLQ, reconciliação, health, métricas e logs estruturados permanecem em [PROGRESS](PROGRESS.md). Não há promessa de transições ou falhas desses fluxos no comportamento atual.
+Apostas e máquina de estados, reversões, referências fora de ordem, replay persistente e hash canônico, inbox/SQS, publishers concorrentes, retry/DLQ, health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). Não há promessa de transições ou falhas desses fluxos no comportamento atual.
 
 API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown atual fecha HTTP e ORM, sem consumer, ack ou tratamento de visibilidade.
 
