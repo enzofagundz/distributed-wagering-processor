@@ -13,9 +13,19 @@ test('opens zero balance at version one and exposes immutable state', () => {
   expect(wallet.createdAt.getTime()).toBe(timestamp);
 });
 
-test('rejects positive opening before ledger support exists', () => {
-  expect(() => Wallet.open({ id, playerId, initialBalance: Money.from({ amount: '1.00', currency: 'BRL' }) }))
-    .toThrow(new DomainError('INITIAL_BALANCE_MUST_BE_ZERO'));
+for (const amount of ['0.01', '12.34', '9007199254740993.10']) {
+  test(`opens exact positive balance ${amount} at version one`, () => {
+    const initialBalance = Money.from({ amount, currency: 'BRL' });
+    const wallet = Wallet.open({ id, playerId, initialBalance });
+    expect(wallet.toJSON()).toEqual({ id, playerId, balance: { amount, currency: 'BRL' }, version: 1 });
+    expect(initialBalance.toString()).toBe(amount);
+    expect(wallet.createdAt.getTime()).toBe(wallet.updatedAt.getTime());
+  });
+}
+
+test('rejects internally negative opening balance', () => {
+  expect(() => Wallet.open({ id, playerId, initialBalance: Money.from({ amount: '0.01', currency: 'BRL' }).negate() }))
+    .toThrow(new DomainError('INITIAL_BALANCE_NEGATIVE'));
 });
 
 test('rehydrates persisted state without reopening wallet or resetting version', () => {

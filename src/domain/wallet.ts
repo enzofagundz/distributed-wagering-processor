@@ -21,7 +21,7 @@ export class Wallet {
 
   static open(props: { id: string; playerId: string; initialBalance: Money }): Wallet {
     if (!uuidPattern.test(props.id) || !uuidPattern.test(props.playerId)) throw new DomainError('INVALID_IDENTITY');
-    if (!props.initialBalance.isZero()) throw new DomainError('INITIAL_BALANCE_MUST_BE_ZERO');
+    if (props.initialBalance.isNegative()) throw new DomainError('INITIAL_BALANCE_NEGATIVE');
     const now = new Date();
     return new Wallet({ id: props.id, playerId: props.playerId, balance: props.initialBalance, version: 1, createdAt: now, updatedAt: now });
   }
