@@ -1,4 +1,4 @@
-import { ArgumentsHost, Catch, HttpException, type ExceptionFilter } from '@nestjs/common';
+import { ArgumentsHost, BadRequestException, Catch, HttpException, type ExceptionFilter } from '@nestjs/common';
 import { BaseExceptionFilter } from '@nestjs/core';
 import { DomainError } from '../domain/money';
 
@@ -11,11 +11,27 @@ const statusByCode: Readonly<Record<string, number>> = {
   INITIAL_BALANCE_NEGATIVE: 400,
   WALLET_NOT_FOUND: 404,
   WALLET_ALREADY_EXISTS: 409,
+  INVALID_TRANSACTION_PAYLOAD: 400,
+  INVALID_TRANSACTION_KIND: 400,
+  INVALID_IDEMPOTENCY_KEY: 400,
+  INVALID_PROVIDER: 400,
+  PLAYER_WALLET_MISMATCH: 400,
+  CURRENCY_MISMATCH: 400,
+  TRANSACTION_ALREADY_EXISTS: 409,
+  INSUFFICIENT_FUNDS: 422,
+  TEMPORARY_UNAVAILABLE: 503,
 };
 
-@Catch(DomainError)
-export class DomainErrorFilter extends BaseExceptionFilter implements ExceptionFilter<DomainError> {
-  override catch(error: DomainError, host: ArgumentsHost) {
+@Catch(DomainError, BadRequestException)
+export class DomainErrorFilter extends BaseExceptionFilter implements ExceptionFilter<DomainError | BadRequestException> {
+  override catch(error: DomainError | BadRequestException, host: ArgumentsHost) {
+    if (error instanceof BadRequestException) {
+      const request = host.switchToHttp().getRequest<{ method: string; url: string }>();
+      const path = request.url.split('?')[0];
+      const invalidBet = request.method === 'POST' && (path === '/wagering/transactions' || path === '/wagering/transactions/');
+      super.catch(invalidBet ? new HttpException({ code: 'INVALID_TRANSACTION_PAYLOAD' }, 400) : error, host);
+      return;
+    }
     const status = statusByCode[error.code];
     super.catch(status === undefined ? error : new HttpException({ code: error.code }, status), host);
   }

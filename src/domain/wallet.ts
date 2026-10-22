@@ -36,6 +36,13 @@ export class Wallet {
   get createdAt(): Date { return new Date(this.state.createdAt); }
   get updatedAt(): Date { return new Date(this.state.updatedAt); }
 
+  debit(money: Money, at: Date): Wallet {
+    if (!money.isPositive()) throw new DomainError('INVALID_AMOUNT');
+    if (money.currency !== this.currency) throw new DomainError('CURRENCY_MISMATCH');
+    if (this.balance.isLessThan(money)) throw new DomainError('INSUFFICIENT_FUNDS');
+    return new Wallet({ ...this.state, balance: this.balance.subtract(money), version: this.version + 1, updatedAt: at });
+  }
+
   toJSON() {
     return { id: this.id, playerId: this.playerId, balance: this.balance.toJSON(), version: this.version };
   }

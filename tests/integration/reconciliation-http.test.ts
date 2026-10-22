@@ -75,7 +75,7 @@ test('divergence reports both signs without repairing audit or wallet, counts an
 
 test('one snapshot excludes partial concurrent writes and includes committed credits and debits', async () => {
   const wallet = await open('0.00');
-  await orm.em.execute('alter table wager_transactions drop constraint wager_transactions_opening_wallet_unique');
+  await orm.em.execute('drop index wager_transactions_opening_wallet_unique');
   for (const [direction, before, after, entries] of [
     ['CREDIT', '0.00', '0.03', 1], ['DEBIT', '0.03', '0.00', 2],
   ] as const) {

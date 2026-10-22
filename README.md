@@ -2,9 +2,9 @@
 
 Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECHNICAL_CHALLENGE.md), com Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL.
 
-A API permite abrir wallet com saldo zero ou positivo, consultar saldo, paginar ledger e reconciliar saldo sem reparar dados. Abertura positiva persiste wallet, OPENING, CREDIT e dois eventos pendentes em uma transação SQL.
+A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET por HTTP. Abertura positiva e BET confirmada persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL.
 
-Apostas, reversões, idempotência de transações, publisher, SQS/inbox, autenticação e health estão pendentes. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+WIN, LOSS, reversões, replay com hash canônico, publisher, SQS/inbox, autenticação e health estão pendentes. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
@@ -13,7 +13,7 @@ Apostas, reversões, idempotência de transações, publisher, SQS/inbox, autent
 3. Leia [arquitetura e garantias atuais](ARCHITECTURE.md), [glossário](GLOSSARY.md) e decisões vinculadas.
 4. Consulte [evidências executadas](docs/verification.md) e [pendências por requisito](PROGRESS.md). Resultados históricos não substituem execução local.
 
-A funcionalidade fica em `src/wallets/`: controller, DTOs, serviço e módulo. `src/app.module.ts` compõe módulos e registra filtro global compartilhado; `src/create-application.ts` recebe o ORM inicializado pelo chamador. Domínio e mapeamentos permanecem separados. Justificativa e injeção de dependências: [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) e [composição na arquitetura](ARCHITECTURE.md#composição-e-injeção).
+Wallets ficam em `src/wallets/`; submissão de BET, em `src/wagering/`. Cada funcionalidade tem controller, DTO, serviço e módulo. `src/app.module.ts` compõe módulos e registra filtro global compartilhado; `src/create-application.ts` recebe o ORM inicializado pelo chamador. Domínio e mapeamentos permanecem separados. Justificativa e injeção de dependências: [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) e [composição na arquitetura](ARCHITECTURE.md#composição-e-injeção).
 
 ## Executar
 
@@ -61,6 +61,21 @@ Dinheiro entra e sai como string decimal com duas casas. Abertura retorna 201; c
 
 Reconciliação retorna 200 com `walletId`, `storedBalance`, `calculatedBalance`, `difference` (armazenado menos calculado, inclusive negativo), `consistent` e `checkedEntries`. Valores monetários seguem `{amount, currency}`. Wallet ausente retorna 404; UUID inválido, 400. A soma inclui OPENING e débitos/créditos no mesmo snapshot SQL. Não altera saldo, versão ou ledger. `GET /metrics` expõe contador Prometheus `wallet_reconciliation_divergences_total`, sem labels de wallet; soma por instância, reinicia com processo. Cada chamada divergente incrementa contador, inclusive reenvios. Detalhes: [arquitetura](ARCHITECTURE.md#reconciliação).
 
+### Submeter BET
+
+Use player e wallet retornados pela abertura. O exemplo aposta `80.00 BRL`; numa wallet de `100.00 BRL`, retorna 201 com `PROCESSED`, saldo `20.00 BRL` e `idempotentReplay: false`.
+
+```sh
+curl -i http://127.0.0.1:3000/wagering/transactions \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: provider-a:bet-001' \
+  -d '{"providerId":"provider-a","externalTransactionId":"bet-001","playerId":"PLAYER_RETORNADO","walletId":"ID_RETORNADO","roundId":"round-001","gameId":"fortune-chimp","kind":"BET","money":{"amount":"80.00","currency":"BRL"}}'
+```
+
+Envie outra aposta de `80.00` com nova chave e novo `externalTransactionId`: retorna 422 com `REJECTED`, `failureCode: "INSUFFICIENT_FUNDS"` e saldo `20.00`. Rejeição fica auditada, sem ledger nem incremento de versão. Header obrigatório; somente BET externa é aceita. Identificadores textuais têm até 200 caracteres; valor deve ser positivo e caber em `numeric(30,2)`.
+
+Reutilizar chave ou par provider/external ID retorna 409 `TRANSACTION_ALREADY_EXISTS`, sem novo débito. Ainda não há replay nem comparação de hash: ticket 06. Política de falhas, lock e transação: [processamento de BET](ARCHITECTURE.md#processamento-de-bet).
+
 ## Verificação
 
 ```sh
@@ -73,6 +88,8 @@ bun test
 ```
 
 A integração exige PostgreSQL real e banco dedicado terminado em `_test`; os testes falham se esses requisitos não forem atendidos. Os testes aplicam migrations automaticamente. Fixtures de constraints usam rollback; testes HTTP positivos preservam auditoria append-only com identidades novas por execução.
+
+Para verificar somente BET: `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/bet-http.test.ts`. O arquivo cobre contrato, sucesso, rejeição, rollback induzido, unicidades e duas APIs independentes disputando saldo.
 
 O teste `tests/integration/ledger-http.test.ts` cria e remove um banco exclusivo `ledger_<uuid>_test`; o usuário precisa de `CREATEDB`. A fixture remove a unicidade de OPENING por wallet somente nesse banco para montar um histórico sintético. Ela mantém as constraints do banco informado e não comprova movimentações de apostas.
 
@@ -87,6 +104,6 @@ DATABASE_URL="$TEST_DATABASE_URL" bun run migration:down
 DATABASE_URL="$TEST_DATABASE_URL" bun run migration:up
 ```
 
-Migration `20261022000300` troca apenas índice. Reverter também `20261022000200` remove ledger, transações e outbox: exige backup antes e serviço parado. Reaplicar schema não recupera auditoria removida.
+Migration `20261022000400` preserva OPENING e adiciona BET; seu `down` recusa execução se houver BET persistida, sem apagar histórico. Migration `20261022000300` troca apenas índice. Reverter também `20261022000200` remove ledger, transações e outbox: exige backup antes e serviço parado. Reaplicar schema não recupera auditoria removida.
 
 `postgres-test` usa tmpfs: recriar container descarta dados. `postgres` usa volume persistente. `docker compose down` para serviços sem apagar volume.

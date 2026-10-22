@@ -58,3 +58,27 @@ Nest Boost: module_graph inspecionou composição existente; servidor MCP persis
 Processo HTTP próprio da porta 3134 encerrado após smoke; bancos e auditoria preservados.
 
 Revisão independente do diff contra baseline: Standards encontrou zero violações e zero smells materiais; Spec encontrou zero achados acionáveis. Agentes fizeram revisão estática, sem reexecutar checks. Commit em main autorizado explicitamente pelo usuário.
+
+## BET por HTTP — 2026-10-22
+
+Ticket 05, baseline `56881ac43d306f1998b84398543d455ccf3362d7`. Bun 1.3.14, NestJS 11.1.16, MikroORM 6.6.8 e PostgreSQL 17.6 em container Podman preexistente na porta 55433. Docker CLI ausente; `podman ps` confirmou os bancos. Nenhuma dependência nova.
+
+Seam acordado: HTTP com PostgreSQL real; SQL verifica auditoria, atomicidade e unicidades exigidas pelo ticket. Primeiro red: POST ausente retornou 404. Green inicial: um teste de débito exato aprovado. Segundo red: identificador com NUL chegou ao driver e produziu 503 em vez de 400; guarda compartilhada de identidade passou a rejeitar controles antes de escrever. Typecheck encontrou opcionais incompatíveis com `exactOptionalPropertyTypes`; tipos corrigidos, sem afrouxar configuração.
+
+`TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/bet-http.test.ts`: sete testes, 126 assertions, zero falhas. Cobertura: valor além de Number.MAX_SAFE_INTEGER, saldo exato/insuficiente, versão, eventos com MoneyProps, contrato inválido e JSON malformado, player/moeda divergentes, unicidades persistentes e rollback integral por falha de outbox. Duas APIs com instâncias de ORM/pools independentes disputaram `100.00` com duas BET de `80.00`: uma 201, outra 422, saldo `20.00`, um DEBIT e reconciliação consistente. Não foram três processos.
+
+Falha induzida no evento WalletBalanceChanged retornou 500 genérico e desfez débito, transação, ledger e novos eventos; reenvio após remover trigger confirmou uma vez. Falha ao persistir evento de rejeição também desfez a transação; código SQLSTATE 55P03 induzido retornou 503, e unicidade inesperada 23505 retornou 500, não conflito de aposta. Isso verifica tradução e rollback, não queda real de rede ou timeout de lock.
+
+`bun run typecheck` aprovado. Execução focal com BET, ledger e reconciliação antes da inclusão do caso de JSON malformado: 13 testes, 220 assertions, zero falhas. Fixtures sintéticas existentes passaram a remover índice parcial de OPENING somente nos seus bancos exclusivos.
+
+Smoke separado: `DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test PORT=3135 bun run start`. Harness em memória abriu wallet de `100.00` (201), processou BET `80.00` (201/PROCESSED), rejeitou outra `80.00` (422/INSUFFICIENT_FUNDS), bloqueou reenvio (409/TRANSACTION_ALREADY_EXISTS) e confirmou saldo `20.00`, versão 2, dois lançamentos e reconciliação consistente. Wallet `8b85a65f-2687-4e1a-94f7-00e2ba70c232`; auditoria preservada. Processo próprio encerrado; containers preexistentes mantidos.
+
+Migration 004 exercitada em bancos temporários criados e removidos por harness em memória: up/down/up preservou OPENING legado. Down com BET foi recusado com SQLSTATE 55000 antes de remover schema; saldo observado da BET permaneceu acessível. Primeiro harness não tratava o wrapper MigrationError e encerrou com erro ao receber a recusa esperada; segundo cenário inspecionou `cause.code` e comprovou preservação, com saída 0. Nenhuma mudança de produção foi necessária.
+
+Nest Boost: servidor MCP persistente ainda exibia três rotas antigas. Processo novo via `bun run nest-boost mcp`, com DATABASE_URL deliberadamente inalcançável, confirmou seis rotas, incluindo POST `/wagering/transactions`, e WageringModule com WageringController/WageringService. `application_info`, `list_routes` e `module_graph` executados; `evaluate` não usado. Cliente SDK direto não carregou por dependência ajv ausente; inspeção concluída pelo protocolo stdio, sem instalar pacote. Processo MCP próprio encerrado.
+
+Documentação manteve registro técnico em PT-BR, sem linguagem promocional ou fechos genéricos. Mudanças editoriais substituem afirmações desatualizadas de "apostas pendentes" pelo fluxo entregue e preservam limites de replay, mensageria e autenticação; detalhes ficam na arquitetura e resultados neste registro.
+
+Verificação final: `bun run typecheck && TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test`: typecheck aprovado, 87 testes em nove arquivos, 478 assertions e zero falhas. Suíte completa executada uma vez ao final da implementação.
+
+Revisão code-review em dois agentes independentes contra baseline: Standards encontrou zero violações e zero smells materiais; Spec encontrou zero achados acionáveis. Revisões estáticas, sem repetir checks. Semântica de replay/hash e cenários de SQS/três processos continuam fora deste ticket.

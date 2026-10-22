@@ -1,6 +1,8 @@
 import type { Wallet } from './wallet';
 import type { WalletLedgerEntry } from './wallet-ledger-entry';
 import type { MoneyProps } from './money';
+import { DomainError } from './money';
+import type { WagerTransaction } from './wager-transaction';
 
 export abstract class IntegrationEvent<T> {
   abstract readonly eventType: string;
@@ -20,14 +22,32 @@ export abstract class IntegrationEvent<T> {
 }
 
 export class WagerTransactionProcessed extends IntegrationEvent<{
-  transactionId: string; walletId: string; kind: 'OPENING'; status: 'PROCESSED';
+  transactionId: string; walletId: string; kind: 'OPENING' | 'BET'; status: 'PROCESSED';
   money: MoneyProps; balance: MoneyProps;
 }> {
   readonly eventType = 'WagerTransactionProcessed';
-  static from(wallet: Wallet, entry: WalletLedgerEntry) {
+  static from(wallet: Wallet, entry: WalletLedgerEntry, kind: 'OPENING' | 'BET' = 'OPENING') {
     return new WagerTransactionProcessed(wallet.id, entry.transactionId, entry.createdAt, {
-      transactionId: entry.transactionId, walletId: wallet.id, kind: 'OPENING', status: 'PROCESSED',
+      transactionId: entry.transactionId, walletId: wallet.id, kind, status: 'PROCESSED',
       money: entry.money.toJSON(), balance: wallet.balance.toJSON(),
+    });
+  }
+}
+
+export class WagerTransactionRejected extends IntegrationEvent<{
+  transactionId: string; walletId: string; kind: 'BET'; status: 'REJECTED';
+  failureCode: 'INSUFFICIENT_FUNDS'; money: MoneyProps; balance: MoneyProps;
+}> {
+  readonly eventType = 'WagerTransactionRejected';
+  static from(wallet: Wallet, transaction: WagerTransaction) {
+    const occurredAt = transaction.processedAt;
+    const failureCode = transaction.failureCode;
+    if (transaction.status !== 'REJECTED' || !occurredAt || failureCode !== 'INSUFFICIENT_FUNDS') {
+      throw new DomainError('INVALID_TRANSACTION_STATE');
+    }
+    return new WagerTransactionRejected(wallet.id, transaction.id, occurredAt, {
+      transactionId: transaction.id, walletId: wallet.id, kind: 'BET', status: 'REJECTED',
+      failureCode, money: transaction.money.toJSON(), balance: wallet.balance.toJSON(),
     });
   }
 }

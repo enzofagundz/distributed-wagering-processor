@@ -7,6 +7,7 @@ import { outboxMessageSchema } from './outbox-message-record';
 import { Migration20261022000100 } from './migrations/Migration20261022000100';
 import { Migration20261022000200 } from './migrations/Migration20261022000200';
 import { Migration20261022000300 } from './migrations/Migration20261022000300';
+import { Migration20261022000400 } from './migrations/Migration20261022000400';
 
 export function databaseConfig(clientUrl = process.env.DATABASE_URL) {
   if (!clientUrl) throw new Error('DATABASE_URL is required');
@@ -14,7 +15,7 @@ export function databaseConfig(clientUrl = process.env.DATABASE_URL) {
     clientUrl,
     entities: [walletSchema, wagerTransactionSchema, walletLedgerEntrySchema, outboxMessageSchema],
     extensions: [Migrator],
-    migrations: { migrationsList: [Migration20261022000100, Migration20261022000200, Migration20261022000300], snapshot: false },
+    migrations: { migrationsList: [Migration20261022000100, Migration20261022000200, Migration20261022000300, Migration20261022000400], snapshot: false },
     pool: { min: 0, max: 10 },
   });
 }

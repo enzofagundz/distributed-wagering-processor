@@ -20,15 +20,15 @@ Identidade UUID recebida como `playerId`, associada à wallet; não existe cadas
 
 ## Wallet
 
-Carteira identificada por UUID, com player, saldo, moeda, versão e datas encapsulados. Abertura e consulta estão disponíveis; operações de apostas não estão implementadas ([ADR-0001](docs/adr/0001-dinheiro-exato-e-dominio-isolado.md)).
+Carteira identificada por UUID, com player, saldo, moeda, versão e datas encapsulados. Abertura, consulta e débito de BET estão disponíveis. `debit` retorna nova instância imutável ([processamento de BET](ARCHITECTURE.md#processamento-de-bet)).
 
 ## Saldo
 
-Valor monetário materializado na wallet, não negativo. Na abertura positiva, corresponde ao `balanceAfter` do único crédito inicial; saldo zero não produz lançamento.
+Valor monetário materializado na wallet, não negativo. Abertura positiva gera crédito inicial; BET processada gera débito. Deve corresponder à soma assinada do ledger. Abertura zero não produz lançamento.
 
 ## Versão da wallet
 
-Inteiro positivo persistido como `version`, iniciado em 1 e exposto em respostas e no evento `WalletBalanceChanged`. O controle de concorrência de movimentações ainda não está implementado.
+Inteiro positivo persistido como `version`, iniciado em 1 e exposto em respostas e no evento `WalletBalanceChanged`. Incrementa quando BET muda saldo; rejeição não incrementa. Lock pessimista da wallet controla concorrência, não comparação otimista de versão.
 
 ## Abertura / OPENING
 
@@ -36,11 +36,11 @@ Abertura cria wallet com saldo inicial não negativo. Se positivo, cria também 
 
 ## Transação financeira
 
-Registro em `wager_transactions`, atualmente restrito a `OPENING`/`PROCESSED`. Não confundir com transação SQL: o nome da tabela e o evento `WagerTransactionProcessed` não significam que apostas, provedores, rodadas ou jogos estejam implementados.
+Registro em `wager_transactions`: OPENING/PROCESSED ou BET/PROCESSED e BET/REJECTED. BET identifica provider, operação externa, player, wallet, rodada e jogo; saldo observado e falha ficam persistidos. Não confundir com transação SQL.
 
 ## Transação SQL
 
-Fronteira atômica de `EntityManager.fork().transactional()`: confirma todas as escritas da abertura antes da resposta ou desfaz todas em caso de falha anterior ao commit. Não se confunde com um registro de transação financeira ([ADR-0002](docs/adr/0002-persistencia-e-concorrencia-da-abertura.md)).
+Fronteira atômica de `EntityManager.fork().transactional()`: confirma todas as escritas da abertura ou BET antes da resposta, ou desfaz todas em caso de falha anterior ao commit. Não se confunde com registro de transação financeira.
 
 ## Ledger / lançamento
 
@@ -48,19 +48,19 @@ Ledger é o histórico append-only em `wallet_ledger_entries`; cada `WalletLedge
 
 ## CREDIT / DEBIT
 
-Direções aceitas pelo lançamento: `CREDIT` soma o valor ao saldo anterior; `DEBIT` subtrai. O único fluxo financeiro implementado produz `CREDIT` de abertura. O modelo aceita `DEBIT`, mas o caso de uso de débito ainda não está implementado.
+Direções aceitas pelo lançamento: `CREDIT` soma o valor ao saldo anterior; `DEBIT` subtrai. Abertura positiva produz CREDIT; BET processada produz DEBIT. BET rejeitada não gera lançamento.
 
 ## Evento de integração
 
-Envelope versionado com `eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt` e `data`. Abertura positiva gera `WagerTransactionProcessed` e `WalletBalanceChanged`, serializados com `MoneyProps` e persistidos na outbox, não publicados.
+Envelope versionado com `eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt` e `data`. Abertura positiva e BET processada geram `WagerTransactionProcessed` e `WalletBalanceChanged`; rejeição gera `WagerTransactionRejected`. Payloads usam MoneyProps; eventos ficam na outbox, sem publicação.
 
 ## Correlação
 
-`correlationId` liga os dois eventos de abertura à mesma transação interna OPENING; `aggregateId` é o ID da wallet. Não é identidade de provedor ou chave de idempotência externa.
+`correlationId` liga eventos à transação financeira OPENING ou BET; `aggregateId` é o ID da wallet. Não é identidade de provedor ou chave de idempotência externa.
 
 ## Outbox
 
-Tabela `outbox_messages` que persiste eventos junto da abertura, com `published_at` nulo. Publisher, publicação, retries e inbox não estão implementados; outbox persistida não comprova entrega a consumidor ([ADR-0002](docs/adr/0002-persistencia-e-concorrencia-da-abertura.md)).
+Tabela `outbox_messages` que persiste eventos junto da abertura ou BET, com `published_at` nulo. Publisher, publicação, retries e inbox não estão implementados; outbox persistida não comprova entrega a consumidor.
 
 ## Unit of Work / flush
 
@@ -76,4 +76,4 @@ Cursor é UUID do último lançamento retornado, codificado em base64url canôni
 
 ## Duplicata de abertura
 
-Tentativa de criar outra wallet para o mesmo player/moeda, arbitrada pela constraint única e respondida com 409 `WALLET_ALREADY_EXISTS`. Não há replay idempotente da resposta de abertura nem idempotência de apostas entregue.
+Tentativa de criar outra wallet para o mesmo player/moeda, arbitrada pela constraint única e respondida com 409 `WALLET_ALREADY_EXISTS`. Não há replay da abertura. BET tem proteção persistente contra segundo efeito, mas ainda responde conflito em vez de replay.

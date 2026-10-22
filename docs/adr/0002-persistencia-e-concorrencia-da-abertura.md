@@ -2,7 +2,7 @@
 
 ## Status
 
-Aceita, parcialmente adotada. Migra D-002: persistência e concorrência da abertura entregues; locks de movimentação, idempotência de apostas, inbox e estratégia de publicação da outbox continuam pendentes. A proposta de lock pessimista por wallet não foi adotada como implementação.
+Aceita, parcialmente adotada. Migra D-002: persistência e concorrência da abertura entregues; ticket 05 adotou também [lock pessimista por wallet para BET](../../ARCHITECTURE.md#processamento-de-bet). Idempotência completa, inbox e publicação da outbox continuam pendentes. As seções abaixo registram o escopo original da abertura; comportamento atual fica na arquitetura.
 
 ## Contexto
 

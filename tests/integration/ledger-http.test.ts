@@ -82,7 +82,7 @@ test('invalid pagination is consistently rejected, including foreign and nonexis
 
 test('keyset traversal preserves existing entries across insertions, timestamp ties and PostgreSQL microseconds', async () => {
   const wallet = await open();
-  await orm.em.execute('alter table wager_transactions drop constraint wager_transactions_opening_wallet_unique');
+  await orm.em.execute('drop index wager_transactions_opening_wallet_unique');
   const entryId = (suffix: number) => `00000000-0000-4000-8000-${suffix.toString().padStart(12, '0')}`;
   async function seed(suffix: number, fraction: string, direction = 'CREDIT') {
     const id = entryId(suffix);
