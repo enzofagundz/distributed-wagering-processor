@@ -53,7 +53,7 @@ sequenceDiagram
     S-->>C: 201 com wallet
 ```
 
-Falha antes do commit desfaz todas as escritas. `persistAndFlush` envia SQL dentro da transação, não antecipa commit. Abertura zero persiste somente wallet; ambas começam em versão 1. OPENING é interna, sem IDs fictícios de provedor, rodada ou jogo, e nasce persistida como PROCESSED.
+Falha antes do commit desfaz todas as escritas. `persist(...).flush()` envia SQL dentro da transação, não antecipa commit. Abertura zero persiste somente wallet; ambas começam em versão 1. OPENING é interna, sem IDs fictícios de provedor, rodada ou jogo, e nasce persistida como PROCESSED.
 
 A constraint única `(player_id, currency)` resolve aberturas concorrentes no PostgreSQL; duplicatas retornam 409. O reenvio não reproduz o resultado original, e a idempotência de apostas segue pendente. Nenhum publisher consome a outbox neste estágio.
 

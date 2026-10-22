@@ -60,27 +60,27 @@ export class WalletService {
           balance: wallet.balance.toString(), version: wallet.version,
           createdAt: wallet.createdAt, updatedAt: wallet.updatedAt,
         });
-        await em.persistAndFlush(record);
+        await em.persist(record).flush();
         if (!entry) return;
         const transaction = em.create(wagerTransactionSchema, {
           id: entry.transactionId, walletId: wallet.id, playerId: wallet.playerId,
           currency: wallet.currency, amount: entry.money.toString(),
           kind: 'OPENING', status: 'PROCESSED', createdAt: entry.createdAt,
         });
-        await em.persistAndFlush(transaction);
+        await em.persist(transaction).flush();
         const ledgerEntry = em.create(walletLedgerEntrySchema, {
           id: entry.id, walletId: wallet.id, transactionId: entry.transactionId,
           direction: entry.direction, amount: entry.money.toString(), currency: entry.money.currency,
           balanceBefore: entry.balanceBefore.toString(), balanceAfter: entry.balanceAfter.toString(),
           createdAt: entry.createdAt,
         });
-        await em.persistAndFlush(ledgerEntry);
+        await em.persist(ledgerEntry).flush();
         const messages = [WagerTransactionProcessed.from(wallet, entry), WalletBalanceChanged.from(wallet, entry)]
           .map(event => em.create(outboxMessageSchema, {
             id: event.eventId, aggregateId: wallet.id, eventType: event.eventType,
             payload: event.toJSON(), occurredAt: event.occurredAt,
           }));
-        await em.persistAndFlush(messages);
+        await em.persist(messages).flush();
       });
     } catch (error) {
       if (error instanceof UniqueConstraintViolationException

@@ -82,3 +82,11 @@ Documentação manteve registro técnico em PT-BR, sem linguagem promocional ou 
 Verificação final: `bun run typecheck && TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test`: typecheck aprovado, 87 testes em nove arquivos, 478 assertions e zero falhas. Suíte completa executada uma vez ao final da implementação.
 
 Revisão code-review em dois agentes independentes contra baseline: Standards encontrou zero violações e zero smells materiais; Spec encontrou zero achados acionáveis. Revisões estáticas, sem repetir checks. Semântica de replay/hash e cenários de SQS/três processos continuam fora deste ticket.
+
+## Persistência sem atalho deprecated — 2026-10-22
+
+Sete chamadas nos serviços de wallet e BET passaram a usar `await em.persist(...).flush()`, conforme a recomendação da declaração instalada do MikroORM. Mantidos os mesmos argumentos, awaits, pontos de flush e fronteiras de `transactional`; nenhuma mudança no contrato HTTP ou schema. Arquitetura e ADR-0002 atualizados.
+
+`bun run typecheck && TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test`: typecheck aprovado, 87 testes em nove arquivos, 478 assertions e zero falhas. Inclui abertura zero/positiva, débito/rejeição, concorrência, conflitos e rollback por falha induzida na outbox.
+
+Smoke independente na porta 3136, PostgreSQL real de testes na porta 55433: abertura 201, BET 201/PROCESSED, insuficiência 422/REJECTED e reenvio 409. Saldo final `20.00 BRL`, versão 2, um CREDIT e um DEBIT; reconciliação consistente com diferença zero. Wallet `51041d3f-fc25-414f-83e8-e2093ed1165d`. Harness reutilizado em memória, sem novo arquivo ou dependência. Processo HTTP próprio encerrado; auditoria e containers preexistentes preservados.

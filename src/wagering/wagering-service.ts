@@ -90,23 +90,23 @@ export class WageringService {
           failureCode: insufficient ? 'INSUFFICIENT_FUNDS' : null,
           observedBalance: resultingWallet.balance.toString(), createdAt: transaction.createdAt, processedAt: at,
         });
-        await em.persistAndFlush(persistedTransaction);
+        await em.persist(persistedTransaction).flush();
         if (entry) {
           const ledgerEntry = em.create(walletLedgerEntrySchema, {
             id: entry.id, walletId: entry.walletId, transactionId: entry.transactionId,
             direction: entry.direction, amount: money.toString(), currency: money.currency,
             balanceBefore: entry.balanceBefore.toString(), balanceAfter: entry.balanceAfter.toString(), createdAt: at,
           });
-          await em.persistAndFlush(ledgerEntry);
+          await em.persist(ledgerEntry).flush();
         }
         const events = entry ? [
           WagerTransactionProcessed.from(resultingWallet, entry, 'BET'),
           WalletBalanceChanged.from(resultingWallet, entry),
         ] : [WagerTransactionRejected.from(wallet, transaction)];
-        await em.persistAndFlush(events.map(event => em.create(outboxMessageSchema, {
+        await em.persist(events.map(event => em.create(outboxMessageSchema, {
           id: event.eventId, aggregateId: event.aggregateId, eventType: event.eventType,
           payload: event.toJSON(), occurredAt: event.occurredAt,
-        })));
+        }))).flush();
         return {
           transactionId: transaction.id, status: insufficient ? 'REJECTED' : 'PROCESSED',
           balance: resultingWallet.balance.toJSON(), idempotentReplay: false,

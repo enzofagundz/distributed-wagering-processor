@@ -14,7 +14,7 @@ Usar Bun 1.3.14, TypeScript 5.9 estrito, NestJS 11.1.16, MikroORM 6.6.8 e Postgr
 
 `numeric(30,2)` é lido como string e reconstruído como `Money`: o limite persistido é de 28 dígitos inteiros. O domínio usa `bigint` sem esse limite; ultrapassar a capacidade SQL falha sem confirmação parcial. PostgreSQL impõe unicidade `(player_id, currency)`, saldo não negativo, exclusão de NaN, versão positiva e colunas obrigatórias. A entrada HTTP rejeita casas excedentes; SQL direto em `numeric(30,2)` segue o arredondamento do PostgreSQL e não constitui contrato público.
 
-Abertura executa `EntityManager.fork().transactional()`. Escritas ordinárias usam `create`/`persistAndFlush`, não INSERT SQL no serviço. Flushes ordenados enviam wallet, OPENING, ledger e eventos dentro da mesma transação; flush não antecipa commit. A ordem respeita FKs compostas das migrations sem duplicar relações no domínio. Commit precede resposta; falha anterior ao commit desfaz tudo.
+Abertura executa `EntityManager.fork().transactional()`. Escritas ordinárias usam `create` e `persist(...).flush()`, não INSERT SQL no serviço. Flushes ordenados enviam wallet, OPENING, ledger e eventos dentro da mesma transação; flush não antecipa commit. A ordem respeita FKs compostas das migrations sem duplicar relações no domínio. Commit precede resposta; falha anterior ao commit desfaz tudo.
 
 A constraint única de player/moeda arbitra aberturas concorrentes sem pré-consulta ou lock global. Reenvio após commit retorna 409, não replay idempotente. Apenas a violação `wallets_player_currency_unique` vira `WALLET_ALREADY_EXISTS`; outra unicidade violada é falha inesperada.
 
