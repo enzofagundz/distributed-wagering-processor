@@ -18,7 +18,7 @@ Mensagens de validação transportam códigos existentes, sem refletir valores r
 
 Unit of Work acompanha registros de persistência e organiza seu envio ao PostgreSQL, mas não substitui transação nem constraints. Atomicidade vem da transação externa; unicidade, FKs, aritmética e imutabilidade continuam no schema. SQL direto é apropriado para migrations, inspeção, testes de constraints e leitura parametrizada do ledger, não para escritas ordinárias da abertura.
 
-Compose executa imagem `oven/bun:1.3.14`, com dependências do lockfile. Host acessa portas publicadas; containers usam DNS de serviço. `HOST=0.0.0.0` é necessário dentro do container, mas a publicação padrão `127.0.0.1:3000:3000` limita acesso no host. Execução no host mantém bind padrão `127.0.0.1`. Isso não implementa autenticação.
+O Compose executa a imagem `oven/bun:1.3.14`, com dependências do lockfile. O host acessa portas publicadas; os containers usam DNS de serviço. `HOST=0.0.0.0` é necessário dentro do container, mas a publicação padrão `127.0.0.1:3000:3000` limita acesso no host. A execução no host mantém bind padrão `127.0.0.1`. Isso não implementa autenticação.
 
 A imagem instala somente dependências de produção e executa código-fonte. Migrations são comando explícito antes do startup; `bun run typecheck` permanece obrigatório no desenvolvimento porque Bun executa TypeScript sem comprovar correção estática. `SIGINT` e `SIGTERM` fecham HTTP antes do pool; não há consumer ou ack neste estágio.
 

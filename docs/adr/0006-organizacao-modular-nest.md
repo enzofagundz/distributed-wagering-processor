@@ -6,7 +6,7 @@ Aceita e adotada.
 
 ## Contexto
 
-Controller, módulo raiz e criação da aplicação compartilhavam um arquivo, enquanto DTOs e serviço estavam dispersos na raiz. Separá-los precisa melhorar navegação sem modificar contratos HTTP, dinheiro, transações, paginação ou schema. O bootstrap e os testes já fornecem um ORM inicializado e controlam seu encerramento; providers do módulo raiz não são automaticamente visíveis numa funcionalidade importada.
+Controller, módulo raiz e criação da aplicação compartilhavam um arquivo, enquanto DTOs e serviço estavam dispersos na raiz. A separação precisa melhorar a navegação sem modificar contratos HTTP, dinheiro, transações, paginação ou schema. O bootstrap e os testes já fornecem um ORM inicializado e controlam seu encerramento; providers do módulo raiz não são automaticamente visíveis numa funcionalidade importada.
 
 ## Decisão
 
@@ -24,7 +24,7 @@ Controller trata HTTP; serviço coordena domínio e persistência; objetos de do
 
 Composição e visibilidade de dependências ficam explícitas, com DTOs próximos de seus consumidores. A organização por funcionalidade é convenção escolhida, não exigência de diretórios do NestJS. Para quem vem de Laravel, controller e serviço continuam separando transporte e coordenação; módulo Nest declara composição/visibilidade e não equivale a um model Eloquent.
 
-As decisões financeiras dos ADRs 0001–0005 permanecem vigentes. Testes existentes continuam no seam HTTP real com PostgreSQL, com somente imports atualizados e assertions financeiras preservadas; não se adicionam testes de wiring ou snapshots de DI. Typecheck, testes, smoke do comando documentado, execução em imagem e inspeção em processo novo devem compor evidência de integração, não ser inferidos da reorganização. Resultados executados ficam em [verificação](../verification.md).
+As decisões financeiras dos ADRs 0001 a 0005 permanecem vigentes. Os testes existentes continuam no seam HTTP real com PostgreSQL, com somente imports atualizados e assertions financeiras preservadas; não se adicionam testes de wiring ou snapshots de DI. Typecheck, testes, smoke do comando documentado, execução em imagem e inspeção em processo novo devem compor evidência de integração, não ser inferidos da reorganização. Resultados executados ficam em [verificação](../verification.md).
 
 Alternativas descartadas: manter composição misturada ao controller, depender da visibilidade de um provider pai, tornar persistência global, configurar ORM por estado estático, criar um pool por módulo, misturar imports estáticos e dinâmicos da mesma funcionalidade, ou criar repositories que apenas repassem chamadas. A classe adicional de preview atende à restrição real da ferramenta, sem uma segunda árvore de providers.
 

@@ -6,7 +6,7 @@ Aceita, parcialmente adotada. Migra D-002: persistência e concorrência da aber
 
 ## Contexto
 
-Abertura precisa confirmar wallet e auditoria juntas, sem duplicar wallet em requests concorrentes. O domínio deve continuar independente do ORM, e o banco precisa impor invariantes mesmo diante de escritas SQL diretas. Isso não equivale a implementar concorrência de movimentações financeiras.
+A abertura precisa confirmar wallet e auditoria juntas, sem duplicar wallet em requests concorrentes. O domínio deve continuar independente do ORM, e o banco precisa impor invariantes mesmo diante de escritas SQL diretas. Isso não equivale a implementar concorrência de movimentações financeiras.
 
 ## Decisão
 
@@ -18,7 +18,7 @@ Abertura executa `EntityManager.fork().transactional()`. Escritas ordinárias us
 
 A constraint única de player/moeda arbitra aberturas concorrentes sem pré-consulta ou lock global. Reenvio após commit retorna 409, não replay idempotente. Apenas a violação `wallets_player_currency_unique` vira `WALLET_ALREADY_EXISTS`; outra unicidade violada é falha inesperada.
 
-Saldo zero cria somente wallet. Saldo positivo cria OPENING interna já `PROCESSED`, um lançamento `CREDIT` de zero até o saldo inicial, versão 1 e dois eventos pendentes: `WagerTransactionProcessed` e `WalletBalanceChanged`. Classes concretas serializam envelope versionado e `MoneyProps`; a correlação é o ID interno da OPENING. Não há identidade fictícia de provedor, rodada ou jogo nem endpoint de submissão de apostas.
+A abertura com saldo zero cria somente wallet. Com saldo positivo, cria OPENING interna já `PROCESSED`, um lançamento `CREDIT` de zero até o saldo inicial, versão 1 e dois eventos pendentes: `WagerTransactionProcessed` e `WalletBalanceChanged`. Classes concretas serializam envelope versionado e `MoneyProps`; a correlação é o ID interno da OPENING. Não há identidade fictícia de provedor, rodada ou jogo nem endpoint de submissão de apostas.
 
 Migrations são explícitas, versionadas e reversíveis; startup não migra automaticamente. A migration [20261022000200](../../src/persistence/migrations/Migration20261022000200.ts) adiciona transações, ledger e outbox; `down` descarta esses dados e preserva wallets. Reaplicar DDL não recupera auditoria descartada: rollback de schema com dados exige backup e serviço parado.
 

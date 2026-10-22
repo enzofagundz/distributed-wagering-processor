@@ -1,6 +1,6 @@
 # Arquitetura
 
-Este documento descreve implementação atual, não arquitetura-alvo do desafio. [Enunciado](README_TECHNICAL_CHALLENGE.md): requisitos. [PROGRESS](PROGRESS.md): cobertura e pendências. [Glossário](GLOSSARY.md): linguagem do domínio. Decisões e alternativas: ADRs vinculados abaixo.
+Este documento descreve a implementação atual. Os requisitos estão no [enunciado](README_TECHNICAL_CHALLENGE.md), e a cobertura e as pendências, em [PROGRESS](PROGRESS.md). O [glossário](GLOSSARY.md) define os termos do domínio. Os ADRs vinculados abaixo registram decisões e alternativas.
 
 ## Mapa do código
 
@@ -27,7 +27,7 @@ Chamador continua dono do ORM: execução inicializa em `main.ts`, testes fornec
 
 Nest Boost 0.4.0 exige export de classe, não aceita objeto `DynamicModule`. `PreviewAppModule` compõe a mesma cadeia sem ORM fornecido; a factory padrão fica em persistência, sem executar `databaseConfig` nem inicializar PostgreSQL durante o preview nativo do Nest. `nest-boost.json` aponta para essa classe; `evaluate` permanece desativado. Essa entrada é somente para inspeção: execução e testes usam `createApplication(orm)`. Inspeção de DI não substitui HTTP real com PostgreSQL.
 
-Decisão e alternativas: [ADR-0006](docs/adr/0006-organizacao-modular-nest.md). Contratos financeiros e seam de teste permanecem os mesmos; reorganização não adiciona testes de wiring.
+O [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) registra a decisão e as alternativas. Os contratos financeiros e o ponto de teste permanecem os mesmos; a reorganização não adiciona testes de wiring.
 
 ## Abertura de wallet
 
@@ -54,7 +54,7 @@ sequenceDiagram
 
 Falha antes do commit desfaz todas as escritas. `persistAndFlush` envia SQL dentro da transação, não antecipa commit. Abertura zero persiste somente wallet; ambas começam em versão 1. OPENING é interna, sem IDs fictícios de provedor, rodada ou jogo. Único estado de transação persistido neste estágio: OPENING/PROCESSED.
 
-Unicidade `(player_id, currency)` arbitra aberturas concorrentes no PostgreSQL; duplicata retorna 409. Isso não é idempotência de apostas: reenvio não reproduz resultado original. Nenhum publisher consome a outbox neste estágio.
+A constraint única `(player_id, currency)` resolve aberturas concorrentes no PostgreSQL; duplicatas retornam 409. O reenvio não reproduz o resultado original, e a idempotência de apostas segue pendente. Nenhum publisher consome a outbox neste estágio.
 
 ## Garantias e limites
 
@@ -69,7 +69,7 @@ Unicidade `(player_id, currency)` arbitra aberturas concorrentes no PostgreSQL; 
 
 Wallet é lida por ID e reidratada. Ledger verifica existência da wallet e lê por `(created_at, id)` crescente. Cursor base64url canônico aponta para lançamento persistido da mesma wallet; PostgreSQL compara timestamp integral, sem passagem por `Date` para retomar página. Resposta preserva timestamp textual com offset e precisão disponível.
 
-Keyset evita deslocamento de linhas existentes; **não é snapshot**. Linhas novas posteriores à âncora podem aparecer; inserções retroativas anteriores exigem nova travessia. Cursor é opaco, não secreto, credencial ou mecanismo de autorização. Contrato detalhado e exemplos: [Postman](docs/postman/README.md).
+Keyset evita deslocamento de linhas existentes, sem manter um snapshot entre consultas. Linhas novas posteriores à âncora podem aparecer; inserções retroativas anteriores exigem nova travessia. O cursor é opaco, mas não é secreto nem funciona como credencial ou mecanismo de autorização. Contrato detalhado e exemplos: [Postman](docs/postman/README.md).
 
 ## Falhas HTTP
 
@@ -84,7 +84,7 @@ Erros conhecidos retornam `{ "code": "..." }`. DTO rejeita campos extras, estrut
 
 ## Decisões
 
-[Índice com rastreabilidade para requisitos](DECISIONS.md). D-001–D-005 foram migradas para ADR-0001–ADR-0005; status e limites preservados. Organização modular adotada no [ADR-0006](docs/adr/0006-organizacao-modular-nest.md). Os ADRs são fonte das justificativas, alternativas e consequências.
+[DECISIONS](DECISIONS.md) relaciona as decisões aos requisitos. As decisões D-001 a D-005 estão registradas nos ADRs 0001 a 0005, com os mesmos status e limites. O [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) registra a organização modular adotada. Os ADRs reúnem justificativas, alternativas e consequências.
 
 ## Ainda não entregue
 

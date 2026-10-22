@@ -5,9 +5,9 @@ Material para executar e avaliar a API atual, sem instalar dependências ou publ
 ## Importação
 
 1. Prepare banco, migrations e aplicação conforme o README; espere a API estar pronta.
-2. Em **Import** no Postman, importe [wallets.postman_collection.json](wallets.postman_collection.json) e [local.postman_environment.json](local.postman_environment.json).
-3. Selecione o environment **Wallet HTTP — Local**. `baseUrl` começa em `http://127.0.0.1:3000`, sem barra final; ajuste para a porta publicada localmente, se necessário.
-4. Use **Send** na sequência abaixo ou o Collection Runner com as três pastas em ordem e uma iteração. Os scripts ficam em **Pre-request** e **Post-response**; resultados aparecem em **Test Results**.
+2. Em Import no Postman, importe [wallets.postman_collection.json](wallets.postman_collection.json) e [local.postman_environment.json](local.postman_environment.json).
+3. Selecione o environment Wallet HTTP — Local. `baseUrl` começa em `http://127.0.0.1:3000`, sem barra final; ajuste para a porta publicada localmente, se necessário.
+4. Use Send na sequência abaixo ou o Collection Runner com as três pastas em ordem e uma iteração. Os scripts ficam em Pre-request e Post-response; resultados aparecem em Test Results.
 
 Não há credenciais no environment nem autenticação nos endpoints atuais. Use ambiente local descartável: cada envio de abertura válida cria dados persistentes; a coleção não limpa o banco e não existe endpoint HTTP de exclusão.
 
@@ -15,37 +15,37 @@ Não há credenciais no environment nem autenticação nos endpoints atuais. Use
 
 | Ordem / requests | Resultado esperado |
 | --- | --- |
-| **01 — Abrir carteira positiva** | 201; gera `playerId` UUID novo, abre com `9007199254740993.01 BRL` e captura `walletId`. |
-| **02 — Consultar carteira positiva** | 200; mesma identidade, dinheiro exato e versão 1. |
-| **03 — Repetir abertura — duplicata 409** | 409 `WALLET_ALREADY_EXISTS`; reutiliza o mesmo `playerId` e BRL, sem gerar UUID novo. |
-| **04 — Consultar carteira após duplicata** | 200; saldo e versão não mudaram. |
-| **05 — Consultar ledger positivo** | 200; exatamente um CREDIT, saldo anterior `0.00`, saldo posterior igual à abertura, `nextCursor: null`. |
-| **06 — Abrir carteira zero** | 201; usa `zeroPlayerId` e `zeroWalletId`, preservando as variáveis do cenário positivo. |
-| **07 — Consultar carteira zero** | 200; saldo `0.00 BRL`, versão 1. |
-| **08 — Consultar ledger vazio** | 200; `{ "items": [], "nextCursor": null }`. |
-| **09–19 — Erros do contrato** | 400, 404 ou 409 conforme o cenário, com código exato verificado pelos scripts. |
+| 01 — Abrir carteira positiva | 201; gera `playerId` UUID novo, abre com `9007199254740993.01 BRL` e captura `walletId`. |
+| 02 — Consultar carteira positiva | 200; mesma identidade, dinheiro exato e versão 1. |
+| 03 — Repetir abertura — duplicata 409 | 409 `WALLET_ALREADY_EXISTS`; reutiliza o mesmo `playerId` e BRL, sem gerar UUID novo. |
+| 04 — Consultar carteira após duplicata | 200; saldo e versão não mudaram. |
+| 05 — Consultar ledger positivo | 200; exatamente um CREDIT, saldo anterior `0.00`, saldo posterior igual à abertura, `nextCursor: null`. |
+| 06 — Abrir carteira zero | 201; usa `zeroPlayerId` e `zeroWalletId`, preservando as variáveis do cenário positivo. |
+| 07 — Consultar carteira zero | 200; saldo `0.00 BRL`, versão 1. |
+| 08 — Consultar ledger vazio | 200; `{ "items": [], "nextCursor": null }`. |
+| 09–19 — Erros do contrato | 400, 404 ou 409 conforme o cenário, com código exato verificado pelos scripts. |
 
-Para um smoke completo, execute **01–19**. Os requests **18–19** dependem de **01**; **02–05** também. Os requests **07–08** dependem de **06**. Os demais erros são independentes. Para repetir somente a duplicata, reenvie **03**, não **01**: **01** sempre troca `playerId`, limpa `walletId` antigo e cria outra carteira. UUID e ID de carteira só são capturados no environment selecionado; não use variáveis homônimas em dados de iteração.
+Para um smoke completo, execute 01–19. Os requests 18–19 dependem de 01; 02–05 também. Os requests 07–08 dependem de 06. Os demais erros são independentes. Para repetir somente a duplicata, reenvie 03, não 01: 01 sempre troca `playerId`, limpa `walletId` antigo e cria outra carteira. UUID e ID de carteira só são capturados no environment selecionado; não use variáveis homônimas em dados de iteração.
 
 Os scripts verificam status, códigos de erro, identidade, versão, strings monetárias exatas e conteúdo do ledger. Eles não inspecionam tabelas internas nem comprovam concorrência, rollback ou publicação de eventos; esses comportamentos exigem os testes de integração do repositório. Exemplos salvos nas respostas são ilustrativos, derivados dos contratos e testes, não capturas de um smoke executado.
 
 ## Formatos e respostas
 
-- **`POST /wallets`** recebe `{ "playerId": "<UUID>", "initialBalance": { "amount": "1.00", "currency": "BRL" } }` e retorna **201** com `{ "id": "<UUID>", "playerId": "<UUID>", "balance": { "amount": "1.00", "currency": "BRL" }, "version": 1 }`.
-- **`GET /wallets/:walletId`** retorna **200** com o mesmo formato de carteira. Não há datas ou transação na resposta da carteira.
-- **`GET /wallets/:walletId/ledger`** retorna **200** com `items` e `nextCursor`. Cada item contém `id`, `walletId`, `transactionId`, `direction`, `money`, `balanceBefore`, `balanceAfter` e `createdAt`. Os três valores monetários são objetos `{ "amount": "...", "currency": "BRL" }`; `createdAt` é uma string de data/hora.
+- `POST /wallets` recebe `{ "playerId": "<UUID>", "initialBalance": { "amount": "1.00", "currency": "BRL" } }` e retorna 201 com `{ "id": "<UUID>", "playerId": "<UUID>", "balance": { "amount": "1.00", "currency": "BRL" }, "version": 1 }`.
+- `GET /wallets/:walletId` retorna 200 com o mesmo formato de carteira. Não há datas ou transação na resposta da carteira.
+- `GET /wallets/:walletId/ledger` retorna 200 com `items` e `nextCursor`. Cada item contém `id`, `walletId`, `transactionId`, `direction`, `money`, `balanceBefore`, `balanceAfter` e `createdAt`. Os três valores monetários são objetos `{ "amount": "...", "currency": "BRL" }`; `createdAt` é uma string de data/hora.
 
-`amount` é sempre string decimal não negativa com exatamente duas casas, sem notação exponencial nem zeros à esquerda além de `0.00`. Não converta dinheiro para `Number`; o valor positivo do smoke exercita precisão acima de `Number.MAX_SAFE_INTEGER`. A moeda deve pertencer a `Intl.supportedValuesOf('currency')`; `BRL` é válido, `brl` não. `playerId` e IDs de carteira precisam seguir o formato UUID. A unicidade da abertura é por **jogador e moeda**.
+`amount` é sempre string decimal não negativa com exatamente duas casas, sem notação exponencial nem zeros à esquerda além de `0.00`. Não converta dinheiro para `Number`; o valor positivo do smoke exercita precisão acima de `Number.MAX_SAFE_INTEGER`. A moeda deve pertencer a `Intl.supportedValuesOf('currency')`; `BRL` é válido, `brl` não. `playerId` e IDs de carteira precisam seguir o formato UUID. A unicidade da abertura é por jogador e moeda.
 
 Abertura positiva persiste carteira, uma transação `OPENING` processada, um lançamento `CREDIT` e dois eventos pendentes na outbox, atomicamente. Abertura zero persiste somente a carteira. Não há endpoint de criação de lançamentos nesta coleção; transação e eventos não são campos da resposta de abertura.
 
 ## Paginação sem cursor vazio
 
-- `limit` é opcional, padrão **50**, permitido **1–100**. `0`, `101`, `1.5`, `1e2`, `01`, valores vazios, parâmetros repetidos e campos extras são rejeitados.
-- Ordem do ledger: crescente por `createdAt` e, em empate, por `id`. Cursor aponta para um lançamento existente da **mesma carteira**, codificado em base64url canônico; não é um offset.
-- O request **05** envia `limit=1`. O parâmetro `cursor={{ledgerCursor}}` está **desmarcado** na aba **Params**, portanto não é enviado. `ledgerCursor` vazio no environment não causa `cursor=` no smoke padrão.
+- `limit` é opcional, padrão 50, permitido 1–100. `0`, `101`, `1.5`, `1e2`, `01`, valores vazios, parâmetros repetidos e campos extras são rejeitados.
+- Ordem do ledger: crescente por `createdAt` e, em empate, por `id`. Cursor aponta para um lançamento existente da mesma carteira, codificado em base64url canônico; não é um offset.
+- O request 05 envia `limit=1`. O parâmetro `cursor={{ledgerCursor}}` está desmarcado na aba Params, portanto não é enviado. `ledgerCursor` vazio no environment não causa `cursor=` no smoke padrão.
 - Só habilite `cursor` depois de preencher `ledgerCursor` com um `nextCursor` não nulo retornado pela mesma carteira. Não envie `null`, vazio ou um cursor de outra carteira. Para voltar à primeira página, desmarque `cursor` novamente.
-- **OPENING é a única escrita atual**: cada carteira positiva tem apenas um lançamento. Por isso, mesmo com `limit=1`, `nextCursor: null` é normal, não falta de paginação. Abertura zero tem ledger vazio. O smoke não inventa uma segunda página nem semeia registros via SQL.
+- OPENING é a única escrita atual: cada carteira positiva tem apenas um lançamento. Por isso, mesmo com `limit=1`, `nextCursor: null` é normal, não falta de paginação. Abertura zero tem ledger vazio. O smoke não inventa uma segunda página nem semeia registros via SQL.
 
 ## Erros exercitados
 

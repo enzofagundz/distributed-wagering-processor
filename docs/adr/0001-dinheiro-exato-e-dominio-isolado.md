@@ -6,7 +6,7 @@ Aceita e adotada. Migra a decisão D-001.
 
 ## Contexto
 
-Valores financeiros precisam preservar centavos sem arredondamento ou perda por ponto flutuante. O domínio não deve depender de NestJS nem ORM. A escala acordada para este projeto é de duas casas decimais, inclusive para moedas reconhecidas pelo runtime.
+Valores financeiros precisam preservar centavos sem arredondamento ou perda por ponto flutuante. O domínio não deve depender de NestJS nem do ORM. A escala acordada para este projeto é de duas casas decimais, inclusive para moedas reconhecidas pelo runtime.
 
 ## Decisão
 
@@ -14,7 +14,7 @@ Valores financeiros precisam preservar centavos sem arredondamento ou perda por 
 
 Subtração e negação podem produzir valores negativos internos; isso não permite entrada externa negativa. Operações binárias exigem a mesma moeda, inclusive comparação e igualdade. `Money` é congelado em runtime; o modelo preserva a moeda e os testes existentes incluem BRL e USD.
 
-`Wallet` encapsula estado, usa construtor privado, copia datas e distingue `open` de `rehydrate`. Abertura valida identidades UUID e saldo inicial não negativo; reidratação reconstrói saldo e versão persistidos sem reaplicar abertura. O mapeamento de persistência fica fora do domínio, conforme [ADR-0002](0002-persistencia-e-concorrencia-da-abertura.md).
+`Wallet` encapsula estado, usa construtor privado, copia datas e distingue `open` de `rehydrate`. A abertura valida identidades UUID e saldo inicial não negativo; a reidratação reconstrói saldo e versão persistidos sem reaplicar a abertura. O mapeamento de persistência fica fora do domínio, conforme [ADR-0002](0002-persistencia-e-concorrencia-da-abertura.md).
 
 ## Consequências
 

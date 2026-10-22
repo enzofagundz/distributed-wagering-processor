@@ -1,10 +1,10 @@
 # Distributed Wagering Processor
 
-Serviço financeiro em implementação incremental para o [desafio técnico](README_TECHNICAL_CHALLENGE.md). Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL.
+Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECHNICAL_CHALLENGE.md), com Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL.
 
-**Entregue:** abertura de wallet zerada ou positiva, consulta de saldo e ledger paginado. Abertura positiva persiste wallet, OPENING, CREDIT e dois eventos pendentes em uma transação SQL.
+A API permite abrir wallet com saldo zero ou positivo, consultar saldo e paginar o ledger. Abertura positiva persiste wallet, OPENING, CREDIT e dois eventos pendentes em uma transação SQL.
 
-**Pendente:** apostas, reversões, idempotência de transações, reconciliação HTTP, publisher, SQS/inbox, autenticação, health e métricas. Outbox persistida não significa evento publicado. Este estágio não entrega o desafio completo; veja [cobertura por requisito](PROGRESS.md).
+Apostas, reversões, idempotência de transações, reconciliação HTTP, publisher, SQS/inbox, autenticação, health e métricas estão pendentes. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
@@ -29,9 +29,9 @@ docker compose up -d app
 docker compose logs app
 ```
 
-Espere `Wallet HTTP listening` antes de chamar a API: startup ainda não tem health check HTTP. Imagem usa Bun 1.3.14 e dependências de produção com lockfile congelado; Bun no host não é necessário neste modo. Migrations são explícitas, nunca executadas pelo startup.
+Espere `Wallet HTTP listening` antes de chamar a API, pois o startup ainda não tem health check HTTP. A imagem usa Bun 1.3.14 e dependências de produção com lockfile congelado; este modo dispensa Bun no host. Execute as migrations explicitamente: o startup nunca as executa.
 
-Porta ocupada: `APP_PORT=3109 docker compose up -d app`; ajuste `baseUrl` no Postman para `http://127.0.0.1:3109`. Dentro da rede Compose, API conecta a `postgres:5432`, não a localhost. Alternativa já verificada em Linux: Podman rootless com Docker Compose como provider; inicie `systemctl --user start podman.socket` e substitua `docker compose` por `podman compose`.
+Se a porta estiver ocupada, use `APP_PORT=3109 docker compose up -d app` e ajuste `baseUrl` no Postman para `http://127.0.0.1:3109`. Na rede Compose, a API conecta a `postgres:5432`, não a localhost. Podman rootless com Docker Compose como provider também foi verificado em Linux. Para usá-lo, inicie `systemctl --user start podman.socket` e substitua `docker compose` por `podman compose`.
 
 ### Host
 
@@ -68,9 +68,9 @@ bun run test:integration
 bun test
 ```
 
-Integração exige PostgreSQL real e banco dedicado terminado em `_test`; não pula silenciosamente. Testes aplicam migrations automaticamente. Fixtures de constraints usam rollback; testes HTTP positivos preservam auditoria append-only com identidades novas por execução.
+A integração exige PostgreSQL real e banco dedicado terminado em `_test`; os testes falham se esses requisitos não forem atendidos. Os testes aplicam migrations automaticamente. Fixtures de constraints usam rollback; testes HTTP positivos preservam auditoria append-only com identidades novas por execução.
 
-O teste `tests/integration/ledger-http.test.ts` cria e remove banco exclusivo `ledger_<uuid>_test`; usuário precisa de `CREATEDB`. Somente nessa fixture remove-se unicidade de OPENING por wallet para montar histórico sintético. Não altera constraints do banco informado e não comprova movimentações de apostas.
+O teste `tests/integration/ledger-http.test.ts` cria e remove um banco exclusivo `ledger_<uuid>_test`; o usuário precisa de `CREATEDB`. A fixture remove a unicidade de OPENING por wallet somente nesse banco para montar um histórico sintético. Ela mantém as constraints do banco informado e não comprova movimentações de apostas.
 
 ### Reversão e parada
 

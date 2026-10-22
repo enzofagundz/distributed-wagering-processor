@@ -1,6 +1,6 @@
 # Glossário
 
-Termos do comportamento atual. Requisitos ainda não entregues estão na [cobertura do desafio](PROGRESS.md); não são garantias deste glossário.
+Este glossário descreve o comportamento atual. A [cobertura do desafio](PROGRESS.md) lista os requisitos ainda não entregues, que não fazem parte das garantias descritas aqui.
 
 ## Money
 
@@ -28,7 +28,7 @@ Valor monetário materializado na wallet, não negativo. Na abertura positiva, c
 
 ## Versão da wallet
 
-Inteiro positivo persistido como `version`, iniciado em 1 e exposto em respostas e no evento `WalletBalanceChanged`. Não representa mecanismo de concorrência de movimentações já entregue.
+Inteiro positivo persistido como `version`, iniciado em 1 e exposto em respostas e no evento `WalletBalanceChanged`. O controle de concorrência de movimentações ainda não está implementado.
 
 ## Abertura / OPENING
 
@@ -48,7 +48,7 @@ Ledger é o histórico append-only em `wallet_ledger_entries`; cada `WalletLedge
 
 ## CREDIT / DEBIT
 
-Direções aceitas pelo lançamento: `CREDIT` soma o valor ao saldo anterior; `DEBIT` subtrai. O único fluxo financeiro implementado produz `CREDIT` de abertura; aceitar `DEBIT` no modelo não entrega um caso de uso de débito.
+Direções aceitas pelo lançamento: `CREDIT` soma o valor ao saldo anterior; `DEBIT` subtrai. O único fluxo financeiro implementado produz `CREDIT` de abertura. O modelo aceita `DEBIT`, mas o caso de uso de débito ainda não está implementado.
 
 ## Evento de integração
 

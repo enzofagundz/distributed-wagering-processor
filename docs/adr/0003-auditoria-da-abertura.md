@@ -6,7 +6,7 @@ Aceita e adotada. Migra D-003.
 
 ## Contexto
 
-Abertura com saldo positivo precisa de trilha financeira consistente e imutável. Imutabilidade somente TypeScript não protege escrita SQL direta; INSERTs independentes permitem confirmação parcial após falha.
+A abertura com saldo positivo precisa de trilha financeira consistente e imutável. Imutabilidade apenas no TypeScript não protege contra escrita SQL direta; INSERTs independentes permitem confirmação parcial após falha.
 
 ## Decisão
 
@@ -18,7 +18,7 @@ Abertura e auditoria usam a mesma transação de aplicação, conforme [ADR-0002
 
 ## Consequências
 
-INSERTs independentes e imutabilidade apenas TypeScript foram descartados por permitirem inconsistência após falha ou escrita SQL direta. Os testes existentes induzem falha na outbox para verificar rollback das escritas financeiras anteriores e executam aberturas concorrentes para verificar unicidade persistida; as [evidências registradas](../verification.md) não são uma nova execução nesta migração documental.
+INSERTs independentes e imutabilidade apenas no TypeScript foram descartados por permitirem inconsistência após falha ou escrita SQL direta. Os testes existentes induzem falha na outbox para verificar rollback das escritas financeiras anteriores e executam aberturas concorrentes para verificar unicidade persistida; as [evidências registradas](../verification.md) não são uma nova execução nesta migração documental.
 
 A proteção contra DML normal não impede administrador de remover triggers ou tabelas. Separar usuário de migrations de usuário da aplicação continua necessário antes de exposição real. O serviço local não é seguro para exposição pública, conforme [ADR-0004](0004-contrato-http-e-ambiente-reproduzivel.md).
 
