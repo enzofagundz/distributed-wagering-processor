@@ -15,6 +15,7 @@ export type FailureCode =
   | "INSUFFICIENT_FUNDS"
   | "REFERENCE_MISMATCH"
   | "REFERENCE_NOT_PROCESSED"
+  | "REFERENCE_NOT_FOUND"
   | "REFERENCE_ALREADY_REFUNDED"
   | "REFERENCE_ALREADY_ROLLED_BACK"
   | "INSUFFICIENT_REVERSAL_FUNDS";
@@ -310,6 +311,10 @@ export class WagerTransaction {
         : !this.referenceExternalTransactionId ||
           (code !== "REFERENCE_MISMATCH" &&
             code !== "REFERENCE_NOT_PROCESSED" &&
+            !(
+              code === "REFERENCE_NOT_FOUND" &&
+              this.status === "PENDING_REFERENCE"
+            ) &&
             !(
               this.referenceTransactionId &&
               ((this.kind === "REFUND" &&

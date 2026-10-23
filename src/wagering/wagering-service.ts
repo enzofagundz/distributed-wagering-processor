@@ -234,11 +234,16 @@ export class WageringService {
 
   async resolvePendingReference(
     transactionId: string,
+    at?: Date,
   ): Promise<PendingReferenceResolution> {
     return this.orm.em.fork().transactional(async (em) => {
       const record = await em.findOne(
         wagerTransactionSchema,
-        { id: transactionId, status: "PENDING_REFERENCE" },
+        {
+          id: transactionId,
+          status: "PENDING_REFERENCE",
+          referenceNextAttemptAt: { $lte: at ?? new Date() },
+        },
         { lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE },
       );
       if (!record) return "SKIPPED";
@@ -256,6 +261,8 @@ export class WageringService {
         walletRecord,
         record.payloadHash,
         false,
+        at ?? new Date(),
+        (record.referenceAttempts ?? 0) + 1,
       );
       return result.status;
     });
@@ -263,7 +270,9 @@ export class WageringService {
 
   async resolvePendingReferences(
     pageSize = 100,
+    at?: Date,
   ): Promise<PendingReferenceBatch> {
+    const dueAt = at ?? new Date();
     const summary: PendingReferenceBatch = {
       scanned: 0,
       processed: 0,
@@ -276,6 +285,7 @@ export class WageringService {
     for (;;) {
       const where: FilterQuery<WagerTransactionRecord> = {
         status: "PENDING_REFERENCE",
+        referenceNextAttemptAt: { $lte: dueAt },
         ...(cursor === undefined ? {} : { id: { $gt: cursor } }),
       };
       const page = await this.orm.em
@@ -289,7 +299,7 @@ export class WageringService {
       for (const candidate of page) {
         summary.scanned++;
         try {
-          const status = await this.resolvePendingReference(candidate.id);
+          const status = await this.resolvePendingReference(candidate.id, at);
           if (status === "PROCESSED") summary.processed++;
           else if (status === "REJECTED") summary.rejected++;
           else if (status === "PENDING_REFERENCE") summary.pending++;
@@ -316,6 +326,8 @@ export class WageringService {
     walletRecord: WalletRecord,
     payloadHash: string,
     isNew: boolean,
+    at = new Date(),
+    referenceAttempts = 0,
   ): Promise<SubmitTransactionResult> {
     const money = transaction.money;
     const wallet = Wallet.rehydrate({
@@ -329,7 +341,6 @@ export class WageringService {
       createdAt: walletRecord.createdAt,
       updatedAt: walletRecord.updatedAt,
     });
-    const at = new Date();
     let direction: "CREDIT" | "DEBIT" =
       transaction.kind === "BET" ? "DEBIT" : "CREDIT";
     if (transaction.referenceExternalTransactionId) {
@@ -359,6 +370,8 @@ export class WageringService {
       if (transaction.status === "PENDING")
         direction = transaction.ledgerDirectionFor(reference ?? undefined);
     }
+    if (transaction.status === "PENDING_REFERENCE" && referenceAttempts >= 10)
+      transaction.reject("REFERENCE_NOT_FOUND", at);
     let resultingWallet = wallet;
     if (transaction.status === "PENDING") {
       if (direction === "DEBIT" && wallet.balance.isLessThan(money)) {
@@ -422,15 +435,27 @@ export class WageringService {
         observedBalance: resultingWallet.balance.toString(),
         createdAt: transaction.createdAt,
         processedAt: transaction.processedAt ?? null,
+        referenceAttempts,
+        referenceNextAttemptAt: status === "PENDING_REFERENCE" ? at : null,
       });
       await em.persist(persistedTransaction).flush();
-    } else if (status !== "PENDING_REFERENCE") {
+    } else {
       em.assign(em.getReference(wagerTransactionSchema, transaction.id), {
         referenceTransactionId: transaction.referenceTransactionId ?? null,
         status,
         failureCode: transaction.failureCode ?? null,
-        observedBalance: resultingWallet.balance.toString(),
+        ...(status === "PENDING_REFERENCE"
+          ? {}
+          : { observedBalance: resultingWallet.balance.toString() }),
         processedAt: transaction.processedAt ?? null,
+        referenceAttempts,
+        referenceNextAttemptAt:
+          status === "PENDING_REFERENCE"
+            ? new Date(
+                at.getTime() +
+                  Math.min(1000 * 2 ** (referenceAttempts - 1), 60000),
+              )
+            : null,
       });
     }
     if (entry) {

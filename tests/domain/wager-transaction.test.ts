@@ -70,6 +70,24 @@ test("WIN binds a processed BET identity without requiring equal award or game",
   });
 });
 
+test("only a pending reference can expire and its rejection cannot reopen", () => {
+  const transaction = WagerTransaction.create(
+    props({ referenceExternalTransactionId: "never-arrives" }),
+  );
+  expect(() => transaction.reject("REFERENCE_NOT_FOUND", at)).toThrow(
+    new DomainError("INVALID_TRANSACTION_STATE"),
+  );
+  transaction.resolveReference(undefined, at);
+  transaction.reject("REFERENCE_NOT_FOUND", at);
+  expect(transaction.status).toBe("REJECTED");
+  expect(transaction.failureCode).toBe("REFERENCE_NOT_FOUND");
+  expect(transaction.referenceTransactionId).toBeUndefined();
+  expect(transaction.processedAt).toEqual(at);
+  expect(() =>
+    transaction.resolveReference(reference(transaction), at),
+  ).toThrow(new DomainError("INVALID_TRANSACTION_STATE"));
+});
+
 for (const status of [undefined, "PENDING", "PENDING_REFERENCE"]) {
   test(`WIN waits without terminal metadata for ${status ?? "missing"} BET reference`, () => {
     const transaction = WagerTransaction.create(

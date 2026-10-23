@@ -4,7 +4,7 @@ Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECH
 
 A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET, WIN, LOSS, REFUND e ROLLBACK por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva e operações financeiras persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL. LOSS confirma resultado e evento sem movimentar saldo. Um worker agendado resolve WIN, REFUND e ROLLBACK que chegaram antes da referência.
 
-Publisher, SQS/inbox, autenticação e health estão pendentes. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker tenta resolvê-la a cada intervalo, e a expiração de pendências antigas continua pendente. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+Publisher, SQS/inbox, autenticação e health estão pendentes. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
@@ -99,7 +99,7 @@ Após a BET de `80.00` sobre `100.00`, esse WIN retorna 201 com saldo `170.00 BR
 
 Omitir `referenceExternalTransactionId` permite prêmio independente. Quando informada, a referência usa o ID externo da BET no mesmo provider e deve coincidir em player, wallet, moeda e rodada; valor do prêmio e jogo não precisam coincidir. Incompatibilidade retorna 422 `REFERENCE_MISMATCH`; BET rejeitada retorna 422 `REFERENCE_NOT_PROCESSED`. Nenhuma rejeição move saldo ou cria ledger.
 
-Referência informada ainda inexistente ou não terminal retorna 202 `PENDING_REFERENCE`, sem crédito. Reenvio mantém a pendência e devolve o saldo observado no aceite; quem resolve é o worker agendado, não o replay. Quando a BET chega, a próxima execução do worker credita uma vez e grava os eventos Processed/BalanceChanged. Expiração de referência que nunca chega: ticket 14. Decisão e limites: [WIN e referências](ARCHITECTURE.md#crédito-de-win-e-referências).
+Referência informada ainda inexistente ou não terminal retorna 202 `PENDING_REFERENCE`, sem crédito. Reenvio mantém a pendência e devolve o saldo observado no aceite; quem resolve é o worker agendado, não o replay. Quando a BET chega, uma tentativa vencida do worker pode creditá-la uma vez e gravar os eventos Processed/BalanceChanged. Referência ausente ou ainda pendente na décima tentativa encerra o WIN com `REFERENCE_NOT_FOUND`. Decisão e limites: [resolução de referências](ARCHITECTURE.md#resolução-de-referências-pendentes).
 
 Teste focal com PostgreSQL de testes iniciado: `bun test tests/integration/win-http.test.ts`.
 
@@ -154,9 +154,13 @@ Aplique `bun run migration:up` antes do startup. Testes focais: `bun test tests/
 
 ### Resolver referência pendente
 
-`bun run start` inicia o worker junto com a API. A cada `PENDING_REFERENCE_INTERVAL_MS` (padrão `1000`), ele varre as pendências em páginas de `PENDING_REFERENCE_PAGE_SIZE` (padrão `100`) e tenta resolver cada uma em transação própria. Não existe rota administrativa para disparar a varredura.
+`bun run start` inicia o worker junto com a API. A cada `PENDING_REFERENCE_INTERVAL_MS` (padrão `1000`), ele busca pendências cujo próximo horário de tentativa venceu, em páginas de `PENDING_REFERENCE_PAGE_SIZE` (padrão `100`), e tenta resolver cada uma em transação própria. Não existe rota administrativa para disparar a varredura.
 
-Exemplo: envie um REFUND antes da BET. A resposta é 202 `PENDING_REFERENCE`, sem crédito. Depois que a BET for processada, a próxima varredura aplica um único crédito e grava Processed/BalanceChanged. O replay do REFUND passa a devolver 201 com `PROCESSED` e o saldo resultante; `GET` mostra o mesmo estado. Enquanto a referência não chega, replay e `GET` continuam em `PENDING_REFERENCE` com o saldo observado no aceite, mesmo que outra operação já tenha mudado a wallet.
+Exemplo: envie um REFUND antes da BET. A resposta é 202 `PENDING_REFERENCE`, sem crédito. Se a BET chegar antes do encerramento, a próxima tentativa vencida aplica um único crédito e grava Processed/BalanceChanged. O replay passa a devolver 201 com `PROCESSED` e o saldo resultante; `GET` mostra o mesmo estado. Enquanto pendente, replay e `GET` preservam o saldo observado no aceite, mesmo que outra operação mude a wallet.
+
+O primeiro retry fica imediatamente elegível. São no máximo dez tentativas do worker, além da submissão inicial, com backoff exponencial limitado a 60 segundos. Os nove delays somam 243 segundos desde o primeiro retry; isso não é TTL: downtime, duração da varredura e contenção podem alongar a espera. Reinício retoma contador e próximo horário persistidos. A [política na arquitetura](ARCHITECTURE.md#resolução-de-referências-pendentes) define cálculo, precedência e atomicidade.
+
+Se a referência continuar ausente ou não terminal na décima tentativa, a operação termina `REJECTED` com `REFERENCE_NOT_FOUND`, sem ledger. Referência compatível `REJECTED` ou `FAILED` recebe `REFERENCE_NOT_PROCESSED`; `FAILED` está coberto no domínio, mas ainda não é persistido pelo schema. Replay da rejeição retorna 422 com o saldo observado no término, e GET retorna 200 com o mesmo resultado. `REFERENCE_NOT_FOUND` é definitivo: corrija a referência e use nova identidade externa/chave para uma nova operação. O replay nunca reabre nem credita a operação encerrada, mesmo que a referência chegue depois.
 
 Para ajustar o intervalo e o lote:
 
@@ -164,9 +168,9 @@ Para ajustar o intervalo e o lote:
 PENDING_REFERENCE_INTERVAL_MS=250 PENDING_REFERENCE_PAGE_SIZE=50 bun run start
 ```
 
-O worker para em `SIGTERM`/`SIGINT` depois de concluir a execução em andamento, antes de fechar o ORM. Várias instâncias podem rodar o worker: a linha da pendência é bloqueada no PostgreSQL com `SKIP LOCKED`, e só uma aplica o movimento. Referência que nunca chega continua pendente; expiração e limite de tentativas ficam no ticket 14.
+O worker para em `SIGTERM`/`SIGINT` depois de concluir a execução em andamento, antes de fechar o ORM. Várias instâncias podem rodar o worker: a linha da pendência é bloqueada no PostgreSQL com `SKIP LOCKED`, e só uma confirma a tentativa ou o resultado terminal. Falha SQL desfaz também o contador; a tentativa não é consumida.
 
-Teste focal: `bun test tests/integration/pending-reference.test.ts`. Ele cobre REFUND/ROLLBACK, replay durante e após a pendência, duas instâncias concorrentes, referência rejeitada e uma instância nova lendo a pendência persistida. Decisão e limites: [resolução de referências](ARCHITECTURE.md#resolução-de-referências-pendentes).
+Aplique `bun run migration:up` antes do startup. Testes focais com PostgreSQL de testes iniciado: `bun test tests/integration/pending-reference.test.ts tests/integration/reference-expiration-schema.test.ts`; domínio: `bun test tests/domain/wager-transaction.test.ts tests/domain/rollback.test.ts`. Tempo explícito em serviço/worker permite exercitar backoff e esgotamento sem esperar 243 segundos. Comandos executados, resultados e limites do ticket 14: [expiração de referências](docs/verification.md#expiração-de-referências--2026-10-23).
 
 ### Consultar transação
 
@@ -200,7 +204,7 @@ A integração exige PostgreSQL real e banco dedicado terminado em `_test`; os t
 
 Para verificar somente BET: `bun test tests/integration/bet-http.test.ts`. O arquivo cobre contrato, sucesso, rejeição, rollback induzido, replay, conflitos e reinício de aplicação/pool.
 
-Para verificar a resolução de referências: `bun test tests/integration/pending-reference.test.ts`. Usa o mesmo PostgreSQL de testes e não inicia o worker no bootstrap dos testes HTTP; a varredura é chamada pelo próprio teste.
+Para verificar a resolução e a expiração de referências: `bun test tests/integration/pending-reference.test.ts`. Usa o mesmo PostgreSQL de testes e não inicia o worker no bootstrap dos testes HTTP; os testes chamam serviço/worker com tempo explícito para controlar os retries.
 
 ### Concorrência entre processos
 
@@ -234,6 +238,8 @@ Migration `20261022000400` preserva OPENING e adiciona BET; seu `down` recusa ex
 Migration `20261023000100` adiciona hash obrigatório para BET, preenche histórico existente e preserva OPENING sem hash. Seu `down` remove apenas hash e check; histórico financeiro permanece. Pare todas as APIs antes de migrar ou reverter; código antigo não grava o hash exigido pelo novo schema.
 
 Migration `20261023000500` adiciona ROLLBACK e índice único parcial separado de REFUND. Seu `down` restaura o schema anterior somente sem histórico ROLLBACK, inclusive rejeições e pendências; com histórico, recusa sem apagá-lo. Pare APIs antes de migrar ou reverter.
+
+Migration `20261023000600` adiciona contador de tentativas, próximo horário persistido e `REFERENCE_NOT_FOUND`; pendências anteriores ficam elegíveis a partir de `created_at`, com contador zero. Seu `down` recusa execução se houver rejeição por esgotamento, sem apagar histórico; caso contrário, remove a política persistida e restaura os checks anteriores. Pare todas as APIs antes de migrar ou reverter.
 
 Migration `20261023000400` adiciona REFUND e índice único para devoluções processadas da mesma referência. `down` restaura BET/WIN/LOSS apenas sem histórico REFUND, inclusive pendências e rejeições; caso contrário, recusa sem apagar auditoria. Pare APIs antes de migrar ou reverter.
 

@@ -44,8 +44,8 @@ export class PendingReferenceWorker {
     await this.running;
   }
 
-  runOnce(): Promise<PendingReferenceBatch> {
-    return this.wagering.resolvePendingReferences(this.pageSize);
+  runOnce(at?: Date): Promise<PendingReferenceBatch> {
+    return this.wagering.resolvePendingReferences(this.pageSize, at);
   }
 
   private schedule(): void {

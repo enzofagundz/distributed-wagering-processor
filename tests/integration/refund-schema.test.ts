@@ -7,13 +7,23 @@ if (!url || !new URL(url).pathname.endsWith("_test"))
   throw new Error(
     "TEST_DATABASE_URL must point to a dedicated database ending in _test",
   );
+const suiteSchema = `refund_suite_${crypto.randomUUID().replaceAll("-", "")}`;
 let orm: MikroORM;
 beforeAll(async () => {
-  orm = await MikroORM.init(databaseConfig(url));
-  await orm.migrator.up();
+  orm = await MikroORM.init({
+    ...databaseConfig(url),
+    schema: suiteSchema,
+    driverOptions: { connection: { options: `-c search_path=${suiteSchema}` } },
+  });
+  await orm.em.execute(`create schema ${suiteSchema}`);
+  await orm.migrator.up({ to: "Migration20261023000400" });
 });
 afterAll(async () => {
-  await orm?.close();
+  try {
+    await orm?.em.execute(`drop schema if exists ${suiteSchema} cascade`);
+  } finally {
+    await orm?.close();
+  }
 });
 
 type Fixture = {
@@ -375,7 +385,7 @@ test("REFUND migration down restores LOSS schema and up reapplies successful ref
         insertTransaction(nested, fixture),
       );
     }, database);
-    await database.migrator.up();
+    await database.migrator.up({ to: "Migration20261023000400" });
     await withFixture(async (em, fixture) => {
       await insertTransaction(em, fixture);
       await expectSqlState(em, "23505", (nested) =>

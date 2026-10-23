@@ -93,9 +93,12 @@ test("resolving a pending REFUND after its BET arrives applies one credit", asyn
     ...pending,
     idempotentReplay: true,
   });
-  expect(await wagering.resolvePendingReference(pending.transactionId)).toBe(
-    "PROCESSED",
-  );
+  expect(
+    await wagering.resolvePendingReference(
+      pending.transactionId,
+      new Date(Date.now() + 1000),
+    ),
+  ).toBe("PROCESSED");
 
   expect(await wagering.get({ id: pending.transactionId })).toMatchObject({
     status: "PROCESSED",
@@ -196,6 +199,7 @@ test("concurrent resolvers apply a pending REFUND once and the other skips", asy
     const lock = orm.em.fork();
     await lock.begin();
     const resolutions: Promise<string>[] = [];
+    let releasedAt: Date;
     try {
       await lock.execute("select id from wallets where id = ? for update", [
         identity.walletId,
@@ -217,12 +221,17 @@ test("concurrent resolvers apply a pending REFUND once and the other skips", asy
       }
       expect(blocked).toBe(1);
     } finally {
+      releasedAt = new Date();
       await lock.rollback();
     }
     expect((await Promise.all(resolutions)).sort()).toEqual([
       "PROCESSED",
       "SKIPPED",
     ]);
+    const resolved = await wagering.get({ id: pending.transactionId });
+    expect(resolved.processedAt!.getTime()).toBeGreaterThanOrEqual(
+      releasedAt.getTime(),
+    );
   } finally {
     await other.orm.close();
   }
@@ -476,9 +485,12 @@ test("an unresolved sweep keeps the balance observed at acceptance", async () =>
     idempotentReplay: true,
   });
   expect((await wagering.submit(bet)).status).toBe("PROCESSED");
-  expect(await wagering.resolvePendingReference(pending.transactionId)).toBe(
-    "PROCESSED",
-  );
+  expect(
+    await wagering.resolvePendingReference(
+      pending.transactionId,
+      new Date(Date.now() + 1000),
+    ),
+  ).toBe("PROCESSED");
   expect(await wagering.get({ id: pending.transactionId })).toMatchObject({
     status: "PROCESSED",
     balance: { amount: "125.00", currency: "BRL" },
@@ -487,5 +499,212 @@ test("an unresolved sweep keeps the balance observed at acceptance", async () =>
     consistent: true,
     storedBalance: { amount: "125.00", currency: "BRL" },
     checkedEntries: 4,
+  });
+});
+
+test("missing reference retries with persisted backoff and rejects after restart without ledger", async () => {
+  const identity = await wallet();
+  const refund = input(identity, "REFUND", crypto.randomUUID());
+  const pending = await wagering.submit(refund);
+  const at = new Date();
+  expect(
+    await wagering.resolvePendingReference(pending.transactionId, at),
+  ).toBe("PENDING_REFERENCE");
+  expect(
+    await wagering.resolvePendingReference(
+      pending.transactionId,
+      new Date(at.getTime() + 999),
+    ),
+  ).toBe("SKIPPED");
+  const restarted = await secondService("expiry");
+  try {
+    const worker = new PendingReferenceWorker(restarted.service);
+    let elapsed = 0;
+    for (const delay of [
+      1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000,
+    ]) {
+      elapsed += delay;
+      expect(
+        await restarted.service.resolvePendingReference(
+          pending.transactionId,
+          new Date(at.getTime() + elapsed - 1),
+        ),
+      ).toBe("SKIPPED");
+      await worker.runOnce(new Date(at.getTime() + elapsed));
+      expect(
+        (await restarted.service.get({ id: pending.transactionId })).status,
+      ).toBe(elapsed === 243000 ? "REJECTED" : "PENDING_REFERENCE");
+    }
+    expect(
+      await restarted.service.get({ id: pending.transactionId }),
+    ).toMatchObject({
+      status: "REJECTED",
+      failureCode: "REFERENCE_NOT_FOUND",
+      balance: { amount: "100.00", currency: "BRL" },
+    });
+    expect(await restarted.service.submit(refund)).toMatchObject({
+      status: "REJECTED",
+      failureCode: "REFERENCE_NOT_FOUND",
+      idempotentReplay: true,
+    });
+  } finally {
+    await restarted.orm.close();
+  }
+  expect(await events(pending.transactionId)).toEqual([
+    {
+      event_type: "WagerTransactionPendingReference",
+      kind: "REFUND",
+      failure_code: null,
+    },
+    {
+      event_type: "WagerTransactionRejected",
+      kind: "REFUND",
+      failure_code: "REFERENCE_NOT_FOUND",
+    },
+  ]);
+  expect(await wallets.reconcile(identity.walletId)).toMatchObject({
+    consistent: true,
+    storedBalance: { amount: "100.00", currency: "BRL" },
+    checkedEntries: 1,
+  });
+});
+
+test("expiration outbox failure rolls back the last attempt and concurrent retries reject once", async () => {
+  const identity = await wallet();
+  const missing = crypto.randomUUID();
+  const rollback = input(identity, "ROLLBACK", missing);
+  const pending = await wagering.submit(rollback);
+  const start = Date.now();
+  for (const elapsed of [
+    0, 1000, 3000, 7000, 15000, 31000, 63000, 123000, 183000,
+  ]) {
+    expect(
+      await wagering.resolvePendingReference(
+        pending.transactionId,
+        new Date(start + elapsed),
+      ),
+    ).toBe("PENDING_REFERENCE");
+  }
+  const at = new Date(start + 243000);
+  const name = `fail_expiration_${crypto.randomUUID().replaceAll("-", "")}`;
+  await orm.em
+    .execute(`create function ${name}() returns trigger language plpgsql as $$
+    begin
+      if new.payload->>'correlationId' = '${pending.transactionId}' and new.event_type = 'WagerTransactionRejected'
+        then raise exception 'induced expiration outbox failure'; end if;
+      return new;
+    end $$`);
+  await orm.em.execute(
+    `create trigger ${name} before insert on outbox_messages for each row execute function ${name}()`,
+  );
+  try {
+    await expect(
+      wagering.resolvePendingReference(pending.transactionId, at),
+    ).rejects.toThrow("induced expiration outbox failure");
+    expect(await wagering.get({ id: pending.transactionId })).toMatchObject({
+      status: "PENDING_REFERENCE",
+      processedAt: null,
+    });
+    expect(await events(pending.transactionId)).toEqual([
+      {
+        event_type: "WagerTransactionPendingReference",
+        kind: "ROLLBACK",
+        failure_code: null,
+      },
+    ]);
+  } finally {
+    await orm.em.execute(`drop trigger ${name} on outbox_messages`);
+    await orm.em.execute(`drop function ${name}()`);
+  }
+  const other = await secondService("expiry-concurrent");
+  try {
+    const results = await Promise.all([
+      wagering.resolvePendingReference(pending.transactionId, at),
+      other.service.resolvePendingReference(pending.transactionId, at),
+    ]);
+    expect(results.sort()).toEqual(["REJECTED", "SKIPPED"]);
+  } finally {
+    await other.orm.close();
+  }
+  const lateBet = input(identity, "BET");
+  lateBet.externalTransactionId = missing;
+  expect((await wagering.submit(lateBet)).status).toBe("PROCESSED");
+  expect(
+    await wagering.resolvePendingReference(pending.transactionId, at),
+  ).toBe("SKIPPED");
+  expect(await wagering.submit(rollback)).toMatchObject({
+    status: "REJECTED",
+    failureCode: "REFERENCE_NOT_FOUND",
+    balance: { amount: "100.00", currency: "BRL" },
+    idempotentReplay: true,
+  });
+  expect(await events(pending.transactionId)).toEqual([
+    {
+      event_type: "WagerTransactionPendingReference",
+      kind: "ROLLBACK",
+      failure_code: null,
+    },
+    {
+      event_type: "WagerTransactionRejected",
+      kind: "ROLLBACK",
+      failure_code: "REFERENCE_NOT_FOUND",
+    },
+  ]);
+  expect(await wallets.reconcile(identity.walletId)).toMatchObject({
+    consistent: true,
+    storedBalance: { amount: "75.00", currency: "BRL" },
+    checkedEntries: 2,
+  });
+});
+
+test("last attempt resolves an arrived BET and dependent ROLLBACK rejects an expired WIN", async () => {
+  const identity = await wallet();
+  const bet = input(identity, "BET");
+  const win = input(identity, "WIN", bet.externalTransactionId);
+  const waiting = await wagering.submit(win);
+  const orphan = input(identity, "WIN", crypto.randomUUID());
+  const orphanResult = await wagering.submit(orphan);
+  const rollback = input(identity, "ROLLBACK", orphan.externalTransactionId);
+  const dependent = await wagering.submit(rollback);
+  const start = Date.now();
+  for (const elapsed of [
+    0, 1000, 3000, 7000, 15000, 31000, 63000, 123000, 183000,
+  ]) {
+    for (const transactionId of [
+      waiting.transactionId,
+      orphanResult.transactionId,
+    ]) {
+      expect(
+        await wagering.resolvePendingReference(
+          transactionId,
+          new Date(start + elapsed),
+        ),
+      ).toBe("PENDING_REFERENCE");
+    }
+  }
+  expect((await wagering.submit(bet)).status).toBe("PROCESSED");
+  const at = new Date(start + 243000);
+  expect(
+    await wagering.resolvePendingReference(waiting.transactionId, at),
+  ).toBe("PROCESSED");
+  expect(
+    await wagering.resolvePendingReference(orphanResult.transactionId, at),
+  ).toBe("REJECTED");
+  expect(await wagering.get({ id: orphanResult.transactionId })).toMatchObject({
+    status: "REJECTED",
+    failureCode: "REFERENCE_NOT_FOUND",
+  });
+  expect(
+    await wagering.resolvePendingReference(dependent.transactionId, at),
+  ).toBe("REJECTED");
+  expect(await wagering.get({ id: dependent.transactionId })).toMatchObject({
+    status: "REJECTED",
+    failureCode: "REFERENCE_NOT_PROCESSED",
+    referenceTransactionId: orphanResult.transactionId,
+  });
+  expect(await wallets.reconcile(identity.walletId)).toMatchObject({
+    consistent: true,
+    storedBalance: { amount: "100.00", currency: "BRL" },
+    checkedEntries: 3,
   });
 });

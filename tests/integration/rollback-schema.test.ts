@@ -7,13 +7,23 @@ if (!url || !new URL(url).pathname.endsWith("_test"))
   throw new Error(
     "TEST_DATABASE_URL must point to a dedicated database ending in _test",
   );
+const suiteSchema = `rollback_suite_${crypto.randomUUID().replaceAll("-", "")}`;
 let orm: MikroORM;
 beforeAll(async () => {
-  orm = await MikroORM.init(databaseConfig(url));
-  await orm.migrator.up();
+  orm = await MikroORM.init({
+    ...databaseConfig(url),
+    schema: suiteSchema,
+    driverOptions: { connection: { options: `-c search_path=${suiteSchema}` } },
+  });
+  await orm.em.execute(`create schema ${suiteSchema}`);
+  await orm.migrator.up({ to: "Migration20261023000500" });
 });
 afterAll(async () => {
-  await orm?.close();
+  try {
+    await orm?.em.execute(`drop schema if exists ${suiteSchema} cascade`);
+  } finally {
+    await orm?.close();
+  }
 });
 
 type Fixture = {
@@ -130,7 +140,7 @@ async function withIsolatedSchema(run: (database: MikroORM) => Promise<void>) {
       schema,
       driverOptions: { connection: { options: `-c search_path=${schema}` } },
     });
-    await database.migrator.up();
+    await database.migrator.up({ to: "Migration20261023000500" });
     await run(database);
   } finally {
     await database?.close();
@@ -354,7 +364,7 @@ test("ROLLBACK migration down preserves REFUND schema and up restores rollback u
         insertTransaction(nested, fixture),
       );
     }, database);
-    await database.migrator.up();
+    await database.migrator.up({ to: "Migration20261023000500" });
     await withFixture(async (em, fixture) => {
       await insertTransaction(em, fixture, { kind: "REFUND" });
       await insertTransaction(em, fixture);
