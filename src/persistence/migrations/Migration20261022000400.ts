@@ -1,4 +1,4 @@
-import { Migration } from '@mikro-orm/migrations';
+import { Migration } from "@mikro-orm/migrations";
 
 export class Migration20261022000400 extends Migration {
   override async up(): Promise<void> {
@@ -40,7 +40,9 @@ export class Migration20261022000400 extends Migration {
           and ((status = 'PROCESSED' and failure_code is null)
             or (status = 'REJECTED' and failure_code is not distinct from 'INSUFFICIENT_FUNDS')))
       )`);
-    this.addSql("create unique index wager_transactions_opening_wallet_unique on wager_transactions (wallet_id) where kind = 'OPENING'");
+    this.addSql(
+      "create unique index wager_transactions_opening_wallet_unique on wager_transactions (wallet_id) where kind = 'OPENING'",
+    );
   }
 
   override async down(): Promise<void> {

@@ -1,9 +1,11 @@
-import { Migration } from '@mikro-orm/migrations';
+import { Migration } from "@mikro-orm/migrations";
 
 export class Migration20261023000400 extends Migration {
   override async up(): Promise<void> {
     this.replaceChecks(true);
-    this.addSql("create unique index wager_transactions_refund_reference_unique on wager_transactions (reference_transaction_id) where kind = 'REFUND' and status = 'PROCESSED'");
+    this.addSql(
+      "create unique index wager_transactions_refund_reference_unique on wager_transactions (reference_transaction_id) where kind = 'REFUND' and status = 'PROCESSED'",
+    );
   }
 
   override async down(): Promise<void> {
@@ -13,12 +15,14 @@ export class Migration20261023000400 extends Migration {
         raise exception 'Cannot remove REFUND schema while REFUND history exists' using errcode = '55000';
       end if;
     end $$`);
-    this.addSql('drop index wager_transactions_refund_reference_unique');
+    this.addSql("drop index wager_transactions_refund_reference_unique");
     this.replaceChecks(false);
   }
 
   private replaceChecks(includeRefund: boolean): void {
-    const externalKinds = includeRefund ? "'BET', 'WIN', 'LOSS', 'REFUND'" : "'BET', 'WIN', 'LOSS'";
+    const externalKinds = includeRefund
+      ? "'BET', 'WIN', 'LOSS', 'REFUND'"
+      : "'BET', 'WIN', 'LOSS'";
     const referencedKinds = includeRefund ? "'WIN', 'REFUND'" : "'WIN'";
     this.addSql(`alter table wager_transactions
       drop constraint wager_transactions_kind_check,
@@ -64,9 +68,13 @@ export class Migration20261023000400 extends Migration {
             or (kind = 'WIN' and status = 'REJECTED' and failure_code is not null
               and failure_code in ('REFERENCE_MISMATCH', 'REFERENCE_NOT_PROCESSED')
               and processed_at is not null and isfinite(processed_at))
-            ${includeRefund ? `or (kind = 'REFUND' and status = 'REJECTED' and failure_code is not null
+            ${
+              includeRefund
+                ? `or (kind = 'REFUND' and status = 'REJECTED' and failure_code is not null
               and failure_code in ('REFERENCE_MISMATCH', 'REFERENCE_NOT_PROCESSED', 'REFERENCE_ALREADY_REFUNDED')
-              and processed_at is not null and isfinite(processed_at))` : ''}
+              and processed_at is not null and isfinite(processed_at))`
+                : ""
+            }
             or (kind in (${referencedKinds}) and status = 'PENDING_REFERENCE' and failure_code is null and processed_at is null)
           ))
       )`);

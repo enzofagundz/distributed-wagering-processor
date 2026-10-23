@@ -1,7 +1,9 @@
-import { Migration } from '@mikro-orm/migrations';
+import { Migration } from "@mikro-orm/migrations";
 
 export class Migration20261023000300 extends Migration {
-  override async up(): Promise<void> { this.replaceChecks(true); }
+  override async up(): Promise<void> {
+    this.replaceChecks(true);
+  }
 
   override async down(): Promise<void> {
     this.addSql(`do $$ begin
@@ -15,7 +17,9 @@ export class Migration20261023000300 extends Migration {
 
   private replaceChecks(includeLoss: boolean): void {
     const externalKinds = includeLoss ? "'BET', 'WIN', 'LOSS'" : "'BET', 'WIN'";
-    const unreferencedKinds = includeLoss ? "'OPENING', 'BET', 'LOSS'" : "'OPENING', 'BET'";
+    const unreferencedKinds = includeLoss
+      ? "'OPENING', 'BET', 'LOSS'"
+      : "'OPENING', 'BET'";
     this.addSql(`alter table wager_transactions
       drop constraint wager_transactions_kind_check,
       drop constraint wager_transactions_reference_shape,

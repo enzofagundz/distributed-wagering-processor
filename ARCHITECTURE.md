@@ -70,6 +70,8 @@ A constraint única `(player_id, currency)` resolve aberturas concorrentes no Po
 
 `POST /wagering/transactions` aceita BET, WIN, LOSS e REFUND e exige `Idempotency-Key`. OPENING continua interna; ROLLBACK ainda é rejeitado. UUIDs são normalizados para minúsculas. Identificadores textuais têm até 200 caracteres, sem espaços nas extremidades ou controles; provider `internal` é reservado. Valor deve ser positivo, com duas casas e até 28 dígitos inteiros.
 
+`externalWagerKinds`, em `src/domain/wager-transaction.ts`, é a lista imutável de kinds externos usada pelo domínio e pelo DTO. `ExternalWagerKind` deriva dessa lista; `WagerKind` acrescenta OPENING para persistência e eventos. Serviço e contratos reutilizam esses tipos. Subconjuntos dos eventos preservam suas restrições, como ausência de LOSS no evento de rejeição e na factory que recebe ledger. Comparações específicas continuam nas regras de negócio. Migrations mantêm listas históricas próprias: importar o contrato atual faria uma migration antiga mudar ao adicionar uma operação.
+
 `WageringService.submit` usa um EntityManager novo por chamada e `transactional`. A primeira leitura da wallet usa `PESSIMISTIC_WRITE` (`SELECT … FOR UPDATE`). O lock dura até commit/rollback; a próxima aposta na mesma wallet espera e lê o saldo confirmado pela anterior. Wallets diferentes não compartilham lock financeiro. Alternativa: versão otimista com retry limitado; descartada neste incremento para evitar repetição do caso de uso após conflito.
 
 O serviço valida player e moeda contra a wallet carregada antes de escrever. Provider tem validação de formato e nome reservado, não autenticação nem cadastro. A API permanece local e sem IdP.

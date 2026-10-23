@@ -238,3 +238,11 @@ Nest Boost `application_info` confirmou versões instaladas e introspecção dis
 Registro técnico PT-BR para desenvolvedor/avaliador, revisado com humanizer-pt-br e no-ai-slop. "Reversões pendentes" foi substituído por REFUND entregue e ROLLBACK pendente; comandos ficaram no README, decisões na arquitetura e resultados aqui. Sem linguagem promocional, atribuição vaga ou promessa de publicação. Não houve SQS, publisher, resolução agendada, crash entre commit e ack, rebuild de imagem ou Postman gráfico; esses limites não foram tratados como funcionalidades entregues.
 
 Code-review contra baseline em dois agentes independentes: Standards sem violações documentadas ou smells materiais; Spec sem lacunas do ticket, escopo extra ou implementação incorreta. Revisões estáticas incluíram migration e testes novos ainda não rastreados, sem repetir checks. Commit solicitado na branch atual; arquivos ignorados de continuidade e ticket atualizados sem inclusão forçada.
+
+## Centralização de kinds — 2026-10-23
+
+Lista imutável e tipos derivados em `src/domain/wager-transaction.ts`, reutilizados pelo DTO, serviço, persistência e eventos. Migrations e regras específicas não foram alteradas. Refatoração sem novo comportamento; testes existentes foram reutilizados, sem testes de cópia da lista ou de imports.
+
+`bun run typecheck` e `bun test tests/domain/wager-transaction.test.ts tests/domain/refund.test.ts`: aprovados, 41 testes e 160 assertions. Verificação final: `bun run typecheck && bun run lint && TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test`: 177 testes em 17 arquivos, 1378 assertions, zero falhas.
+
+Smoke separado com `bun /tmp/wager-kinds-smoke.ts`: aplicação Nest real em porta dinâmica e PostgreSQL de testes em container. BET, WIN, LOSS e REFUND retornaram 201; oito kinds inválidos foram rejeitados por HTTP e domínio. HTTP preserva precedência de validação: null retorna `INVALID_TRANSACTION_PAYLOAD`; demais entradas inválidas retornam `INVALID_TRANSACTION_KIND`. Primeiro harness esperava código de kind também para null; corrigida expectativa, sem mudar produção. Saldo final `110.00 BRL`, reconciliação consistente. Aplicação e pool encerrados; harness temporário removido. Não houve novo teste de reinício, SQS ou publisher nesta refatoração.

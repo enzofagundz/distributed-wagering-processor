@@ -1,4 +1,4 @@
-import { EntitySchema } from '@mikro-orm/core';
+import { EntitySchema } from "@mikro-orm/core";
 
 export interface OutboxMessageRecord {
   id: string;
@@ -10,14 +10,19 @@ export interface OutboxMessageRecord {
 }
 
 export const outboxMessageSchema = new EntitySchema<OutboxMessageRecord>({
-  name: 'OutboxMessageRecord',
-  tableName: 'outbox_messages',
+  name: "OutboxMessageRecord",
+  tableName: "outbox_messages",
   properties: {
-    id: { type: 'uuid', primary: true },
-    aggregateId: { type: 'uuid' },
-    eventType: { type: 'string', columnType: 'text' },
-    payload: { type: 'json', columnType: 'jsonb' },
-    occurredAt: { type: 'Date', columnType: 'timestamptz' },
-    publishedAt: { type: 'Date', columnType: 'timestamptz', nullable: true, default: null },
+    id: { type: "uuid", primary: true },
+    aggregateId: { type: "uuid" },
+    eventType: { type: "string", columnType: "text" },
+    payload: { type: "json", columnType: "jsonb" },
+    occurredAt: { type: "Date", columnType: "timestamptz" },
+    publishedAt: {
+      type: "Date",
+      columnType: "timestamptz",
+      nullable: true,
+      default: null,
+    },
   },
 });

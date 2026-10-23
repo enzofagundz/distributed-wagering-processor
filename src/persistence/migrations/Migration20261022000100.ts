@@ -1,4 +1,4 @@
-import { Migration } from '@mikro-orm/migrations';
+import { Migration } from "@mikro-orm/migrations";
 
 export class Migration20261022000100 extends Migration {
   override async up(): Promise<void> {
@@ -16,6 +16,6 @@ export class Migration20261022000100 extends Migration {
   }
 
   override async down(): Promise<void> {
-    this.addSql('drop table wallets');
+    this.addSql("drop table wallets");
   }
 }
