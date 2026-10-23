@@ -101,6 +101,18 @@ Wallet é lida por ID e reidratada. Ledger verifica existência da wallet e lê 
 
 Keyset evita deslocamento de linhas existentes, sem manter um snapshot entre consultas. Linhas novas posteriores à âncora podem aparecer; inserções retroativas anteriores exigem nova travessia. O cursor é opaco, mas não é secreto nem funciona como credencial ou mecanismo de autorização. Contrato detalhado e exemplos: [Postman](docs/postman/README.md).
 
+### Consulta de transação
+
+Ambas as rotas GET usam `WageringService.get`: um EntityManager novo faz um SELECT por ID interno ou pelo par completo `(providerId, externalTransactionId)`. O índice único existente atende à identidade externa. Nenhum lock financeiro, flush, processamento ou evento é necessário; nenhuma migration foi adicionada.
+
+A projeção explícita preserva identidade, valor/moeda, status, datas e `failureCode` quando presente. Saldo vem de `observedBalance`, não da wallet atual; chave de idempotência e hash não são expostos. UUID aceita maiúsculas e é normalizado; identificadores externos preservam caixa e regras da submissão: até 200 caracteres, sem controles ou espaços nas extremidades, provider `internal` reservado. Identidade ausente retorna `TRANSACTION_NOT_FOUND`; inválida falha antes de consultar.
+
+Consulta de rejeição retorna 200 com resultado persistido; 422 pertence à tentativa de processamento. Não há `idempotentReplay` em leitura. OPENING é acessível por ID interno, com metadados externos nulos e sem `balance` quando não há saldo observado persistido. Não são inventados dados de provedor ou saldo histórico.
+
+Alternativa descartada: reconstruir resultado pelo ledger, que não contém lançamentos de rejeições. Ler diretamente a transação também preserva o saldo original após outras apostas e reinício, sem cache local. A leitura vê somente registros confirmados; um 404 não prova que uma submissão concorrente nunca fará commit.
+
+Referência: [NestJS controllers](https://docs.nestjs.com/controllers), consultada via Context7 para `@Get`, `@Param` e status 200; compatibilidade exercitada no NestJS 11.1.16. Evidências: [consulta de transação](docs/verification.md#consulta-de-transação--2026-10-23).
+
 ## Reconciliação
 
 Decisão adotada no ticket 04 (§9): um único SELECT parametrizado lê wallet e soma assinada de todo ledger via agregação lateral. CREDIT soma, DEBIT subtrai; histórico vazio vale `0.00`. `numeric` preserva escala e precisão; soma não é limitada novamente a numeric(30,2). Strings monetárias nunca passam por `number`. `difference = storedBalance - calculatedBalance`, podendo ser negativa; `checkedEntries` conta lançamentos, não transações.
@@ -119,7 +131,7 @@ Referência consultada via Context7: [PostgreSQL 17 — READ COMMITTED](https://
 | Status | Códigos / comportamento |
 |---|---|
 | 400 | `INVALID_WALLET_PAYLOAD`, `INVALID_IDENTITY`, `INVALID_AMOUNT`, `INVALID_CURRENCY`, `INITIAL_BALANCE_NEGATIVE`, `INVALID_LEDGER_QUERY`; BET: `INVALID_TRANSACTION_PAYLOAD`, `INVALID_TRANSACTION_KIND`, `INVALID_IDEMPOTENCY_KEY`, `INVALID_PROVIDER`, `PLAYER_WALLET_MISMATCH`, `CURRENCY_MISMATCH` |
-| 404 | `WALLET_NOT_FOUND` |
+| 404 | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND` |
 | 409 | `WALLET_ALREADY_EXISTS`, `TRANSACTION_ALREADY_EXISTS`, `IDEMPOTENCY_CONFLICT` |
 | 422 | BET persistida REJECTED com `failureCode: "INSUFFICIENT_FUNDS"`, transactionId, saldo observado; replay mantém resultado com idempotentReplay true |
 | 503 | BET: `TEMPORARY_UNAVAILABLE` para códigos conhecidos de conexão, shutdown, serialização, deadlock ou timeout/indisponibilidade de lock; sem retry automático |

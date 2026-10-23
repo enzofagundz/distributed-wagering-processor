@@ -2,7 +2,7 @@
 
 Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECHNICAL_CHALLENGE.md), com Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL.
 
-A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET por HTTP. Abertura positiva e BET confirmada persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL.
+A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva e BET confirmada persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL.
 
 WIN, LOSS, reversões, publisher, SQS/inbox, autenticação e health estão pendentes. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
@@ -75,6 +75,19 @@ curl -i http://127.0.0.1:3000/wagering/transactions \
 Envie outra aposta de `80.00` com nova chave e novo `externalTransactionId`: retorna 422 com `REJECTED`, `failureCode: "INSUFFICIENT_FUNDS"` e saldo `20.00`. Rejeição fica auditada, sem ledger nem incremento de versão. Header obrigatório; somente BET externa é aceita. Identificadores textuais têm até 200 caracteres; valor deve ser positivo e caber em `numeric(30,2)`.
 
 Reenvie exatamente a primeira BET com a mesma chave: retorna 201, identidade e saldo originais, com `idempotentReplay: true`, mesmo após outras apostas ou reinício. Payload diferente com a mesma chave retorna 409 `IDEMPOTENCY_CONFLICT`. Outra chave com o mesmo par provider/external ID retorna 409 `TRANSACTION_ALREADY_EXISTS`. Nenhum desses reenvios gera novo débito ou evento. Chave tem escopo global; identidade externa tem escopo por provider. Hash, precedência dos conflitos e política HTTP: [idempotência de BET](ARCHITECTURE.md#idempotência-de-bet).
+
+### Consultar transação
+
+```sh
+curl -i http://127.0.0.1:3000/wagering/transactions/TRANSACTION_ID_RETORNADO
+curl -i http://127.0.0.1:3000/providers/provider-a/wagering/transactions/bet-001
+```
+
+As duas rotas retornam 200 com a mesma representação: `transactionId`, `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money`, `status`, `balance`, `createdAt` e `processedAt`. Rejeições incluem `failureCode`; consultá-las retorna 200, não o 422 da submissão. `balance` é o saldo observado na operação, não o atual. Consulta não executa aposta nem retorna `idempotentReplay`, chave de idempotência ou hash.
+
+UUID inválido retorna 400 `INVALID_IDENTITY`; provider inválido, 400 `INVALID_PROVIDER`; identidade externa inválida, 400 `INVALID_IDENTITY`. Identidade válida ausente retorna 404 `TRANSACTION_NOT_FOUND`. Provider e ID externo são sensíveis a maiúsculas; codifique cada segmento com percent-encoding quando necessário. OPENING pode ser consultada por ID interno, sem identidade de provedor nem saldo observado. Contrato e decisão: [arquitetura](ARCHITECTURE.md#consulta-de-transação).
+
+Teste focal: `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/transaction-query-http.test.ts`. Usa o mesmo setup PostgreSQL abaixo, sem nova migration.
 
 ## Verificação
 

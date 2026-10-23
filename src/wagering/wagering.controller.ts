@@ -1,13 +1,14 @@
-import { Body, Controller, Headers, HttpException, Inject, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpException, Inject, Param, Post } from '@nestjs/common';
 import { DomainError } from '../domain/money';
+import { uuidPattern } from '../domain/wallet';
 import { SubmitBetDto, submitBetValidation } from './submit-bet.dto';
 import { WageringService } from './wagering-service';
 
-@Controller('wagering/transactions')
+@Controller()
 export class WageringController {
   constructor(@Inject(WageringService) private readonly wagering: WageringService) {}
 
-  @Post()
+  @Post('wagering/transactions')
   async submit(@Body(submitBetValidation) body: SubmitBetDto, @Headers('idempotency-key') idempotencyKey: unknown) {
     if (typeof idempotencyKey !== 'string' || idempotencyKey.length === 0 || idempotencyKey.length > 200
       || idempotencyKey.trim() !== idempotencyKey) throw new DomainError('INVALID_IDEMPOTENCY_KEY');
@@ -15,4 +16,22 @@ export class WageringController {
     if (result.status === 'REJECTED') throw new HttpException(result, 422);
     return result;
   }
+
+  @Get('wagering/transactions/:transactionId')
+  async get(@Param('transactionId') transactionId: string) {
+    if (!uuidPattern.test(transactionId)) throw new DomainError('INVALID_IDENTITY');
+    return this.wagering.get({ id: transactionId.toLowerCase() });
+  }
+
+  @Get('providers/:providerId/wagering/transactions/:externalTransactionId')
+  async getExternal(@Param('providerId') providerId: string, @Param('externalTransactionId') externalTransactionId: string) {
+    if (!isIdentity(providerId) || providerId.toLowerCase() === 'internal') throw new DomainError('INVALID_PROVIDER');
+    if (!isIdentity(externalTransactionId)) throw new DomainError('INVALID_IDENTITY');
+    return this.wagering.get({ providerId, externalTransactionId });
+  }
+}
+
+function isIdentity(value: string): boolean {
+  return value.length > 0 && value.length <= 200 && value === value.trim()
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
 }

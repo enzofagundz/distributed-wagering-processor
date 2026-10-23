@@ -110,3 +110,19 @@ Documentação mantém registro técnico em PT-BR para desenvolvedor/avaliador. 
 Limites: não houve três processos simultâneos, 50 reenvios, broker, ack ou crash forçado entre commit e resposta. Esses cenários seguem nos tickets de concorrência/mensageria. BET é síncrona; 202 é política reservada para pendências futuras, não comportamento implementado ou testado neste ticket. Rebuild de imagem e interface Postman não executados.
 
 Revisão code-review contra baseline em dois agentes independentes: Standards sem violações documentadas ou smells materiais; Spec sem lacunas ou erros acionáveis. Incluiu migration nova, que ainda não aparecia em `git diff` por estar untracked. Revisão somente leitura; nenhum check repetido. Arquivos de continuidade, índice de decisões e ticket local foram atualizados sem forçar inclusão de caminhos ignorados.
+
+## Consulta de transação — 2026-10-23
+
+Ticket 07, baseline `e78c01843f8fd807f65e86a6fdd8c33234610b80`. Bun 1.3.14, NestJS 11.1.16, MikroORM 6.6.8 e PostgreSQL 17.6 em container Podman preexistente na porta 55433. Docker CLI indisponível; `podman ps` confirmou banco saudável. Sem dependência ou migration nova.
+
+Seam confirmado: HTTP com PostgreSQL real, sem testes diretos de serviço. Primeiro teste falhou com 404 na consulta por ID; após implementação, passou. Arquivo focal `tests/integration/transaction-query-http.test.ts`: três testes, 58 assertions, zero falhas. Cobre valor acima de Number.MAX_SAFE_INTEGER, saldo observado preservado após outra aposta, consulta sem alteração de wallet/ledger, sucesso e rejeição após recriar aplicação/pool, isolamento por provider, caixa, caracteres codificados e erros 400/404.
+
+Smoke independente: `bun /tmp/transaction-query-smoke.ts`, harness temporário removido após uso. Iniciou `bun src/main.ts` na porta 3137 com banco de testes, abriu wallet de `100.00 BRL`, processou BET `80.00` e rejeitou outra `80.00`. Ambas as rotas retornaram 200 com resultados iguais antes e depois de SIGTERM, saída do processo e novo startup. Saldo final `20.00 BRL`; reconciliação consistente, diferença zero e dois lançamentos. UUID inválido retornou 400; inexistente retornou 404 `TRANSACTION_NOT_FOUND`. Wallet `d7b8cd35-0a55-4a33-bfb9-ffd31e9f399d`; transações `da91a57f-c761-46c1-8b56-cd82af2818a1` e `f7afc814-201e-49bf-91c5-2d749210eab4`. Processo próprio encerrado; auditoria e containers preservados.
+
+Verificação final: `bun run typecheck && TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test`: typecheck aprovado, 93 testes em dez arquivos, 571 assertions, zero falhas. Suíte completa executada uma vez ao final; arquivo focal e typecheck executados nos incrementos.
+
+Nest Boost inspecionou rotas antes e depois da alteração, mas servidor persistente continuou exibindo somente POST de transação; snapshot desatualizado reportado à ferramenta. HTTP real comprovou as duas GETs; não se atribui essa prova ao MCP. Context7 confirmou `@Get`, `@Param` e status 200 na documentação oficial do Nest. Nenhum `evaluate`, rebuild de imagem ou verificação visual Postman.
+
+Documentação mantém registro técnico para desenvolvedor/avaliador. humanizer-pt-br e no-ai-slop aplicadas: descrição inicial passou a incluir consulta de transação; contratos e exemplos usam nomes reais, sem qualificadores promocionais. Decisão fica na arquitetura; cobertura aponta para este registro, sem repetir resultados.
+
+Code-review em dois agentes independentes contra baseline: Standards sem violações documentadas ou smells materiais; Spec sem lacunas ou erros acionáveis. Ambos incluíram o teste novo ainda untracked e não repetiram checks.
