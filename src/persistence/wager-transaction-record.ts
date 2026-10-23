@@ -66,6 +66,11 @@ export const wagerTransactionSchema = new EntitySchema<WagerTransactionRecord>({
       expression:
         "create unique index wager_transactions_refund_reference_unique on wager_transactions (reference_transaction_id) where kind = 'REFUND' and status = 'PROCESSED'",
     },
+    {
+      name: "wager_transactions_rollback_reference_unique",
+      expression:
+        "create unique index wager_transactions_rollback_reference_unique on wager_transactions (reference_transaction_id) where kind = 'ROLLBACK' and status = 'PROCESSED'",
+    },
   ],
   uniques: [
     {

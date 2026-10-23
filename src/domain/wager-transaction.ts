@@ -6,6 +6,7 @@ export const externalWagerKinds = Object.freeze([
   "WIN",
   "LOSS",
   "REFUND",
+  "ROLLBACK",
 ] as const);
 export type ExternalWagerKind = (typeof externalWagerKinds)[number];
 export type WagerKind = "OPENING" | ExternalWagerKind;
@@ -14,7 +15,9 @@ export type FailureCode =
   | "INSUFFICIENT_FUNDS"
   | "REFERENCE_MISMATCH"
   | "REFERENCE_NOT_PROCESSED"
-  | "REFERENCE_ALREADY_REFUNDED";
+  | "REFERENCE_ALREADY_REFUNDED"
+  | "REFERENCE_ALREADY_ROLLED_BACK"
+  | "INSUFFICIENT_REVERSAL_FUNDS";
 
 export interface CreateWagerTransactionProps {
   id: string;
@@ -113,8 +116,9 @@ export class WagerTransaction {
       "referenceTransactionId" in props ||
       (props.kind !== "WIN" &&
         props.kind !== "REFUND" &&
+        props.kind !== "ROLLBACK" &&
         "referenceExternalTransactionId" in props) ||
-      (props.kind === "REFUND" &&
+      ((props.kind === "REFUND" || props.kind === "ROLLBACK") &&
         props.referenceExternalTransactionId === undefined)
     ) {
       throw new DomainError("INVALID_TRANSACTION_PAYLOAD");
@@ -205,7 +209,9 @@ export class WagerTransaction {
   resolveReference(reference: WagerReference | undefined, at: Date): void {
     this.assertPending(at);
     if (
-      (this.kind !== "WIN" && this.kind !== "REFUND") ||
+      (this.kind !== "WIN" &&
+        this.kind !== "REFUND" &&
+        this.kind !== "ROLLBACK") ||
       !this.referenceExternalTransactionId
     )
       throw new DomainError("INVALID_TRANSACTION_STATE");
@@ -218,14 +224,19 @@ export class WagerTransaction {
       referenceTransactionId: reference.id,
     });
     if (
-      reference.kind !== "BET" ||
+      (this.kind === "ROLLBACK"
+        ? reference.kind !== "BET" &&
+          reference.kind !== "WIN" &&
+          reference.kind !== "REFUND"
+        : reference.kind !== "BET") ||
       reference.providerId !== this.providerId ||
       reference.externalTransactionId !== this.referenceExternalTransactionId ||
       reference.walletId !== this.walletId ||
       reference.playerId !== this.playerId ||
       reference.currency !== this.money.currency ||
       reference.roundId !== this.roundId ||
-      (this.kind === "REFUND" && reference.amount !== this.money.toString())
+      ((this.kind === "REFUND" || this.kind === "ROLLBACK") &&
+        reference.amount !== this.money.toString())
     ) {
       this.reject("REFERENCE_MISMATCH", at);
     } else if (
@@ -240,10 +251,30 @@ export class WagerTransaction {
     }
   }
 
+  ledgerDirectionFor(reference?: WagerReference): "CREDIT" | "DEBIT" {
+    if (this.kind === "LOSS")
+      throw new DomainError("INVALID_TRANSACTION_STATE");
+    if (this.kind !== "ROLLBACK")
+      return this.kind === "BET" ? "DEBIT" : "CREDIT";
+    if (
+      !reference ||
+      reference.id !== this.referenceTransactionId ||
+      reference.status !== "PROCESSED" ||
+      (this.status !== "PENDING" && this.status !== "PROCESSED") ||
+      (reference.kind !== "BET" &&
+        reference.kind !== "WIN" &&
+        reference.kind !== "REFUND")
+    )
+      throw new DomainError("INVALID_TRANSACTION_STATE");
+    return reference.kind === "BET" ? "CREDIT" : "DEBIT";
+  }
+
   markPendingReference(): void {
     this.assertPending(new Date());
     if (
-      (this.kind !== "WIN" && this.kind !== "REFUND") ||
+      (this.kind !== "WIN" &&
+        this.kind !== "REFUND" &&
+        this.kind !== "ROLLBACK") ||
       !this.referenceExternalTransactionId
     )
       throw new DomainError("INVALID_TRANSACTION_STATE");
@@ -280,9 +311,12 @@ export class WagerTransaction {
           (code !== "REFERENCE_MISMATCH" &&
             code !== "REFERENCE_NOT_PROCESSED" &&
             !(
-              this.kind === "REFUND" &&
               this.referenceTransactionId &&
-              code === "REFERENCE_ALREADY_REFUNDED"
+              ((this.kind === "REFUND" &&
+                code === "REFERENCE_ALREADY_REFUNDED") ||
+                (this.kind === "ROLLBACK" &&
+                  (code === "REFERENCE_ALREADY_ROLLED_BACK" ||
+                    code === "INSUFFICIENT_REVERSAL_FUNDS")))
             ))
     ) {
       throw new DomainError("INVALID_TRANSACTION_STATE");

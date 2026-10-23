@@ -192,6 +192,8 @@ export class WageringService {
             updatedAt: record.updatedAt,
           });
           const at = new Date();
+          let direction: "CREDIT" | "DEBIT" =
+            transaction.kind === "BET" ? "DEBIT" : "CREDIT";
           if (transaction.referenceExternalTransactionId) {
             const reference = await em.findOne(wagerTransactionSchema, {
               providerId: transaction.providerId,
@@ -199,30 +201,42 @@ export class WageringService {
             });
             transaction.resolveReference(reference ?? undefined, at);
             if (
-              transaction.kind === "REFUND" &&
+              (transaction.kind === "REFUND" ||
+                transaction.kind === "ROLLBACK") &&
               transaction.status === "PENDING" &&
               transaction.referenceTransactionId
             ) {
-              const refunded = await em.findOne(wagerTransactionSchema, {
-                kind: "REFUND",
+              const reversed = await em.findOne(wagerTransactionSchema, {
+                kind: transaction.kind,
                 status: "PROCESSED",
                 referenceTransactionId: transaction.referenceTransactionId,
               });
-              if (refunded)
-                transaction.reject("REFERENCE_ALREADY_REFUNDED", at);
+              if (reversed)
+                transaction.reject(
+                  transaction.kind === "REFUND"
+                    ? "REFERENCE_ALREADY_REFUNDED"
+                    : "REFERENCE_ALREADY_ROLLED_BACK",
+                  at,
+                );
             }
+            if (transaction.status === "PENDING")
+              direction = transaction.ledgerDirectionFor(
+                reference ?? undefined,
+              );
           }
           let resultingWallet = wallet;
           if (transaction.status === "PENDING") {
-            if (
-              transaction.kind === "BET" &&
-              wallet.balance.isLessThan(money)
-            ) {
-              transaction.reject("INSUFFICIENT_FUNDS", at);
+            if (direction === "DEBIT" && wallet.balance.isLessThan(money)) {
+              transaction.reject(
+                transaction.kind === "ROLLBACK"
+                  ? "INSUFFICIENT_REVERSAL_FUNDS"
+                  : "INSUFFICIENT_FUNDS",
+                at,
+              );
             } else {
               if (transaction.kind !== "LOSS") {
                 resultingWallet =
-                  transaction.kind === "BET"
+                  direction === "DEBIT"
                     ? wallet.debit(money, at)
                     : wallet.credit(money, at);
               }
@@ -238,7 +252,7 @@ export class WageringService {
                   id: crypto.randomUUID(),
                   walletId: wallet.id,
                   transactionId: transaction.id,
-                  direction: transaction.kind === "BET" ? "DEBIT" : "CREDIT",
+                  direction,
                   money,
                   balanceBefore: wallet.balance,
                   balanceAfter: resultingWallet.balance,

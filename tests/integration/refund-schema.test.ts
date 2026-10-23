@@ -130,7 +130,7 @@ async function withIsolatedSchema(run: (database: MikroORM) => Promise<void>) {
       schema,
       driverOptions: { connection: { options: `-c search_path=${schema}` } },
     });
-    await database.migrator.up();
+    await database.migrator.up({ to: "Migration20261023000400" });
     await run(database);
   } finally {
     await database?.close();

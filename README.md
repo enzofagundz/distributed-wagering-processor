@@ -2,9 +2,9 @@
 
 Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECHNICAL_CHALLENGE.md), com Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL.
 
-A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET, WIN, LOSS e REFUND por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva, BET, WIN e REFUND persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL. LOSS confirma resultado e evento sem movimentar saldo.
+A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET, WIN, LOSS, REFUND e ROLLBACK por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva e operações financeiras persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL. LOSS confirma resultado e evento sem movimentar saldo.
 
-ROLLBACK, publisher, SQS/inbox, autenticação e health estão pendentes. WIN e REFUND com referência ainda indisponível ficam persistidos, sem crédito; o worker de resolução também está pendente. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+Publisher, SQS/inbox, autenticação e health estão pendentes. WIN, REFUND e ROLLBACK com referência ainda indisponível ficam persistidos, sem movimento financeiro; o worker de resolução também está pendente. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
@@ -13,7 +13,7 @@ ROLLBACK, publisher, SQS/inbox, autenticação e health estão pendentes. WIN e 
 3. Leia [arquitetura e garantias atuais](ARCHITECTURE.md), [glossário](GLOSSARY.md) e decisões vinculadas.
 4. Consulte [evidências executadas](docs/verification.md) e [pendências por requisito](PROGRESS.md). Resultados históricos não substituem execução local.
 
-Wallets ficam em `src/wallets/`; submissão de BET, WIN, LOSS e REFUND, em `src/wagering/`. Cada funcionalidade tem controller, DTO, serviço e módulo. `src/app.module.ts` compõe módulos e registra filtro global compartilhado; `src/create-application.ts` recebe o ORM inicializado pelo chamador. Domínio e mapeamentos permanecem separados. Justificativa e injeção de dependências: [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) e [composição na arquitetura](ARCHITECTURE.md#composição-e-injeção).
+Wallets ficam em `src/wallets/`; submissão de BET, WIN, LOSS, REFUND e ROLLBACK, em `src/wagering/`. Cada funcionalidade tem controller, DTO, serviço e módulo. `src/app.module.ts` compõe módulos e registra filtro global compartilhado; `src/create-application.ts` recebe o ORM inicializado pelo chamador. Domínio e mapeamentos permanecem separados. Justificativa e injeção de dependências: [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) e [composição na arquitetura](ARCHITECTURE.md#composição-e-injeção).
 
 ## Executar
 
@@ -80,7 +80,7 @@ curl -i http://127.0.0.1:3000/wagering/transactions \
   -d '{"providerId":"provider-a","externalTransactionId":"bet-001","playerId":"PLAYER_RETORNADO","walletId":"ID_RETORNADO","roundId":"round-001","gameId":"fortune-chimp","kind":"BET","money":{"amount":"80.00","currency":"BRL"}}'
 ```
 
-Envie outra aposta de `80.00` com nova chave e novo `externalTransactionId`: retorna 422 com `REJECTED`, `failureCode: "INSUFFICIENT_FUNDS"` e saldo `20.00`. Rejeição fica auditada, sem ledger nem incremento de versão. Header obrigatório; BET, WIN, LOSS e REFUND são os kinds externos aceitos. Identificadores textuais têm até 200 caracteres; valor deve ser positivo e caber em `numeric(30,2)`.
+Envie outra aposta de `80.00` com nova chave e novo `externalTransactionId`: retorna 422 com `REJECTED`, `failureCode: "INSUFFICIENT_FUNDS"` e saldo `20.00`. Rejeição fica auditada, sem ledger nem incremento de versão. Header obrigatório; BET, WIN, LOSS, REFUND e ROLLBACK são os kinds externos aceitos. Identificadores textuais têm até 200 caracteres; valor deve ser positivo e caber em `numeric(30,2)`.
 
 Reenvie exatamente a primeira BET com a mesma chave: retorna 201, identidade e saldo originais, com `idempotentReplay: true`, mesmo após outras apostas ou reinício. Payload diferente com a mesma chave retorna 409 `IDEMPOTENCY_CONFLICT`. Outra chave com o mesmo par provider/external ID retorna 409 `TRANSACTION_ALREADY_EXISTS`. Nenhum desses reenvios gera novo débito ou evento. Chave tem escopo global; identidade externa tem escopo por provider. Hash, precedência dos conflitos e política HTTP: [idempotência de BET](ARCHITECTURE.md#idempotência-de-bet).
 
@@ -135,6 +135,23 @@ Referência ausente retorna 202 `PENDING_REFERENCE`, sem mudar saldo ou ledger. 
 
 Aplique `bun run migration:up` antes do startup. Testes com PostgreSQL real: `bun test tests/integration/refund.test.ts tests/integration/refund-schema.test.ts`; regras de domínio: `bun test tests/domain/wager-transaction.test.ts`. Decisão: [devolução de BET](ARCHITECTURE.md#devolução-de-bet-com-refund).
 
+### Desfazer movimento com ROLLBACK
+
+Após a BET de `80.00` sobre `100.00`, sem executar os outros exemplos:
+
+```sh
+curl -i http://127.0.0.1:3000/wagering/transactions \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: provider-a:rollback-001' \
+  -d '{"providerId":"provider-a","externalTransactionId":"rollback-001","playerId":"PLAYER_RETORNADO","walletId":"ID_RETORNADO","roundId":"round-001","gameId":"fortune-chimp","kind":"ROLLBACK","money":{"amount":"80.00","currency":"BRL"},"referenceExternalTransactionId":"bet-001"}'
+```
+
+Retorna 201 com saldo `100.00 BRL` e um CREDIT. ROLLBACK de WIN ou REFUND gera DEBIT do valor integral. Referência obrigatória deve estar PROCESSED, com mesmo provider, player, wallet, moeda e rodada. LOSS, OPENING e ROLLBACK não são referências elegíveis. Códigos de incompatibilidade e pendência seguem o contrato de REFUND.
+
+Débito sem saldo retorna 422 `INSUFFICIENT_REVERSAL_FUNDS`, distinto de BET sem saldo. Segunda reversão ROLLBACK da mesma referência retorna 422 `REFERENCE_ALREADY_ROLLED_BACK`. Ambas ficam auditadas, sem movimento. REFUND e ROLLBACK da mesma BET podem coexistir: unicidade é por tipo, conforme §7.4. Replay preserva resultado e saldo originais; pendência retorna 202 mesmo após a referência chegar.
+
+Aplique `bun run migration:up` antes do startup. Testes focais: `bun test tests/domain/rollback.test.ts tests/integration/rollback.test.ts tests/integration/rollback-schema.test.ts`. Decisão e limites: [ROLLBACK](ARCHITECTURE.md#reversão-de-movimento-com-rollback); resultados executados: [verificação](docs/verification.md#rollback-de-movimento--2026-10-23).
+
 ### Consultar transação
 
 ```sh
@@ -142,7 +159,7 @@ curl -i http://127.0.0.1:3000/wagering/transactions/TRANSACTION_ID_RETORNADO
 curl -i http://127.0.0.1:3000/providers/provider-a/wagering/transactions/bet-001
 ```
 
-As duas rotas retornam 200 com a mesma representação: `transactionId`, `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money`, `status`, `balance`, `createdAt` e `processedAt`. WIN e REFUND incluem `referenceExternalTransactionId` quando informada e `referenceTransactionId` quando resolvida. Pendência tem `processedAt: null`. Rejeições incluem `failureCode`; consultá-las retorna 200, não o 422 da submissão. `balance` é o saldo observado na operação, não o atual. Consulta não processa operação nem retorna `idempotentReplay`, chave de idempotência ou hash.
+As duas rotas retornam 200 com a mesma representação: `transactionId`, `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money`, `status`, `balance`, `createdAt` e `processedAt`. WIN, REFUND e ROLLBACK incluem `referenceExternalTransactionId` quando informada e `referenceTransactionId` quando resolvida. Pendência tem `processedAt: null`. Rejeições incluem `failureCode`; consultá-las retorna 200, não o 422 da submissão. `balance` é o saldo observado na operação, não o atual. Consulta não processa operação nem retorna `idempotentReplay`, chave de idempotência ou hash.
 
 UUID inválido retorna 400 `INVALID_IDENTITY`; provider inválido, 400 `INVALID_PROVIDER`; identidade externa inválida, 400 `INVALID_IDENTITY`. Identidade válida ausente retorna 404 `TRANSACTION_NOT_FOUND`. Provider e ID externo são sensíveis a maiúsculas; codifique cada segmento com percent-encoding quando necessário. OPENING pode ser consultada por ID interno, sem identidade de provedor nem saldo observado. Contrato e decisão: [arquitetura](ARCHITECTURE.md#consulta-de-transação).
 
@@ -197,6 +214,8 @@ DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun ru
 Migration `20261022000400` preserva OPENING e adiciona BET; seu `down` recusa execução se houver BET persistida, sem apagar histórico. Migration `20261022000300` troca apenas índice. Reverter também `20261022000200` remove ledger, transações e outbox: exige backup antes e serviço parado. Reaplicar schema não recupera auditoria removida.
 
 Migration `20261023000100` adiciona hash obrigatório para BET, preenche histórico existente e preserva OPENING sem hash. Seu `down` remove apenas hash e check; histórico financeiro permanece. Pare todas as APIs antes de migrar ou reverter; código antigo não grava o hash exigido pelo novo schema.
+
+Migration `20261023000500` adiciona ROLLBACK e índice único parcial separado de REFUND. Seu `down` restaura o schema anterior somente sem histórico ROLLBACK, inclusive rejeições e pendências; com histórico, recusa sem apagá-lo. Pare APIs antes de migrar ou reverter.
 
 Migration `20261023000400` adiciona REFUND e índice único para devoluções processadas da mesma referência. `down` restaura BET/WIN/LOSS apenas sem histórico REFUND, inclusive pendências e rejeições; caso contrário, recusa sem apagar auditoria. Pare APIs antes de migrar ou reverter.
 

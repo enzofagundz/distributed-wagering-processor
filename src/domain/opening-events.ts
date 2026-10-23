@@ -127,7 +127,7 @@ export class WagerTransactionRejected extends IntegrationEvent<{
 export class WagerTransactionPendingReference extends IntegrationEvent<{
   transactionId: string;
   walletId: string;
-  kind: "WIN" | "REFUND";
+  kind: "WIN" | "REFUND" | "ROLLBACK";
   status: "PENDING_REFERENCE";
   referenceExternalTransactionId: string;
   referenceTransactionId?: string;
@@ -138,7 +138,9 @@ export class WagerTransactionPendingReference extends IntegrationEvent<{
   static from(wallet: Wallet, transaction: WagerTransaction) {
     if (
       transaction.status !== "PENDING_REFERENCE" ||
-      (transaction.kind !== "WIN" && transaction.kind !== "REFUND") ||
+      (transaction.kind !== "WIN" &&
+        transaction.kind !== "REFUND" &&
+        transaction.kind !== "ROLLBACK") ||
       !transaction.referenceExternalTransactionId
     ) {
       throw new DomainError("INVALID_TRANSACTION_STATE");
