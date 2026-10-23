@@ -37,15 +37,15 @@ Os scripts verificam contratos HTTP e efeitos visíveis no ledger. Não inspecio
 
 A pasta 5 usa `instance1Url`, `instance2Url` e `instance3Url`, com valores iniciais `http://127.0.0.1:3101`, `http://127.0.0.1:3102` e `http://127.0.0.1:3103`. `baseUrl` continua independente, para o smoke em uma API.
 
-Prepare PostgreSQL e migrations:
+Prepare o `.env` na raiz conforme o [setup no host](../../README.md#host). O roteiro usa `DATABASE_URL` de desenvolvimento; os testes automatizados usam `TEST_DATABASE_URL`.
 
 ```sh
-docker compose up -d --wait postgres-test
-export DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test
+test -f .env || cp .env.example .env
+docker compose up -d --wait postgres
 bun run migration:up
 ```
 
-Em três terminais, exporte a mesma `DATABASE_URL` e inicie uma API por terminal:
+Abra três terminais na raiz do projeto e rode um dos comandos abaixo em cada um. Bun lê o mesmo `.env`; apenas a porta muda:
 
 ```sh
 PORT=3101 bun run start
@@ -53,10 +53,10 @@ PORT=3102 bun run start
 PORT=3103 bun run start
 ```
 
-Cada comando fica em seu próprio terminal. Aguarde `Wallet HTTP listening`. Se usar Podman, substitua `docker compose` por `podman compose`.
+Aguarde `Wallet HTTP listening` nos três terminais. Se usar Podman, substitua `docker compose` por `podman compose`.
 
 1. No Postman, execute 30. Ele abre wallet de `100.00 BRL` e preenche `raceWalletId`, jogador, chaves e IDs externos.
-2. No DBeaver ou pgAdmin, conecte ao banco `wagering_test` em `127.0.0.1:55433`, usuário/senha locais `wagering`. Abra uma sessão SQL e execute o bloco abaixo, substituindo o UUID pelo valor de `raceWalletId`. Mantenha a transação aberta.
+2. No DBeaver ou pgAdmin, conecte ao banco indicado por `DATABASE_URL` no `.env`. O exemplo usa `wagering` em `127.0.0.1:55432`, com usuário e senha locais `wagering`. Abra uma sessão SQL e execute o bloco abaixo com o UUID de `raceWalletId`. Deixe a transação aberta.
 
 ```sql
 BEGIN;
@@ -75,8 +75,7 @@ Para observar wallets independentes, mantenha uma wallet bloqueada em sessão SQ
 A prova automatizada inclui 50 envios concorrentes, barreira de locks em três processos e progresso entre wallets:
 
 ```sh
-TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test \
-  bun test tests/integration/wallet-concurrency.test.ts
+bun test tests/integration/wallet-concurrency.test.ts
 ```
 
 A collection não dispara um lote de 50 envios concorrentes. O teste acima inicia seus próprios processos e confere o ledger. Hot wallet continua serializada; esse roteiro não mede throughput. Evidências executadas ficam em [verificação](../verification.md).

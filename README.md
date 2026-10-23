@@ -37,11 +37,19 @@ Se a porta estiver ocupada, use `APP_PORT=3109 docker compose up -d app` e ajust
 
 ```sh
 bun install --frozen-lockfile
+test -f .env || cp .env.example .env
 docker compose up -d --wait postgres postgres-test
-export DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55432/wagering
 bun run migration:up
 bun run start
 ```
+
+Bun lê `.env` automaticamente ao iniciar a aplicação, executar migrations ou rodar testes. O comando de cópia preserva um `.env` existente; nesse caso, complete as chaves que faltam. As URLs separam desenvolvimento (`55432/wagering`) de testes (`55433/wagering_test`). `HOST` e `PORT` definem onde a API escuta.
+
+O Git ignora `.env` e suas variantes locais. Somente `.env.example` entra no repositório, com valores para o Compose local.
+
+Variáveis exportadas no terminal têm prioridade sobre `.env`. Se uma configuração antiga persistir, remova o export ou abra um terminal sem essa variável. Para rodar três APIs com o mesmo `.env`, mude apenas a porta: `PORT=3101 bun run start`, `PORT=3102 bun run start` e `PORT=3103 bun run start`, cada comando em um terminal.
+
+No container da API, o Compose define `DATABASE_URL`, `HOST` e `PORT`: banco em `postgres:5432` e bind em `0.0.0.0`. Essas configurações não vêm do `.env` do host, e a imagem exclui arquivos `.env`. Para mudar a porta publicada pelo Compose, defina `APP_PORT` no `.env` local.
 
 **Ambiente exclusivamente local, sem autenticação. Não expor em produção.** Credenciais do Compose são locais. Publicação HTTP fica em loopback; bind interno do container é `0.0.0.0`. No host, bind padrão é `127.0.0.1`.
 
@@ -87,26 +95,26 @@ As duas rotas retornam 200 com a mesma representação: `transactionId`, `provid
 
 UUID inválido retorna 400 `INVALID_IDENTITY`; provider inválido, 400 `INVALID_PROVIDER`; identidade externa inválida, 400 `INVALID_IDENTITY`. Identidade válida ausente retorna 404 `TRANSACTION_NOT_FOUND`. Provider e ID externo são sensíveis a maiúsculas; codifique cada segmento com percent-encoding quando necessário. OPENING pode ser consultada por ID interno, sem identidade de provedor nem saldo observado. Contrato e decisão: [arquitetura](ARCHITECTURE.md#consulta-de-transação).
 
-Teste focal: `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/transaction-query-http.test.ts`. Usa o mesmo setup PostgreSQL abaixo, sem nova migration.
+Teste focal: `bun test tests/integration/transaction-query-http.test.ts`. Usa `TEST_DATABASE_URL` do `.env` e o mesmo setup PostgreSQL abaixo, sem nova migration.
 
 ## Verificação
 
 ```sh
+test -f .env || cp .env.example .env
 bun run typecheck
 bun run test:domain
 docker compose up -d --wait postgres-test
-export TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test
 bun run test:integration
 bun test
 ```
 
 A integração exige PostgreSQL real e banco dedicado terminado em `_test`; os testes falham se esses requisitos não forem atendidos. Os testes aplicam migrations automaticamente. Fixtures de constraints usam rollback; testes HTTP positivos preservam auditoria append-only com identidades novas por execução.
 
-Para verificar somente BET: `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/bet-http.test.ts`. O arquivo cobre contrato, sucesso, rejeição, rollback induzido, replay, conflitos e reinício de aplicação/pool.
+Para verificar somente BET: `bun test tests/integration/bet-http.test.ts`. O arquivo cobre contrato, sucesso, rejeição, rollback induzido, replay, conflitos e reinício de aplicação/pool.
 
 ### Concorrência entre processos
 
-Com `postgres-test` iniciado e `TEST_DATABASE_URL` exportada conforme acima:
+Com `postgres-test` iniciado e `TEST_DATABASE_URL` preenchida no `.env`:
 
 ```sh
 bun test tests/integration/wallet-concurrency.test.ts
@@ -124,11 +132,11 @@ O teste `tests/integration/ledger-http.test.ts` cria e remove um banco exclusivo
 
 ### Reversão e parada
 
-Somente no banco descartável:
+Execute somente no banco descartável. Os comandos abaixo sobrescrevem `DATABASE_URL` para não reverter o banco de desenvolvimento; ajuste o endereço se seu banco de testes for outro. Bun lê `.env`, mas o shell não recebe essas variáveis para expandir expressões como `$TEST_DATABASE_URL`.
 
 ```sh
-DATABASE_URL="$TEST_DATABASE_URL" bun run migration:down
-DATABASE_URL="$TEST_DATABASE_URL" bun run migration:up
+DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun run migration:down
+DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun run migration:up
 ```
 
 Migration `20261022000400` preserva OPENING e adiciona BET; seu `down` recusa execução se houver BET persistida, sem apagar histórico. Migration `20261022000300` troca apenas índice. Reverter também `20261022000200` remove ledger, transações e outbox: exige backup antes e serviço parado. Reaplicar schema não recupera auditoria removida.

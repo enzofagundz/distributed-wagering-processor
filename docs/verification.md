@@ -162,3 +162,13 @@ Resultado: 36 requests, 36 scripts de resposta, sete scripts de preparação e 3
 Limite: Newman executou requests em sequência, inclusive a pasta de três instâncias. Essa execução valida os requests e scripts exportados, não simultaneidade. O guia ensina a segurar lock em sessão SQL para envio manual em duas abas; esse roteiro gráfico não foi executado nesta atualização. A collection não envia 50 requests em paralelo; a prova permanece no teste do ticket 08. Interface gráfica do Postman não inspecionada. Sem mudança TypeScript, migrations ou código financeiro.
 
 Guia mantém registro técnico para desenvolvedor, com passos de Send e resultados concretos. Removida afirmação desatualizada de que OPENING era a única escrita disponível. Referência consultada via Context7: [execução de collection com Newman](https://learning.postman.com/docs/reference/newman-cli/installing-running-newman).
+
+## Ambiente local com .env — 2026-10-23
+
+O novo `.env.example` separa as URLs locais de desenvolvimento e testes e define `HOST=127.0.0.1` e `PORT=3000`. No `.env` existente, mantivemos `DATABASE_URL`, preenchemos `TEST_DATABASE_URL`, que estava vazia, e adicionamos HOST/PORT. O Git ignora `.env` e variantes; a exceção permite versionar apenas `.env.example`. Docker já excluía esses arquivos do contexto da imagem. A configuração interna do Compose não mudou: a API no container continua usando sua própria URL.
+
+Bun 1.3.14 já lê `.env`; não adicionamos dependência nem loader. Referência consultada via Context7: [variáveis de ambiente no Bun](https://bun.sh/docs/runtime/environment-variables). README e guia Postman agora usam o arquivo local. As sobrescritas explícitas ficaram nos comandos de portas alternativas e reversão no banco descartável. Código financeiro e schema não mudaram.
+
+Antes dos comandos, removemos DATABASE_URL, TEST_DATABASE_URL, HOST e PORT do ambiente herdado com `env -u`. `bun run migration:up` concluiu no banco de desenvolvimento. O teste focal de concorrência passou com três testes e 215 assertions; `bun run typecheck` também passou. A suíte completa, executada com `env -u DATABASE_URL -u TEST_DATABASE_URL -u HOST -u PORT bun test`, passou com 96 testes, 786 assertions e zero falhas.
+
+No smoke, iniciamos `bun run start` sem as quatro variáveis herdadas. A API anunciou `http://127.0.0.1:3000`. A abertura da wallet `49f01bc6-645a-4933-bb7c-3e7078f4971e` retornou 201 com saldo `0.00 BRL`; a consulta retornou 200. Encerramos o processo por SIGTERM, com saída 0, e preservamos dados e containers preexistentes. `git check-ignore` confirmou que `.env`, `.env.local` e `.env.test` ficam ignorados, enquanto `.env.example` pode entrar no repositório.
