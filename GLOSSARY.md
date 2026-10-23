@@ -76,4 +76,8 @@ Cursor é UUID do último lançamento retornado, codificado em base64url canôni
 
 ## Duplicata de abertura
 
-Tentativa de criar outra wallet para o mesmo player/moeda, arbitrada pela constraint única e respondida com 409 `WALLET_ALREADY_EXISTS`. Não há replay da abertura. BET tem proteção persistente contra segundo efeito, mas ainda responde conflito em vez de replay.
+Tentativa de criar outra wallet para o mesmo player/moeda, arbitrada pela constraint única e respondida com 409 `WALLET_ALREADY_EXISTS`. Não há replay da abertura.
+
+## Replay de BET
+
+Reenvio com mesma chave e hash de negócio devolve identidade, status e saldo observado persistidos, com `idempotentReplay: true`, sem novo efeito financeiro ou evento. Payload divergente conflita; outra chave para identidade externa existente também. Algoritmo e escopos: [idempotência de BET](ARCHITECTURE.md#idempotência-de-bet).

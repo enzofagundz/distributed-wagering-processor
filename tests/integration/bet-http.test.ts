@@ -209,21 +209,27 @@ test('independent API instances serialize two BETs competing for one wallet bala
   }
 });
 
-test('persistent key and provider/external uniqueness block repeat financial effects', async () => {
+test('replay keeps original result after later movements and rejects divergent payload or external identity', async () => {
   const identity = await wallet();
   const body = input(identity);
   const key = crypto.randomUUID();
-  expect((await post(body, key)).status).toBe(201);
-  for (const [payload, duplicateKey] of [[body, key], [{ ...body, externalTransactionId: crypto.randomUUID() }, key], [body, crypto.randomUUID()]] as const) {
-    const response = await post(payload, duplicateKey);
-    expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({ code: 'TRANSACTION_ALREADY_EXISTS' });
-  }
-  expect(await getWallet(identity.walletId)).toMatchObject({ balance: { amount: '75.00', currency: 'BRL' }, version: 2 });
-  expect(await reconcile(identity.walletId)).toMatchObject({ consistent: true, checkedEntries: 2 });
-  expect((await post({ ...body, providerId: 'provider-b' })).status).toBe(201);
-  expect(await getWallet(identity.walletId)).toMatchObject({ balance: { amount: '50.00', currency: 'BRL' }, version: 3 });
+  const first = await post(body, key);
+  expect(first.status).toBe(201);
+  const original = await first.json();
+  expect((await post(input(identity, '10.00'))).status).toBe(201);
+  const replay = await post({ ...body, money: { currency: 'BRL', amount: '25.00' },
+    playerId: body.playerId.toUpperCase(), walletId: body.walletId.toUpperCase() }, key);
+  expect(replay.status).toBe(201);
+  expect(await replay.json()).toEqual({ ...original, idempotentReplay: true });
+  const conflict = await post({ ...body, money: { amount: '26.00', currency: 'BRL' } }, key);
+  expect(conflict.status).toBe(409);
+  expect(await conflict.json()).toEqual({ code: 'IDEMPOTENCY_CONFLICT' });
+  const external = await post(body);
+  expect(external.status).toBe(409);
+  expect(await external.json()).toEqual({ code: 'TRANSACTION_ALREADY_EXISTS' });
+  expect(await getWallet(identity.walletId)).toMatchObject({ balance: { amount: '65.00', currency: 'BRL' }, version: 3 });
   expect(await reconcile(identity.walletId)).toMatchObject({ consistent: true, checkedEntries: 3 });
+  expect((await post({ ...body, providerId: 'provider-b' })).status).toBe(201);
 });
 
 test('failed rejection is rolled back; transient and unexpected uniqueness failures remain distinct', async () => {
@@ -257,4 +263,82 @@ test('failed rejection is rolled back; transient and unexpected uniqueness failu
   }
   expect((await post(body, key)).status).toBe(422);
   expect(await reconcile(identity.walletId)).toMatchObject({ consistent: true, checkedEntries: 0 });
+});
+
+test('three independent instances converge on one committed result, including after restart', async () => {
+  const identity = await wallet();
+  const body = input(identity);
+  const key = crypto.randomUUID();
+  const instances: { orm: MikroORM; app: INestApplication; base: string }[] = [];
+  try {
+    for (let i = 0; i < 2; i++) {
+      const independentOrm = await MikroORM.init(databaseConfig(url));
+      const independentApp = await createApplication(independentOrm);
+      await independentApp.listen(0, '127.0.0.1');
+      instances.push({ orm: independentOrm, app: independentApp, base: await independentApp.getUrl() });
+    }
+    const responses = await Promise.all([base, ...instances.map(instance => instance.base)].flatMap(endpoint =>
+      Array.from({ length: 3 }, () => fetch(`${endpoint}/wagering/transactions`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(body) }))));
+    expect(responses.map(response => response.status)).toEqual(Array(9).fill(201));
+    const results = await Promise.all(responses.map(response => response.json()));
+    const original = results.find(result => result.idempotentReplay === false);
+    expect(original).toEqual({ transactionId: expect.any(String), status: 'PROCESSED',
+      balance: { amount: '75.00', currency: 'BRL' }, idempotentReplay: false });
+    expect(results.filter(result => !result.idempotentReplay)).toEqual([original]);
+    for (const result of results) expect(result).toEqual({ ...original, idempotentReplay: result.idempotentReplay });
+    const stopped = instances.pop()!;
+    await stopped.app.close();
+    await stopped.orm.close();
+    const restartedOrm = await MikroORM.init(databaseConfig(url));
+    const restartedApp = await createApplication(restartedOrm);
+    await restartedApp.listen(0, '127.0.0.1');
+    instances.push({ orm: restartedOrm, app: restartedApp, base: await restartedApp.getUrl() });
+    const replay = await fetch(`${await restartedApp.getUrl()}/wagering/transactions`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(body) });
+    expect(replay.status).toBe(201);
+    expect(await replay.json()).toEqual({ ...original, idempotentReplay: true });
+    expect(await getWallet(identity.walletId)).toMatchObject({ balance: { amount: '75.00', currency: 'BRL' }, version: 2 });
+    expect(await reconcile(identity.walletId)).toMatchObject({ consistent: true, checkedEntries: 2 });
+    expect(await orm.em.execute("select event_type from outbox_messages where payload->>'correlationId' = ? order by event_type",
+      [original.transactionId])).toEqual([{ event_type: 'WagerTransactionProcessed' }, { event_type: 'WalletBalanceChanged' }]);
+  } finally {
+    for (const instance of instances) { await instance.app.close(); await instance.orm.close(); }
+  }
+});
+
+test('rejected result remains rejected on replay after another movement, without another event', async () => {
+  const identity = await wallet('10.00');
+  const body = input(identity, '11.00');
+  const key = crypto.randomUUID();
+  const first = await post(body, key);
+  expect(first.status).toBe(422);
+  const original = await first.json();
+  expect((await post(input(identity, '1.00'))).status).toBe(201);
+  const replay = await post(body, key);
+  expect(replay.status).toBe(422);
+  expect(await replay.json()).toEqual({ ...original, idempotentReplay: true });
+  expect(await orm.em.execute("select event_type from outbox_messages where payload->>'correlationId' = ?",
+    [original.transactionId])).toEqual([{ event_type: 'WagerTransactionRejected' }]);
+  expect(await reconcile(identity.walletId)).toMatchObject({ consistent: true, calculatedBalance: { amount: '9.00', currency: 'BRL' }, checkedEntries: 2 });
+});
+
+test('concurrent divergent keys and external identities never debit a second wallet', async () => {
+  const firstWallet = await wallet();
+  const secondWallet = await wallet();
+  const body = input(firstWallet);
+  const key = crypto.randomUUID();
+  const responses = await Promise.all([post(body, key), post({ ...body, ...secondWallet }, key)]);
+  expect(responses.map(response => response.status).sort()).toEqual([201, 409]);
+  const results = await Promise.all(responses.map(response => response.json()));
+  expect(results.find(result => result.code)).toEqual({ code: 'IDEMPOTENCY_CONFLICT' });
+  const collision = await post({ ...body, ...secondWallet });
+  expect(collision.status).toBe(409);
+  expect(await collision.json()).toEqual({ code: 'TRANSACTION_ALREADY_EXISTS' });
+  const balances = await Promise.all([firstWallet, secondWallet].map(identity => getWallet(identity.walletId)));
+  expect(balances.map(result => result.balance.amount).sort()).toEqual(['100.00', '75.00']);
+  for (const identity of [firstWallet, secondWallet]) expect(await reconcile(identity.walletId)).toMatchObject({ consistent: true });
+  const otherProvider = await post({ ...body, providerId: 'provider-b' }, key);
+  expect(otherProvider.status).toBe(409);
+  expect(await otherProvider.json()).toEqual({ code: 'IDEMPOTENCY_CONFLICT' });
 });

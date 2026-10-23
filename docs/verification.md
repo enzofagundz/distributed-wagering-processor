@@ -90,3 +90,23 @@ Sete chamadas nos serviços de wallet e BET passaram a usar `await em.persist(..
 `bun run typecheck && TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test`: typecheck aprovado, 87 testes em nove arquivos, 478 assertions e zero falhas. Inclui abertura zero/positiva, débito/rejeição, concorrência, conflitos e rollback por falha induzida na outbox.
 
 Smoke independente na porta 3136, PostgreSQL real de testes na porta 55433: abertura 201, BET 201/PROCESSED, insuficiência 422/REJECTED e reenvio 409. Saldo final `20.00 BRL`, versão 2, um CREDIT e um DEBIT; reconciliação consistente com diferença zero. Wallet `51041d3f-fc25-414f-83e8-e2093ed1165d`. Harness reutilizado em memória, sem novo arquivo ou dependência. Processo HTTP próprio encerrado; auditoria e containers preexistentes preservados.
+
+## Idempotência de BET — 2026-10-23
+
+Ticket 06, baseline `3f64aa52bf485813d37714e0c2ac0a7b5fa1940c`. Bun 1.3.14, NestJS 11.1.16, MikroORM 6.6.8 e PostgreSQL 17.6 em container Podman preexistente, porta 55433. Docker CLI ausente; banco real acessível. Nenhuma dependência adicionada.
+
+Seam confirmado pelo usuário: HTTP com PostgreSQL real, com SQL para invariantes de auditoria. Red: teste de replay após outra BET recebeu 409 em vez de 201. Green: resultado original preservado, payload divergente em 409 `IDEMPOTENCY_CONFLICT`, outra chave para identidade externa em 409 `TRANSACTION_ALREADY_EXISTS`. Typecheck intermediário encontrou propriedade `money` repetida na construção do payload de teste; corrigida sem alterar regra financeira.
+
+Arquivo `tests/integration/bet-http.test.ts`: dez testes e 161 assertions aprovados. Inclui nove requests concorrentes em três aplicações Nest/pools independentes dentro do mesmo processo, exatamente uma resposta inicial e oito replays, um débito e dois eventos financeiros. Fecha uma aplicação e seu pool, recria ambos e repete resultado. Rejeição mantém 422 e saldo original após outra BET, sem segundo evento. Chave global conflita entre wallets/providers; identidade externa não permite novo efeito em outra wallet. Validação, rollback integral e códigos 503/500 continuam exercitados pelos cenários existentes.
+
+Smoke separado executado com `bun /tmp/bet-idempotency-smoke.ts`, harness temporário removido após uso. Iniciou API real por `bun src/main.ts` na porta 3136 com banco dedicado de testes; abriu wallet (201), processou BET (201), encerrou processo por SIGTERM e aguardou saída. Com API parada, migration 005 fez down/up preservando histórico e preenchendo hash. Novo processo devolveu replay (201), conflito de payload (409) e reconciliação (200) com saldo `75.00 BRL`, diferença zero e dois lançamentos. Payload continha aspas, barra invertida, acento e emoji para comparar escaping SQL do backfill com JSON do runtime. Wallet `9599dcf5-0bcd-4003-8ad3-c86fa7f8d4dd`; auditoria preservada e processo próprio encerrado.
+
+Verificação final: `bun run typecheck && TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test`: typecheck aprovado; 90 testes em nove arquivos, 513 assertions, zero falhas. Suíte completa executada uma vez após implementação; integrações aplicaram migration 005 também em bancos isolados.
+
+Nest Boost MCP confirmou POST `/wagering/transactions` em `WageringController.submit`; evaluate não usado. Consulta Context7 e leitura da [documentação MikroORM 6.6](https://mikro-orm.io/docs/6.6/transactions) orientaram recuperação com EntityManager novo após rollback. Busca semântica indisponível por falha do provedor; pesquisa textual substituiu. LSP não disponível; typecheck executado via TypeScript instalado.
+
+Documentação mantém registro técnico em PT-BR para desenvolvedor/avaliador. Aplicadas humanizer-pt-br e no-ai-slop: trechos de "replay pendente" foram substituídos por comportamento observável, sem linguagem promocional nem fechos genéricos; algoritmo e política ficam na arquitetura, evidências neste registro.
+
+Limites: não houve três processos simultâneos, 50 reenvios, broker, ack ou crash forçado entre commit e resposta. Esses cenários seguem nos tickets de concorrência/mensageria. BET é síncrona; 202 é política reservada para pendências futuras, não comportamento implementado ou testado neste ticket. Rebuild de imagem e interface Postman não executados.
+
+Revisão code-review contra baseline em dois agentes independentes: Standards sem violações documentadas ou smells materiais; Spec sem lacunas ou erros acionáveis. Incluiu migration nova, que ainda não aparecia em `git diff` por estar untracked. Revisão somente leitura; nenhum check repetido. Arquivos de continuidade, índice de decisões e ticket local foram atualizados sem forçar inclusão de caminhos ignorados.

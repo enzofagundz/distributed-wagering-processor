@@ -4,7 +4,7 @@ Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECH
 
 A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET por HTTP. Abertura positiva e BET confirmada persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL.
 
-WIN, LOSS, reversões, replay com hash canônico, publisher, SQS/inbox, autenticação e health estão pendentes. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+WIN, LOSS, reversões, publisher, SQS/inbox, autenticação e health estão pendentes. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
@@ -74,7 +74,7 @@ curl -i http://127.0.0.1:3000/wagering/transactions \
 
 Envie outra aposta de `80.00` com nova chave e novo `externalTransactionId`: retorna 422 com `REJECTED`, `failureCode: "INSUFFICIENT_FUNDS"` e saldo `20.00`. Rejeição fica auditada, sem ledger nem incremento de versão. Header obrigatório; somente BET externa é aceita. Identificadores textuais têm até 200 caracteres; valor deve ser positivo e caber em `numeric(30,2)`.
 
-Reutilizar chave ou par provider/external ID retorna 409 `TRANSACTION_ALREADY_EXISTS`, sem novo débito. Ainda não há replay nem comparação de hash: ticket 06. Política de falhas, lock e transação: [processamento de BET](ARCHITECTURE.md#processamento-de-bet).
+Reenvie exatamente a primeira BET com a mesma chave: retorna 201, identidade e saldo originais, com `idempotentReplay: true`, mesmo após outras apostas ou reinício. Payload diferente com a mesma chave retorna 409 `IDEMPOTENCY_CONFLICT`. Outra chave com o mesmo par provider/external ID retorna 409 `TRANSACTION_ALREADY_EXISTS`. Nenhum desses reenvios gera novo débito ou evento. Chave tem escopo global; identidade externa tem escopo por provider. Hash, precedência dos conflitos e política HTTP: [idempotência de BET](ARCHITECTURE.md#idempotência-de-bet).
 
 ## Verificação
 
@@ -89,7 +89,7 @@ bun test
 
 A integração exige PostgreSQL real e banco dedicado terminado em `_test`; os testes falham se esses requisitos não forem atendidos. Os testes aplicam migrations automaticamente. Fixtures de constraints usam rollback; testes HTTP positivos preservam auditoria append-only com identidades novas por execução.
 
-Para verificar somente BET: `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/bet-http.test.ts`. O arquivo cobre contrato, sucesso, rejeição, rollback induzido, unicidades e duas APIs independentes disputando saldo.
+Para verificar somente BET: `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/bet-http.test.ts`. O arquivo cobre contrato, sucesso, rejeição, rollback induzido, replay, conflitos, reinício de aplicação/pool e três APIs independentes no mesmo processo disputando a mesma chave. Prova com três processos pertence ao ticket 08.
 
 O teste `tests/integration/ledger-http.test.ts` cria e remove um banco exclusivo `ledger_<uuid>_test`; o usuário precisa de `CREATEDB`. A fixture remove a unicidade de OPENING por wallet somente nesse banco para montar um histórico sintético. Ela mantém as constraints do banco informado e não comprova movimentações de apostas.
 
@@ -105,5 +105,7 @@ DATABASE_URL="$TEST_DATABASE_URL" bun run migration:up
 ```
 
 Migration `20261022000400` preserva OPENING e adiciona BET; seu `down` recusa execução se houver BET persistida, sem apagar histórico. Migration `20261022000300` troca apenas índice. Reverter também `20261022000200` remove ledger, transações e outbox: exige backup antes e serviço parado. Reaplicar schema não recupera auditoria removida.
+
+Migration `20261023000100` adiciona hash obrigatório para BET, preenche histórico existente e preserva OPENING sem hash. Seu `down` remove apenas hash e check; histórico financeiro permanece. Pare todas as APIs antes de migrar ou reverter; código antigo não grava o hash exigido pelo novo schema.
 
 `postgres-test` usa tmpfs: recriar container descarta dados. `postgres` usa volume persistente. `docker compose down` para serviços sem apagar volume.

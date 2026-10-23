@@ -11,6 +11,7 @@ export interface WagerTransactionRecord {
   providerId?: string | null;
   externalTransactionId?: string | null;
   idempotencyKey?: string | null;
+  payloadHash?: string | null;
   roundId?: string | null;
   gameId?: string | null;
   failureCode?: 'INSUFFICIENT_FUNDS' | null;
@@ -33,6 +34,7 @@ export const wagerTransactionSchema = new EntitySchema<WagerTransactionRecord>({
     providerId: { type: 'string', length: 200, nullable: true },
     externalTransactionId: { type: 'string', length: 200, nullable: true },
     idempotencyKey: { type: 'string', length: 200, nullable: true },
+    payloadHash: { type: 'string', length: 64, nullable: true },
     roundId: { type: 'string', length: 200, nullable: true },
     gameId: { type: 'string', length: 200, nullable: true },
     failureCode: { type: 'string', columnType: 'text', nullable: true },

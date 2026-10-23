@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import type { WagerTransactionRecord } from '../persistence/wager-transaction-record';
 import { LockMode, UniqueConstraintViolationException } from '@mikro-orm/core';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { DomainError, Money, type MoneyProps } from '../domain/money';
@@ -26,7 +28,7 @@ export interface SubmitBetResult {
   transactionId: string;
   status: 'PROCESSED' | 'REJECTED';
   balance: MoneyProps;
-  idempotentReplay: false;
+  idempotentReplay: boolean;
   failureCode?: 'INSUFFICIENT_FUNDS';
 }
 
@@ -57,8 +59,15 @@ export class WageringService {
   async submit(input: SubmitBetInput): Promise<SubmitBetResult> {
     const money = Money.from(input.money);
     const transaction = WagerTransaction.create({ ...input, id: crypto.randomUUID(), money });
+    const payloadHash = createHash('sha256').update(JSON.stringify({
+      externalTransactionId: transaction.externalTransactionId, gameId: transaction.gameId, kind: transaction.kind,
+      money: { amount: money.toString(), currency: money.currency }, playerId: transaction.playerId,
+      providerId: transaction.providerId, roundId: transaction.roundId, walletId: transaction.walletId,
+    })).digest('hex');
     try {
       return await this.orm.em.fork().transactional<SubmitBetResult>(async em => {
+        const existing = await em.findOne(wagerTransactionSchema, { idempotencyKey: transaction.idempotencyKey });
+        if (existing) return this.replay(existing, payloadHash);
         const record = await em.findOne(walletSchema, { id: transaction.walletId }, { lockMode: LockMode.PESSIMISTIC_WRITE });
         if (!record) throw new DomainError('WALLET_NOT_FOUND');
         if (record.playerId !== transaction.playerId) throw new DomainError('PLAYER_WALLET_MISMATCH');
@@ -85,6 +94,7 @@ export class WageringService {
           id: transaction.id, walletId: transaction.walletId, playerId: transaction.playerId,
           providerId: transaction.providerId, externalTransactionId: transaction.externalTransactionId,
           idempotencyKey: transaction.idempotencyKey, roundId: transaction.roundId, gameId: transaction.gameId,
+          payloadHash,
           currency: money.currency, amount: money.toString(), kind: 'BET',
           status: insufficient ? 'REJECTED' : 'PROCESSED',
           failureCode: insufficient ? 'INSUFFICIENT_FUNDS' : null,
@@ -116,10 +126,27 @@ export class WageringService {
     } catch (error) {
       if (error instanceof UniqueConstraintViolationException && 'constraint' in error
         && typeof error.constraint === 'string' && duplicateConstraints[error.constraint] === true) {
+        try {
+          const existing = await this.orm.em.fork().findOne(wagerTransactionSchema, { idempotencyKey: transaction.idempotencyKey });
+          if (existing) return this.replay(existing, payloadHash);
+        } catch (replayError) {
+          if (isTransient(replayError)) throw new DomainError('TEMPORARY_UNAVAILABLE');
+          throw replayError;
+        }
         throw new DomainError('TRANSACTION_ALREADY_EXISTS');
       }
       if (isTransient(error)) throw new DomainError('TEMPORARY_UNAVAILABLE');
       throw error;
     }
+  }
+
+  private replay(record: WagerTransactionRecord, payloadHash: string): SubmitBetResult {
+    if (record.payloadHash !== payloadHash) throw new DomainError('IDEMPOTENCY_CONFLICT');
+    if (record.kind !== 'BET' || record.observedBalance == null) throw new Error('Invalid persisted BET result');
+    return {
+      transactionId: record.id, status: record.status,
+      balance: { amount: record.observedBalance, currency: record.currency }, idempotentReplay: true,
+      ...(record.failureCode ? { failureCode: record.failureCode } : {}),
+    };
   }
 }
