@@ -63,7 +63,7 @@ A constraint única `(player_id, currency)` resolve aberturas concorrentes no Po
 - Domínio encapsula estado; factories criam e `rehydrate` reconstrói sem reaplicar transições. Validação HTTP não substitui invariantes do domínio.
 - Banco protege saldo não negativo, unicidade, aritmética do ledger e consistência de identidade/moeda por FKs compostas. Trigger rejeita UPDATE, DELETE e TRUNCATE do ledger. Administrador capaz de remover trigger/schema não está contido por essa proteção.
 - Correspondência saldo/ledger depende do caso de uso transacional; schema não promete impedir toda escrita administrativa arbitrária. Separação entre usuário de migrations e aplicação ainda é necessária antes de exposição real.
-- Sem lock global. BET usa lock pessimista da wallet antes da leitura do saldo. Teste disputa saldo entre duas APIs com pools independentes; três processos financeiros e demais operações continuam pendentes.
+- Sem lock global. BET usa lock pessimista da wallet antes da leitura do saldo. Concorrência financeira de BET foi exercitada em três processos com pools independentes; demais operações e mensageria continuam pendentes.
 - Eventos persistidos: `WagerTransactionProcessed`, `WagerTransactionRejected` e `WalletBalanceChanged`, com envelope versionado e MoneyProps. Persistência não comprova publicação, retry ou recuperação de publisher.
 
 ## Processamento de BET
@@ -93,6 +93,19 @@ Consulta inicial é otimização, não garantia de exclusão. Se duas instância
 Migration 005 (`20261023000100`) preenche hashes de BETs existentes a partir dos campos persistidos e exige hash de 64 caracteres hexadecimais em BET, nulo em OPENING. Reversão remove apenas coluna/check, sem apagar auditoria. Migração exige APIs paradas. Alternativa descartada: cache em memória, que não cobre reinício nem múltiplas instâncias; não foi criada tabela de reservas porque BET termina na mesma transação financeira.
 
 Referência consultada para rollback, locks e novo EntityManager: [MikroORM 6.6 — transações](https://mikro-orm.io/docs/6.6/transactions). Evidências e limites atuais: [verificação de idempotência](docs/verification.md#idempotência-de-bet--2026-10-23); histórico do débito: [BET HTTP](docs/verification.md#bet-por-http--2026-10-22).
+
+### Concorrência entre processos
+
+Ticket 08 mantém a estratégia financeira existente, sem migration ou lock em memória. `tests/integration/wallet-concurrency.test.ts` inicia três processos Bun com portas dinâmicas e pools separados. A fixture obtém `WageringService` pelo container Nest; metade dos 50 envios entra por HTTP e metade chama `submit` por IPC. São chamadas ao mesmo caso de uso, não um consumidor SQS.
+
+Uma transação de controle segura a linha da wallet antes do lote. O teste identifica cada processo por `application_name` e aguarda três nomes distintos com `pg_blocking_pids` não vazio. Contar somente esperas diretamente ligadas ao PID controlador seria incorreto: PostgreSQL pode enfileirar uma espera atrás de outra. O prazo de cinco segundos limita a falha da barreira, não define quando há concorrência.
+
+Outro cenário mantém uma wallet bloqueada e confirma duas BET em wallets distintas nos outros processos antes de liberar o lock. Depois reconcilia todas. Não há benchmark: uma hot wallet continua serializada até o fim da transação, e suas chamadas podem ocupar conexões do pool. Mais instâncias não eliminam essa contenção.
+
+Falha antes do commit desfaz a transação e libera o lock; depois do commit, resultado, saldo, ledger e outbox já estão persistidos. Se a resposta se perder, o reenvio usa resultado original e unicidades do banco, não estado do processo. Este ticket não simula morte entre commit e ack: inbox, SQS e publishers ainda estão pendentes.
+
+Alternativa seria optimistic locking com retry limitado ou update condicionado. A prova multiprocesso não exigiu trocar o lock por linha já adotado. Referências: [PostgreSQL 17 — locks de linha](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS) para duração e escopo; [Bun — IPC](https://bun.sh/docs/runtime/child-process#inter-process-communication-ipc) para comunicação da fixture, consultada via Context7 e exercitada no Bun 1.3.14. Evidências: [verificação do ticket 08](docs/verification.md#concorrência-entre-processos--2026-10-23).
+
 
 
 ## Consultas e paginação

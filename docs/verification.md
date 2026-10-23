@@ -126,3 +126,27 @@ Nest Boost inspecionou rotas antes e depois da alteração, mas servidor persist
 Documentação mantém registro técnico para desenvolvedor/avaliador. humanizer-pt-br e no-ai-slop aplicadas: descrição inicial passou a incluir consulta de transação; contratos e exemplos usam nomes reais, sem qualificadores promocionais. Decisão fica na arquitetura; cobertura aponta para este registro, sem repetir resultados.
 
 Code-review em dois agentes independentes contra baseline: Standards sem violações documentadas ou smells materiais; Spec sem lacunas ou erros acionáveis. Ambos incluíram o teste novo ainda untracked e não repetiram checks.
+
+## Concorrência entre processos — 2026-10-23
+
+Ticket 08, baseline `6c03268984f13568db694cfb0e3ea711bd3f38cd`. Bun 1.3.14, NestJS 11.1.16, MikroORM 6.6.8 e PostgreSQL 17.6 no container Podman preexistente, porta 55433. Sem dependência, migration ou mudança no código financeiro.
+
+Seams acordados: HTTP, PostgreSQL real e caso de uso. Novo `tests/integration/wallet-concurrency.test.ts` inicia três processos com aplicações Nest e pools próprios. O primeiro incremento falhou por ausência da fixture; após adicioná-la, disputa e replay passaram. A barreira inicial falhou por contar somente bloqueios diretamente ligados à transação de controle; passou ao observar processos bloqueados, inclusive esperas enfileiradas. Não foi necessário mudar a estratégia transacional da aplicação.
+
+Comando focal: `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/wallet-concurrency.test.ts`. Resultado final: três testes, 215 assertions, zero falhas. Typecheck executado nos incrementos. Cenários:
+
+- Duas BET de `80.00` sobre `100.00`: uma PROCESSED, outra REJECTED/INSUFFICIENT_FUNDS, saldo `20.00`, versão 2 e um débito. Três processos repetem ambos os resultados sem novo efeito.
+- Mesma BET de `25.00` enviada 50 vezes, metade HTTP e metade por IPC ao caso de uso: um resultado original e 49 replays iguais, uma transação BET, um débito e dois eventos. Antes de liberar a wallet, a barreira observou três processos distintos esperando locks no PostgreSQL.
+- Com uma wallet bloqueada e BET pendente, outras duas wallets confirmam BET nos demais processos antes da liberação. Todas terminam em `20.00`, um débito e reconciliação consistente.
+
+Todos os cenários consultam reconciliação pelas três APIs e comparam valores literais de saldo armazenado/reconstruído, diferença zero e quantidade de lançamentos. Consultas SQL conferem débitos; fixtures não removem constraints nem alteram histórico financeiro.
+
+Smoke separado, harness em memória via Bun: três processos de `bun src/main.ts`, PIDs 2717496/2717497/2717498, portas dinâmicas. Wallet `6088e567-77a1-4ec6-948e-11f413e0f32b`; duas BET simultâneas retornaram 201/422, terceiro processo repetiu sucesso e rejeição com resposta original. Reconciliação retornou saldo armazenado e calculado `20.00 BRL`, diferença zero, dois lançamentos. Os três processos encerraram por SIGTERM com código 0; containers e auditoria preservados.
+
+Verificação final: `bun run typecheck && TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test`: 96 testes em 11 arquivos, 786 assertions, zero falhas. Suíte completa executada uma vez ao final.
+
+Nest Boost `application_info` confirmou Nest 11.1.16 e MikroORM 6.6.8; não foi usado para atribuir prova de concorrência. PostgreSQL 17 documentou escopo/duração de locks de linha; Context7 forneceu API IPC do Bun, exercitada na versão instalada. Sem `evaluate`, SQS, publishers, morte entre commit/ack ou benchmark.
+
+Documentação mantém voz técnica para desenvolvedor/avaliador. humanizer-pt-br e no-ai-slop aplicadas: "prova com três processos pertence ao ticket 08" foi substituído pelo comando executável e seus limites; "três processos financeiros [...] pendentes" foi atualizado para separar BET validada de operações futuras. Sem alterar garantias para fluxos não exercitados.
+
+Code-review contra baseline em dois agentes independentes, incluindo teste e fixture novos: Standards sem violações documentadas ou smells materiais; Spec sem lacunas nos seis critérios do ticket. Revisão somente leitura, sem repetir checks.

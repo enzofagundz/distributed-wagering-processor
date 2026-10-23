@@ -102,7 +102,21 @@ bun test
 
 A integração exige PostgreSQL real e banco dedicado terminado em `_test`; os testes falham se esses requisitos não forem atendidos. Os testes aplicam migrations automaticamente. Fixtures de constraints usam rollback; testes HTTP positivos preservam auditoria append-only com identidades novas por execução.
 
-Para verificar somente BET: `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/bet-http.test.ts`. O arquivo cobre contrato, sucesso, rejeição, rollback induzido, replay, conflitos, reinício de aplicação/pool e três APIs independentes no mesmo processo disputando a mesma chave. Prova com três processos pertence ao ticket 08.
+Para verificar somente BET: `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/bet-http.test.ts`. O arquivo cobre contrato, sucesso, rejeição, rollback induzido, replay, conflitos e reinício de aplicação/pool.
+
+### Concorrência entre processos
+
+Com `postgres-test` iniciado e `TEST_DATABASE_URL` exportada conforme acima:
+
+```sh
+bun test tests/integration/wallet-concurrency.test.ts
+```
+
+O teste inicia e encerra três processos Bun, cada um com aplicação Nest, porta HTTP dinâmica e pool próprio, no mesmo PostgreSQL real. Exercita HTTP e chamada direta ao mesmo `WageringService.submit`, obtido pelo container Nest. Não exige três containers da API nem portas fixas.
+
+Cobre duas BET de `80.00` sobre `100.00`, replay de sucesso/rejeição nas três instâncias, 50 envios da mesma BET com um único débito e progresso de wallets distintas enquanto uma wallet fica bloqueada. A barreira consulta esperas reais no PostgreSQL, sem sleeps para supor concorrência. Todos os cenários conferem saldo materializado, reconstrução pelo ledger e quantidade/valor dos débitos.
+
+Uma hot wallet serializa operações até commit/rollback; adicionar instâncias não paraleliza débitos dessa mesma wallet. O teste verifica isolamento entre wallets, não throughput ou latência sob carga. Método e limites: [arquitetura](ARCHITECTURE.md#concorrência-entre-processos); resultados executados: [verificação](docs/verification.md#concorrência-entre-processos--2026-10-23).
 
 O teste `tests/integration/ledger-http.test.ts` cria e remove um banco exclusivo `ledger_<uuid>_test`; o usuário precisa de `CREATEDB`. A fixture remove a unicidade de OPENING por wallet somente nesse banco para montar um histórico sintético. Ela mantém as constraints do banco informado e não comprova movimentações de apostas.
 
