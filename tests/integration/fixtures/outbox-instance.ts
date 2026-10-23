@@ -1,0 +1,34 @@
+import { MikroORM } from "@mikro-orm/postgresql";
+import { SQSClient } from "@aws-sdk/client-sqs";
+import { databaseConfig } from "../../../src/persistence/config";
+import { OutboxPublisher } from "../../../src/outbox/outbox-publisher";
+
+const url = process.env.DATABASE_URL;
+const schema = process.env.OUTBOX_TEST_SCHEMA;
+if (
+  !url ||
+  !new URL(url).pathname.endsWith("_test") ||
+  !schema?.match(/^outbox_[a-f0-9]+$/)
+)
+  throw new Error(
+    "Outbox fixture requires an isolated test schema and database",
+  );
+const orm = await MikroORM.init({
+  ...databaseConfig(url),
+  schema,
+  driverOptions: { connection: { options: `-c search_path=${schema}` } },
+});
+const client = new SQSClient({
+  endpoint: process.env.TEST_SQS_ENDPOINT ?? "http://127.0.0.1:4566",
+  region: "us-east-1",
+  credentials: { accessKeyId: "test", secretAccessKey: "test" },
+  maxAttempts: 1,
+});
+if (process.env.OUTBOX_HOLD !== "true")
+  await new OutboxPublisher(
+    orm,
+    client,
+    process.env.OUTBOX_QUEUE_URL!,
+  ).runOnce();
+console.log("ready");
+setInterval(() => {}, 1000);

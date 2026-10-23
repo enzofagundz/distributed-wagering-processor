@@ -180,27 +180,74 @@ test("rejected BET publishes rejection without a balance change", async () => {
   ]);
 });
 
-test("failed SQS send preserves pending payload and a later publisher can send it", async () => {
-  await openWallet();
-  const before = await orm.em.execute(
-    "select id, payload, published_at from outbox_messages where published_at is null order by id",
+test("retry schedule survives a killed publisher and recovery keeps committed event identities", async () => {
+  const identity = await openWallet();
+  expect((await bet(identity)).status).toBe(201);
+  const before = await orm.em.execute<
+    { id: string; payload: Record<string, unknown> }[]
+  >(
+    "select id, payload from outbox_messages where published_at is null order by id",
   );
-  const unavailable = new OutboxPublisher(
-    orm,
-    sqs,
-    queueUrl.replace(schema, `${schema}_missing`),
+  const runChild = async (endpoint: string, hold = false) => {
+    const child = Bun.spawn(
+      ["bun", "tests/integration/fixtures/outbox-instance.ts"],
+      {
+        env: {
+          ...process.env,
+          DATABASE_URL: url,
+          OUTBOX_TEST_SCHEMA: schema,
+          TEST_SQS_ENDPOINT: endpoint,
+          OUTBOX_QUEUE_URL: queueUrl,
+          OUTBOX_HOLD: String(hold),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    try {
+      const reader = child.stdout.getReader();
+      const result = await reader.read();
+      expect(new TextDecoder().decode(result.value)).toContain("ready");
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+  };
+  await runChild(
+    process.env.TEST_SQS_ENDPOINT ?? "http://127.0.0.1:4566",
+    true,
   );
-  await expect(unavailable.runOnce()).rejects.toMatchObject({
-    name: "QueueDoesNotExist",
-  });
   expect(
     await orm.em.execute(
-      "select id, payload, published_at from outbox_messages where published_at is null order by id",
+      "select id, payload from outbox_messages where published_at is null order by id",
     ),
   ).toEqual(before);
-  expect(await publisher.runOnce()).toBe(2);
-  await receive(2);
-});
+  await runChild("http://127.0.0.1:1");
+  const retries = await orm.em.execute<{ attempts: number; delay: number }[]>(
+    "select attempts, extract(epoch from (next_attempt_at - clock_timestamp()))::float as delay from outbox_messages where published_at is null",
+  );
+  expect(retries).toHaveLength(4);
+  for (const retry of retries) {
+    expect(retry.attempts).toBe(1);
+    expect(retry.delay).toBeGreaterThan(0);
+    expect(retry.delay).toBeLessThanOrEqual(2);
+  }
+  expect(await publisher.runOnce()).toBe(0);
+  await Bun.sleep(2100);
+  await runChild(process.env.TEST_SQS_ENDPOINT ?? "http://127.0.0.1:4566");
+  const events = await receive(4);
+  for (const row of before) expect(events).toContainEqual(row.payload);
+  expect(await publisher.runOnce()).toBe(0);
+  const reconciliation = await fetch(
+    `${base}/wallets/${identity.walletId}/reconciliation`,
+    { method: "POST" },
+  );
+  expect(await reconciliation.json()).toMatchObject({
+    consistent: true,
+    storedBalance: { amount: "75.00", currency: "BRL" },
+    checkedEntries: 2,
+  });
+}, 15000);
 
 test("publisher cannot see uncommitted outbox and preserves optional causation after commit", async () => {
   const [original] = await orm.em.execute<
@@ -267,5 +314,67 @@ test("failure before financial commit rolls back BET and publishes no event", as
   } finally {
     await orm.em.execute("drop trigger fail_bet_outbox on outbox_messages");
     await orm.em.execute("drop function fail_bet_outbox()");
+  }
+});
+
+test("retry doubles its delay, caps at five minutes and migration reverses without losing envelopes", async () => {
+  await openWallet();
+  const unavailableClient = new SQSClient({
+    endpoint: "http://127.0.0.1:1",
+    region: "us-east-1",
+    credentials: { accessKeyId: "test", secretAccessKey: "test" },
+    maxAttempts: 1,
+  });
+  const unavailable = new OutboxPublisher(orm, unavailableClient, queueUrl);
+  try {
+    expect(await unavailable.runOnce()).toBe(0);
+    await orm.em.execute(
+      "update outbox_messages set next_attempt_at = clock_timestamp() where published_at is null",
+    );
+    expect(await unavailable.runOnce()).toBe(0);
+    const second = await orm.em.execute<{ attempts: number; delay: number }[]>(
+      "select attempts, extract(epoch from (next_attempt_at - clock_timestamp()))::float as delay from outbox_messages where published_at is null",
+    );
+    for (const row of second) {
+      expect(row.attempts).toBe(2);
+      expect(row.delay).toBeGreaterThan(3);
+      expect(row.delay).toBeLessThanOrEqual(4);
+    }
+    await orm.em.execute(
+      "update outbox_messages set attempts = 8, next_attempt_at = clock_timestamp() where published_at is null",
+    );
+    expect(await unavailable.runOnce()).toBe(0);
+    const capped = await orm.em.execute<{ attempts: number; delay: number }[]>(
+      "select attempts, extract(epoch from (next_attempt_at - clock_timestamp()))::float as delay from outbox_messages where published_at is null",
+    );
+    for (const row of capped) {
+      expect(row.attempts).toBe(9);
+      expect(row.delay).toBeGreaterThan(299);
+      expect(row.delay).toBeLessThanOrEqual(300);
+    }
+    await expect(
+      orm.em.execute(
+        "update outbox_messages set attempts = -1 where published_at is null",
+      ),
+    ).rejects.toThrow();
+    await expect(
+      orm.em.execute(
+        "update outbox_messages set next_attempt_at = 'infinity' where published_at is null",
+      ),
+    ).rejects.toThrow();
+    const before = await orm.em.execute(
+      "select id, payload, published_at from outbox_messages order by id",
+    );
+    await orm.migrator.down();
+    expect(
+      await orm.em.execute(
+        "select id, payload, published_at from outbox_messages order by id",
+      ),
+    ).toEqual(before);
+    await orm.migrator.up();
+    expect(await publisher.runOnce()).toBe(2);
+    await receive(2);
+  } finally {
+    unavailableClient.destroy();
   }
 });

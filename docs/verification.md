@@ -360,3 +360,26 @@ Registro técnico PT-BR para desenvolvedor e avaliador, revisado com humanizer-p
 Limites: backoff/tentativas persistidos, crash entre envio e marcação, publishers concorrentes e consumidor/inbox não foram exercitados. A fila de saída é standard e descartável; a entrega permite duplicatas do mesmo eventId. Tickets 16/17 cobrem recuperação e concorrência. O teste de rollback inspeciona a ausência de mensagens após long polling de um segundo, junto da ausência da BET no banco.
 
 Code-review em dois agentes independentes contra o baseline: Spec, zero achados; Standards, dois achados de documentação corrigidos. Glossário passou a descrever publicação real; arquitetura agora informa que `logger: false` silencia a chamada do publisher. Nenhum smell material. Humanizer-pt-br/no-ai-slop foram reaplicados aos trechos: mecanismo e limitações ficaram explícitos, sem acrescentar garantias. Harnesses temporários e container init substituído foram removidos; arquivos locais ignorados de cobertura e continuidade foram atualizados sem inclusão forçada.
+
+
+## Recuperação da outbox — 2026-10-23
+
+Ticket 16, baseline `d940ddf2570c9004abe109165f383e71ab644fac`, branch main conforme pedido de commit na branch atual. Bun 1.3.14, NestJS 11.1.16, MikroORM 6.6.8, AWS SDK SQS 3.1156.0, PostgreSQL 17.6 e LocalStack 4.11.1 nos containers locais preexistentes. Nenhuma dependência nova.
+
+O teste focal foi alterado antes da implementação: falhou porque o publisher encerrava com erro de envio e não gravava agenda. Depois da migration e do tratamento da falha, `bun run typecheck` e `bun test tests/integration/outbox.test.ts` passaram. A versão final focal teve seis testes e 83 assertions. As provas incluem:
+
+- opening e BET confirmados, publisher morto com SIGKILL antes de publicar, envelopes preservados;
+- falha real de conexão em `127.0.0.1:1`, contagem e prazo persistidos; publisher morto e substituído por outro processo, sem envio antecipado;
+- retomada com LocalStack real após o prazo, mesmos quatro envelopes e reconciliação de `75.00 BRL`, dois lançamentos;
+- segunda falha com atraso de quatro segundos e teto de 300 segundos na nona falha; valores negativos de contagem e agenda infinita rejeitados pelo banco;
+- migration down/up preserva envelopes e marcações; o down remove a agenda, como documentado na arquitetura.
+
+Smoke independente executado com `bun .scratch/ticket16-smoke.ts`: banco `_test` e fila exclusivos, migrations completas e processo real `bun src/main.ts`. Com endpoint SQS indisponível, HTTP confirmou abertura de `100.00 BRL` e BET de `25.00`; as quatro linhas receberam uma tentativa e agenda. A API recebeu SIGKILL e reiniciou com endpoint correto. O worker agendado enviou quatro eventos com as mesmas identidades e marcou as quatro linhas. Reconciliação: saldo materializado e calculado `75.00 BRL`, diferença `0.00`, dois lançamentos. Wallet `bc470fae-4a31-4eea-bf54-68f624a909b3`; eventos `c5febf5a-1580-4a8f-bdbe-47b777707af7`, `cf2f935c-6c4e-49c6-9716-e9a073692759`, `075378f7-5904-48a2-a18e-ab0c66307747` e `2750b000-154f-4b3f-aadf-b73be1536935`. Processo encerrado, banco e fila temporários removidos. O broker compartilhado não foi parado: a indisponibilidade foi provocada pelo endpoint sem servidor e a interrupção real foi do publisher/API.
+
+Verificação final: `bun run format`, `bun run lint`, `bun run typecheck` e suíte completa `bun test`, executada uma vez ao final: 247 testes em 23 arquivos, 1.952 assertions, zero falhas. Formatação não alterou código alheio ao ticket. Revisão code-review com dois agentes, padrões e spec contra o baseline incluindo alterações locais e arquivos novos: zero achados em cada eixo.
+
+Nest Boost via cliente MCP stdio: handshake, `application_info` e `module_graph` executados; oito módulos, com `OutboxModule` e `OutboxPublisher` na composição. Não foi usado `evaluate`. Context7 consultou a documentação oficial do AWS SDK v3 sobre `maxAttempts`: o cliente mantém uma tentativa por chamada e a outbox controla o retry persistido.
+
+Registro técnico em PT-BR para desenvolvedor e avaliador, revisado com humanizer-pt-br e no-ai-slop. "Ainda não há tentativas/backoff persistidos" foi substituído pelos campos, prazos e comportamento entregues; a política provisória do ticket 15 foi substituída na arquitetura. Foram preservados os limites de duplicação, descarte do estado do broker e logs silenciados no bootstrap. A revisão de prosa não acrescentou promessas ou resultados.
+
+Não foram executados pausa do broker compartilhado, rebuild da imagem, concorrência entre publishers ou crash após envio aceito e antes da marcação. O roteiro de pause/unpause no README está disponível para execução manual; o smoke executado acima usa interrupção do processo. A entrega permite duplicatas por eventId, e o estado do LocalStack continua descartável.

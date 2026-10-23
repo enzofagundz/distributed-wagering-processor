@@ -21,23 +21,43 @@ export class OutboxPublisher {
         const [message] = await em.execute<
           { id: string; payload: Record<string, unknown> }[]
         >(`select id, payload from outbox_messages where published_at is null
+          and (next_attempt_at is null or next_attempt_at <= clock_timestamp())
           order by occurred_at, id limit 1 for update skip locked`);
         if (!message) return false;
-        await this.sqs.send(
-          new SendMessageCommand({
-            QueueUrl: this.queueUrl,
-            MessageBody: JSON.stringify(message.payload),
-          }),
-          { abortSignal: AbortSignal.timeout(5000) },
-        );
+        try {
+          await this.sqs.send(
+            new SendMessageCommand({
+              QueueUrl: this.queueUrl,
+              MessageBody: JSON.stringify(message.payload),
+            }),
+            { abortSignal: AbortSignal.timeout(5000) },
+          );
+        } catch (error) {
+          await em.execute(
+            `update outbox_messages
+            set attempts = attempts + 1,
+              next_attempt_at = clock_timestamp() +
+                least(300, power(2, least(attempts + 1, 9))) * interval '1 second'
+            where id = ?`,
+            [message.id],
+          );
+          this.logger.error(
+            JSON.stringify({
+              event: "OutboxPublicationFailed",
+              eventId: message.id,
+              errorType: error instanceof Error ? error.name : "UnknownError",
+            }),
+          );
+          return "retry";
+        }
         await em.execute(
-          "update outbox_messages set published_at = clock_timestamp() where id = ?",
+          "update outbox_messages set published_at = clock_timestamp(), next_attempt_at = null where id = ?",
           [message.id],
         );
         return true;
       });
       if (!sent) break;
-      published++;
+      if (sent === true) published++;
     }
     return published;
   }

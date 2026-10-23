@@ -66,14 +66,16 @@ docker compose exec localstack awslocal sqs receive-message \
   --queue-url http://localhost:4566/queue/us-east-1/000000000000/wagering-events \
   --max-number-of-messages 10 --wait-time-seconds 2
 docker compose exec postgres psql -U wagering -d wagering \
-  -c 'select id, event_type, published_at from outbox_messages order by occurred_at desc limit 10'
+  -c 'select id, event_type, attempts, next_attempt_at, published_at from outbox_messages order by occurred_at desc limit 10'
 ```
 
 `receive-message` torna as mensagens temporariamente invisíveis; sem `delete-message`, elas voltam após o visibility timeout. Uma abertura positiva e uma BET processada produzem quatro eventos no total; uma BET rejeitada produz somente `WagerTransactionRejected`. Cada corpo preserva o envelope persistido, com `eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt`, `version` e `data`; `causationId` é opcional e os produtores atuais o omitem. Valores monetários usam `{amount, currency}`, com duas casas em string.
 
-Se o envio falhar, `published_at` continua nulo e a próxima varredura tenta novamente. Ainda não há tentativas/backoff persistidos. Queda após envio e antes da marcação pode duplicar o mesmo `eventId`; consumidores precisam deduplicá-lo. Decisão e limites: [publicação da outbox](ARCHITECTURE.md#publicação-da-outbox).
+Se o envio falhar, `published_at` continua nulo; `attempts` e `next_attempt_at` persistem no PostgreSQL. O retry espera 2s, 4s, 8s e dobra até o teto de 300s, sem limite de falhas ou descarte. Reiniciar a API preserva o prazo. Execute `bun run migration:up` antes de iniciar o publisher atualizado. Queda após envio e antes da marcação pode duplicar o mesmo `eventId`; consumidores precisam deduplicá-lo. Decisão e limites: [publicação da outbox](ARCHITECTURE.md#publicação-da-outbox).
 
-Teste focal: `bun test tests/integration/outbox.test.ts`. Ele exige `TEST_DATABASE_URL` terminado em `_test` e LocalStack em `TEST_SQS_ENDPOINT` (padrão `http://127.0.0.1:4566`). Cria schema e fila exclusivos, verifica HTTP → SQS, rejeição, erro de envio e rollback financeiro; remove esses recursos no fim.
+Teste focal: `bun test tests/integration/outbox.test.ts`. Ele exige `TEST_DATABASE_URL` terminado em `_test` e LocalStack em `TEST_SQS_ENDPOINT` (padrão `http://127.0.0.1:4566`). Cria schema e fila exclusivos, verifica HTTP → SQS, rejeição, falha de rede, retomada após SIGKILL, backoff e rollback financeiro; remove esses recursos no fim.
+
+Para experimentar a retomada no Compose sem apagar mensagens, execute `docker compose pause localstack`, submeta uma BET e consulte a outbox com o comando acima. Após a falha, `attempts` aumenta e `next_attempt_at` recebe um prazo. Execute `docker compose restart app` e `docker compose unpause localstack`; depois do prazo e da próxima varredura, confira `published_at` e receba os eventos. Use sempre `unpause` ao terminar. Este roteiro interrompe o broker compartilhado do ambiente local.
 
 ## Experimentar HTTP
 
