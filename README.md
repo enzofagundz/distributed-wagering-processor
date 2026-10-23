@@ -4,7 +4,7 @@ Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECH
 
 A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET, WIN, LOSS, REFUND e ROLLBACK por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva e operações financeiras persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL. LOSS confirma resultado e evento sem movimentar saldo. Um worker agendado resolve WIN, REFUND e ROLLBACK que chegaram antes da referência.
 
-O publisher envia eventos confirmados da outbox ao SQS no LocalStack. Entrada por SQS/inbox, autenticação e health estão pendentes. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+O publisher envia eventos confirmados da outbox ao SQS no LocalStack. BET também entra por SQS, com inbox persistente e ack após commit. Autenticação e health estão pendentes. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
@@ -55,7 +55,7 @@ No container da API, o Compose define `DATABASE_URL`, `HOST` e `PORT`: banco em 
 
 ## Publicar e inspecionar eventos
 
-O Compose inicia LocalStack 4.11.1 e cria a fila standard `wagering-events` pelo hook `infra/localstack/init-sqs.sh`. O health check só passa quando a fila existe. A fila é de saída; ainda não há consumidor de operações. O estado do broker é descartável: recriar o container apaga mensagens, inclusive eventos que o PostgreSQL já marcou como publicados.
+O Compose inicia LocalStack 4.11.1 e cria a fila standard `wagering-events` pelo hook `infra/localstack/init-sqs.sh`. O mesmo hook cria `wager-transactions.fifo` e `wager-transactions-dlq.fifo`; o health check espera a fila de entrada existir. `wagering-events` recebe os eventos de saída. O estado do broker é descartável: recriar o container apaga mensagens, inclusive eventos que o PostgreSQL já marcou como publicados.
 
 No host, complete as chaves SQS de `.env.example` no seu `.env` existente. Use região `us-east-1`, credenciais locais `test`/`test`, `SQS_ENDPOINT=http://127.0.0.1:4566` e `OUTBOX_QUEUE_URL=http://127.0.0.1:4566/queue/us-east-1/000000000000/wagering-events`. No container da API, o Compose troca o host por `localstack`.
 
@@ -83,9 +83,63 @@ TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test \
   bun test tests/integration/outbox.test.ts --test-name-pattern 'two publishers'
 ```
 
-A fixture pausa o retorno do SDK após a resposta real de `SendMessage`; não substitui PostgreSQL nem SQS. O teste observa dois locks simultâneos, progresso do worker vivo e recuperação após SIGKILL. No cenário sem novas falhas, quatro eventos geram cinco entregas, quatro efeitos deduplicados e nenhuma pendência. Isso não limita quantas duplicatas um SQS standard pode entregar ou quantos reenvios novas quedas podem causar. O consumidor de verificação existe apenas no teste; inbox de produção continua pendente.
+A fixture pausa o retorno do SDK após a resposta real de `SendMessage`; não substitui PostgreSQL nem SQS. O teste observa dois locks simultâneos, progresso do worker vivo e recuperação após SIGKILL. No cenário sem novas falhas, quatro eventos geram cinco entregas, quatro efeitos deduplicados e nenhuma pendência. Isso não limita quantas duplicatas um SQS standard pode entregar ou quantos reenvios novas quedas podem causar. O consumidor de verificação dessa prova existe apenas no teste; a inbox de entrada de BET usa outro fluxo, descrito abaixo.
 
 Para experimentar a retomada no Compose sem apagar mensagens, execute `docker compose pause localstack`, submeta uma BET e consulte a outbox com o comando acima. Após a falha, `attempts` aumenta e `next_attempt_at` recebe um prazo. Execute `docker compose restart app` e `docker compose unpause localstack`; depois do prazo e da próxima varredura, confira `published_at` e receba os eventos. Use sempre `unpause` ao terminar. Este roteiro interrompe o broker compartilhado do ambiente local.
+
+## Enviar BET pelo SQS
+
+Depois de atualizar um ambiente existente, execute `bun run migration:up`. Para criar as filas sem recriar o LocalStack nem apagar mensagens:
+
+```sh
+docker compose exec localstack sh /etc/localstack/init/ready.d/init-sqs.sh
+```
+
+No host, configure `WAGER_QUEUE_URL` e `WAGER_DLQ_URL` conforme `.env.example`. O Compose já fornece essas URLs com host `localstack`. `bun run start` inicia o consumidor junto da API; ele recebe uma mensagem por vez por instância. Use o ID da wallet como `MessageGroupId`. FIFO ajuda na ordenação, mas a deduplicação financeira depende do PostgreSQL.
+
+Crie uma wallet pela API e salve o envelope abaixo em `/tmp/bet.json`, substituindo `PLAYER_ID`, `WALLET_ID` e as identidades externas. O contrato de data é UTC com milissegundos, como no exemplo. Reenvio preserva o envelope inteiro, inclusive `messageId` e `occurredAt`.
+
+```json
+{
+  "messageId": "msg-bet-18",
+  "type": "WagerTransactionRequested",
+  "occurredAt": "2026-10-23T18:00:00.000Z",
+  "data": {
+    "providerId": "provider-a",
+    "externalTransactionId": "bet-18",
+    "idempotencyKey": "provider-a:bet-18",
+    "playerId": "PLAYER_ID",
+    "walletId": "WALLET_ID",
+    "roundId": "round-18",
+    "gameId": "game-18",
+    "kind": "BET",
+    "money": { "amount": "25.00", "currency": "BRL" }
+  }
+}
+```
+
+```sh
+docker compose cp /tmp/bet.json localstack:/tmp/bet.json
+docker compose exec localstack awslocal sqs send-message \
+  --queue-url http://localhost:4566/queue/us-east-1/000000000000/wager-transactions.fifo \
+  --message-group-id WALLET_ID --message-deduplication-id entrega-18 \
+  --message-body file:///tmp/bet.json
+curl http://127.0.0.1:3000/providers/provider-a/wagering/transactions/bet-18
+curl -X POST http://127.0.0.1:3000/wallets/WALLET_ID/reconciliation
+```
+
+A consulta pode retornar 404 enquanto o consumidor ainda não confirmou o processamento. Para forçar outra entrega ao testar, troque somente `--message-deduplication-id`; manter esse valor pode fazer o broker suprimir o envio. A inbox compara o envelope canônico: outra ordem de chaves é equivalente, mas mudar conteúdo com o mesmo `messageId` gera `MESSAGE_ID_CONFLICT` e DLQ. Outro `messageId` com a mesma chave/payload de negócio registra replay, sem novo débito. Saldo insuficiente produz rejeição persistida, evento e ack, sem DLQ.
+
+Payload inválido, provider reservado e conflitos seguem para a DLQ. Falhas transitórias ou inesperadas tentam novamente com visibilidade de 2, 4, 8 e 16 segundos; na quinta falha seguem para a DLQ. O envio para a DLQ precisa ser aceito antes da exclusão na origem. A [decisão da inbox](docs/adr/0007-inbox-atomica-de-bet.md) detalha hash, concorrência e janela de ack. WIN/LOSS e reversões por SQS ficam para os tickets seguintes.
+
+Smoke e integração reproduzíveis, com PostgreSQL e LocalStack reais:
+
+```sh
+TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test \
+  bun test tests/integration/bet-sqs.test.ts
+```
+
+A suíte cria schema e filas exclusivos, remove-os ao terminar e inclui SIGKILL entre commit e ack, três processos consumidores, rollback e DLQ. A prova de crash espera 30 segundos pela visibilidade real; esgotar retries leva mais cerca de 30 segundos. Evidências executadas: [BET por SQS](docs/verification.md#bet-por-sqs--2026-10-23).
 
 ## Experimentar HTTP
 

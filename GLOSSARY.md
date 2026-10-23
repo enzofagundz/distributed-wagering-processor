@@ -60,7 +60,7 @@ Envelope com `eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt
 
 ## Outbox
 
-Tabela `outbox_messages` que persiste eventos na mesma transação SQL da operação e só recebe `published_at` após envio ao SQS. Falha conserva a pendência; entrega pode repetir o mesmo `eventId`, e backoff persistido e inbox continuam pendentes (ver [publicação da outbox](ARCHITECTURE.md#publicação-da-outbox)).
+Tabela `outbox_messages` que persiste eventos na mesma transação SQL da operação e só recebe `published_at` após envio ao SQS. Falha conserva a pendência; entrega pode repetir o mesmo `eventId`, e consumidores precisam deduplicar por eventId (ver [publicação da outbox](ARCHITECTURE.md#publicação-da-outbox)).
 
 ## Unit of Work / flush
 
@@ -81,3 +81,7 @@ Tentativa de criar outra wallet para o mesmo player/moeda, arbitrada pela constr
 ## Replay de BET
 
 Reenvio com mesma chave e hash de negócio devolve identidade, status e saldo observado persistidos, com `idempotentReplay: true`, sem novo efeito financeiro ou evento. Payload divergente conflita; outra chave para identidade externa existente também. Algoritmo e escopos: [idempotência de BET](ARCHITECTURE.md#idempotência-de-bet).
+
+## Inbox de BET
+
+Registro em `inbox_messages`, único por consumidor e messageId, que confirma hash do envelope e resultado junto da operação financeira. Entrega repetida retorna o resultado original; reutilização divergente do ID é conflito (ver [ADR-0007](docs/adr/0007-inbox-atomica-de-bet.md)).

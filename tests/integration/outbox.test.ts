@@ -365,7 +365,7 @@ test("retry doubles its delay, caps at five minutes and migration reverses witho
     const before = await orm.em.execute(
       "select id, payload, published_at from outbox_messages order by id",
     );
-    await orm.migrator.down();
+    await orm.migrator.down({ to: "Migration20261023000700" });
     expect(
       await orm.em.execute(
         "select id, payload, published_at from outbox_messages order by id",

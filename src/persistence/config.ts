@@ -17,6 +17,8 @@ import { Migration20261023000600 } from "./migrations/Migration20261023000600";
 
 import { Migration20261023000700 } from "./migrations/Migration20261023000700";
 
+import { Migration20261023000800 } from "./migrations/Migration20261023000800";
+
 export function databaseConfig(clientUrl = process.env.DATABASE_URL) {
   if (!clientUrl) throw new Error("DATABASE_URL is required");
   return defineConfig({
@@ -41,6 +43,7 @@ export function databaseConfig(clientUrl = process.env.DATABASE_URL) {
         Migration20261023000500,
         Migration20261023000600,
         Migration20261023000700,
+        Migration20261023000800,
       ],
       snapshot: false,
     },

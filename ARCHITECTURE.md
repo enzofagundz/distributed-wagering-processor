@@ -13,7 +13,8 @@ Este documento descreve a implementação atual. Os requisitos estão no [enunci
 | Erros compartilhados | `src/shared/domain-error.filter.ts` | Tradução global de erros conhecidos, registrada uma vez pelo módulo raiz |
 | Caso de uso e leitura | `src/wallets/wallet-service.ts` | Abertura atômica, reidratação, ledger keyset e reconciliação em snapshot único |
 | Submissão de BET/WIN/LOSS/REFUND/ROLLBACK | `src/wagering/` | Contrato HTTP, lock da wallet, operações, referências e persistência atômica |
-| Domínio | `src/domain/` | Money, Wallet, WagerTransaction, WalletLedgerEntry e eventos; sem NestJS/ORM |
+| Consumo de BET SQS | `src/wagering/wager-consumer.ts`, `wager-message.ts` | Envelope, inbox atômica, ack após commit, retry e DLQ |
+| Domínio | `src/domain/` | Money, Wallet, WagerTransaction, WalletLedgerEntry, InboxMessage e eventos; sem NestJS/ORM |
 | Persistência | `src/persistence/persistence.module.ts`, `*record.ts`, `config.ts` | Provider MikroORM exportado explicitamente, EntitySchema e configuração |
 | Schema | `src/persistence/migrations/` | Constraints, FKs, trigger append-only e índices versionados |
 | Verificação | `tests/domain/`, `tests/integration/` | Invariantes, constraints, atomicidade e fronteira HTTP com PostgreSQL real |
@@ -128,7 +129,7 @@ Uma transação de controle segura a linha da wallet antes do lote. O teste iden
 
 Outro cenário mantém uma wallet bloqueada e confirma duas BET em wallets distintas nos outros processos antes de liberar o lock. Depois reconcilia todas. Não há benchmark: uma hot wallet continua serializada até o fim da transação, e suas chamadas podem ocupar conexões do pool. Mais instâncias não eliminam essa contenção.
 
-Falha antes do commit desfaz a transação e libera o lock; depois do commit, resultado, saldo, ledger e outbox já estão persistidos. Se a resposta se perder, o reenvio usa resultado original e unicidades do banco, não estado do processo. Este ticket não simula morte entre commit e ack: inbox e consumidor SQS ainda estão pendentes. As provas dos publishers estão na seção de publicação da outbox.
+Falha antes do commit desfaz a transação e libera o lock; depois do commit, resultado, saldo, ledger e outbox já estão persistidos. Se a resposta se perder, o reenvio usa resultado original e unicidades do banco, não estado do processo. A prova do ticket 08 não simula morte entre commit e ack. O ticket 18 cobre essa janela no consumidor BET, conforme a seção de consumo pelo SQS; as provas dos publishers estão na seção de publicação da outbox.
 
 Alternativa seria optimistic locking com retry limitado ou update condicionado. A prova multiprocesso não exigiu trocar o lock por linha já adotado. Referências: [PostgreSQL 17 — locks de linha](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS) para duração e escopo; [Bun — IPC](https://bun.sh/docs/runtime/child-process#inter-process-communication-ipc) para comunicação da fixture, consultada via Context7 e exercitada no Bun 1.3.14. Evidências: [verificação do ticket 08](docs/verification.md#concorrência-entre-processos--2026-10-23).
 
@@ -241,10 +242,16 @@ Status, contador, próximo horário, saldo observado terminal e evento de rejei�
 
 Migration `20261023000600` adiciona `reference_attempts` de 0 a 10 e `reference_next_attempt_at`, finito e obrigatório apenas em `PENDING_REFERENCE`; pendência exige contador menor que 10. Estados terminais ficam sem próximo horário. Pendências anteriores recebem contador zero e horário `created_at`, sem perda de identidade, hash ou saldo do aceite. O índice parcial `(reference_next_attempt_at, id)` atende à busca de pendências vencidas. `down` recusa histórico com `REFERENCE_NOT_FOUND`; sem esse histórico, remove campos/índice e restaura checks anteriores. Exige APIs paradas.
 
-O publisher envia os eventos ao SQS; inbox e consumo de operações continuam pendentes. A segurança entre instâncias vem do PostgreSQL, não de scheduler distribuído. Cenários SQL/HTTP não comprovam ack, redelivery ou publicação. Testes focais e setup: [README](README.md#resolver-referência-pendente). Registro de execução do ticket 14: [expiração de referências](docs/verification.md#expiração-de-referências--2026-10-23); resultados devem ser lidos nessa seção, sem extrapolar evidências históricas do ticket 13.
+O publisher envia os eventos ao SQS; BET também entra pela fila com inbox, conforme a seção de consumo abaixo. A segurança entre instâncias vem do PostgreSQL, não de scheduler distribuído. Cenários SQL/HTTP não comprovam ack, redelivery ou publicação. Testes focais e setup: [README](README.md#resolver-referência-pendente). Registro de execução do ticket 14: [expiração de referências](docs/verification.md#expiração-de-referências--2026-10-23); resultados devem ser lidos nessa seção, sem extrapolar evidências históricas do ticket 13.
 
 Referências dos locks mantidas da resolução: [MikroORM 6.6 — pessimistic locking](https://mikro-orm.io/docs/6.6/transactions#pessimistic-locking) e [PostgreSQL 17 — row-level locks](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS). Evidências históricas do ticket 13: [resolução de referências](docs/verification.md#resolução-de-referências--2026-10-23).
 
+
+## Consumo de BET pelo SQS
+
+O [ADR-0007](docs/adr/0007-inbox-atomica-de-bet.md) registra a decisão do ticket 18: o consumidor valida o envelope, reutiliza o DTO HTTP e chama `WageringService.submit` com contexto de inbox. A reserva única por `(consumerName, messageId)` e seu resultado compartilham a transação financeira. Replay usa o resultado original; conteúdo divergente para o mesmo ID gera `MESSAGE_ID_CONFLICT` e DLQ. Duplicata de negócio com outro ID confirma uma nova inbox sem segundo débito.
+
+`main.ts` inicia o consumidor e interrompe novas leituras nos sinais de encerramento. Ack acontece após commit; falha na outbox desfaz também a inbox. A política inicial de retry, DLQ, visibilidade e seus limites está no ADR. Setup e envio manual: [README](README.md#enviar-bet-pelo-sqs). Evidências reais, incluindo três processos e crash na janela commit/ack: [verificação](docs/verification.md#bet-por-sqs--2026-10-23).
 
 ## Consultas e paginação
 
@@ -297,9 +304,9 @@ Erros conhecidos retornam `{ "code": "..." }`, exceto a rejeição 422, que reto
 
 ## Ainda não entregue
 
-Inbox/consumidor SQS, retry/DLQ de entrada, health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). Resolução de referências e publicação de outbox têm workers separados. Próximo ticket: 18, BET pela fila com inbox.
+WIN/LOSS e reversões por SQS, health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). Resolução de referências, consumo de BET e publicação de outbox têm workers separados. Próximo ticket: 19, WIN/LOSS pela fila.
 
-API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown atual espera os workers de resolução e publicação, fecha HTTP e ORM; não há consumer, ack ou tratamento de visibilidade.
+API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown atual para novas leituras e espera o consumidor e os workers antes de fechar HTTP e ORM; ainda não há prazo máximo de drenagem.
 
 Setup, migrations e riscos de reversão: [README](README.md). Resultados executados e limites das provas: [evidências](docs/verification.md).
 

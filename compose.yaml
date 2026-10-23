@@ -9,6 +9,8 @@ services:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       SQS_ENDPOINT: http://localstack:4566
+      WAGER_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/wager-transactions.fifo
+      WAGER_DLQ_URL: http://localstack:4566/queue/us-east-1/000000000000/wager-transactions-dlq.fifo
       OUTBOX_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/wagering-events
     depends_on:
       postgres:
@@ -28,7 +30,7 @@ services:
     volumes:
       - ./infra/localstack/init-sqs.sh:/etc/localstack/init/ready.d/init-sqs.sh:ro,Z
     healthcheck:
-      test: ["CMD", "awslocal", "sqs", "get-queue-url", "--queue-name", "wagering-events"]
+      test: ["CMD", "awslocal", "sqs", "get-queue-url", "--queue-name", "wager-transactions.fifo"]
       interval: 2s
       timeout: 5s
       retries: 30

@@ -409,3 +409,23 @@ Limites: a pausa é instrumentação da fixture após resposta real do broker, n
 
 
 Revisão code-review em dois agentes independentes contra o baseline e alterações locais: Standards, zero achados; Spec, zero achados após inclusão desta seção e fechamento do ticket. Cobertura, continuidade e ticket foram atualizados nos arquivos locais já ignorados pelo Git, sem inclusão forçada. A revisão não repetiu os testes. Nenhuma alteração de produção ou dependência foi necessária.
+
+## BET por SQS — 2026-10-23
+
+Ticket 18. Bun 1.3.14, PostgreSQL 17.6 e LocalStack 4.11.1 em containers locais; AWS SDK SQS 3.1156.0 e MikroORM 6.6.8. `TEST_DATABASE_URL` apontou para `wagering_test` na porta 55433. A suíte `tests/integration/bet-sqs.test.ts` cria schema e filas próprios, sem limpar tabelas financeiras compartilhadas.
+
+O primeiro teste falhou por ausência do consumidor antes da implementação. Após o incremento inicial, a BET real confirmou inbox, débito e outbox; a consulta/repetição HTTP retornou PROCESSED com `75.00 BRL`. Os testes focais seguintes comprovaram duplicatas concorrentes, preservação de saldo observado após outra BET, conflitos de messageId/chave, rejeição terminal sem DLQ e contratos inválidos sem movimento.
+
+Falha induzida na inserção da outbox com SQLSTATE `40001` desfez inbox, transação, débito e ledger. Após retirar o trigger e esperar a visibilidade, a entrega real confirmou uma vez. Outra prova manteve a falha por cinco recebimentos e observou a DLQ FIFO após os delays de 2, 4, 8 e 16 segundos, sem débito parcial. Isso simula erro transacional; não interrompe rede nem desliga o PostgreSQL.
+
+A fixture de processo pausa antes de enviar DeleteMessage. SIGKILL depois do commit deixou inbox persistida; após 30 segundos de visibilidade, outro processo consumiu e confirmou ack sem novo débito. Três processos consumidores, cada qual com seu ORM, convergiram para uma única BET ao receber a mesma chave de negócio por três messageIds. SIGTERM drenou a mensagem em andamento; a primeira execução desse teste travou na espera de stdin da fixture, corrigida para encerrar explicitamente depois da limpeza. O teste focal corrigido passou. Essas provas usam SQS e PostgreSQL reais; o checkpoint não substitui o broker nem o commit.
+
+Smoke adicional executou `src/main.ts` em processo próprio, com banco descartável e filas exclusivos: abertura HTTP `100.00 BRL`, envio real da BET de `25.00`, consulta PROCESSED, replay HTTP da mesma identidade, quatro eventos recebidos e reconciliação `75.00 BRL`, diferença zero, dois lançamentos. SIGTERM terminou com código zero. Banco e filas foram removidos no finally. O roteiro ad hoc ficou fora do código distribuído; o teste focal e o envio manual do README reproduzem os passos públicos.
+
+Nest Boost foi iniciado por stdio com `bun run nest-boost mcp`: handshake aceito e `module_graph` mostrou WagerConsumer, WageringService e PendingReferenceWorker em WageringModule, com PersistenceModule. Não foi usado evaluate. Context7 forneceu documentação oficial dos comandos SQS e transações MikroORM; compatibilidade das versões fixadas foi exercitada nos testes.
+
+Limites: o consumidor aceita apenas BET. Não foi interrompida uma dependência real, não há FAILED persistido, prazo máximo de drenagem nem métricas globais. InboxMessage tem factory, rehydrate e checkpoint encapsulado; a classe de domínio OutboxMessage continua pendente. FIFO de entrada, inbox e idempotência de negócio têm escopos diferentes; envio à DLQ e exclusão na origem não formam transação distribuída. Redrive exige consultar o resultado financeiro quando o ack pode ter falhado após commit.
+
+Na revisão de padrões, a primeira versão deixou a inbox sem classe de domínio. A correção adicionou InboxMessage com factory, rehydrate, comparação de hash e transição única; dois testes de domínio passaram. A revisão Spec não apontou lacunas do ticket. A primeira suíte completa encontrou um teste da outbox que revertia implicitamente a migration mais recente; a nova migration de inbox revelou essa dependência. O teste passou a declarar `to: Migration20261023000700`, preservando sua intenção de reverter o schema de retry.
+
+Verificação final após as correções: `bun run format`, `bun run lint` e `bun run typecheck` passaram. `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test` passou com 262 testes, zero falhas, 2120 assertions em 25 arquivos, em 99,89 segundos. Inclui os 12 testes de integração BET SQS e os dois testes de domínio InboxMessage. Revisões independentes de Standards e Spec terminaram sem achados pendentes após a correção da modelagem.

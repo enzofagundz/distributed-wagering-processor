@@ -1,3 +1,4 @@
+import { WagerConsumer } from "./wagering/wager-consumer";
 import type { INestApplication } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { createApplication } from "./create-application";
@@ -9,10 +10,12 @@ const orm = await MikroORM.init(databaseConfig());
 let app: INestApplication | undefined;
 let worker: PendingReferenceWorker | undefined;
 let publisher: OutboxPublisher | undefined;
+let consumer: WagerConsumer | undefined;
 let closing: Promise<void> | undefined;
 function close() {
   return (closing ??= (async () => {
     try {
+      await consumer?.stop();
       await worker?.stop();
       await publisher?.stop();
       await app?.close();
@@ -32,6 +35,8 @@ try {
   pendingWorker.start();
   publisher = app.get(OutboxPublisher);
   publisher!.start();
+  consumer = app.get(WagerConsumer);
+  consumer!.start();
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, close);
   }
