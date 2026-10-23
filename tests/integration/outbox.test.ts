@@ -378,3 +378,130 @@ test("retry doubles its delay, caps at five minutes and migration reverses witho
     unavailableClient.destroy();
   }
 });
+
+test("two publishers skip live claims and recover a crash after SQS accepts without duplicating consumer effects", async () => {
+  const identity = await openWallet();
+  expect((await bet(identity)).status).toBe(201);
+  const before = await orm.em.execute<
+    { id: string; payload: Record<string, unknown> }[]
+  >(
+    "select id, payload from outbox_messages where published_at is null order by occurred_at, id",
+  );
+  expect(before).toHaveLength(4);
+  await orm.em.execute(
+    "create table verification_effects (event_id uuid primary key, payload jsonb not null)",
+  );
+  const children: ReturnType<typeof Bun.spawn>[] = [];
+  const start = () => {
+    const child = Bun.spawn(
+      ["bun", "tests/integration/fixtures/outbox-instance.ts"],
+      {
+        env: {
+          ...process.env,
+          DATABASE_URL: url,
+          OUTBOX_TEST_SCHEMA: schema,
+          OUTBOX_QUEUE_URL: queueUrl,
+          OUTBOX_GATE: "true",
+        },
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "inherit",
+      },
+    );
+    children.push(child);
+    const reader = child.stdout.getReader();
+    const waitFor = async (marker: string) => {
+      let output = "";
+      const deadline = setTimeout(() => child.kill("SIGKILL"), 8000);
+      try {
+        while (!output.includes(marker)) {
+          const { value, done } = await reader.read();
+          if (done)
+            throw new Error(`Publisher exited before ${marker}: ${output}`);
+          output += new TextDecoder().decode(value);
+        }
+      } finally {
+        clearTimeout(deadline);
+      }
+    };
+    return { child, waitFor };
+  };
+  try {
+    const first = start();
+    await first.waitFor("sent");
+    const second = start();
+    await second.waitFor("sent");
+    const locked = await orm.em
+      .fork()
+      .transactional((em) =>
+        em.execute<{ id: string }[]>(
+          "select id from outbox_messages where published_at is null for update skip locked",
+        ),
+      );
+    expect(locked).toHaveLength(2);
+    second.child.stdin!.write("continue\n");
+    await second.waitFor("ready");
+    expect(
+      await orm.em.execute(
+        "select id from outbox_messages where published_at is null",
+      ),
+    ).toEqual([{ id: before[0]!.id }]);
+    first.child.kill("SIGKILL");
+    await first.child.exited;
+    const deadline = Date.now() + 5000;
+    let recovered = 0;
+    while (recovered === 0 && Date.now() < deadline) {
+      recovered += await publisher.runOnce();
+      if (recovered === 0) await Bun.sleep(25);
+    }
+    expect(recovered).toBe(1);
+    const events = await receive(5);
+    for (const row of before) {
+      const deliveries = events.filter((event) => event.eventId === row.id);
+      expect(deliveries).toHaveLength(row.id === before[0]!.id ? 2 : 1);
+      for (const delivery of deliveries) expect(delivery).toEqual(row.payload);
+    }
+    let applied = 0;
+    for (const event of events) {
+      const inserted = await orm.em.execute<{ event_id: string }[]>(
+        "insert into verification_effects (event_id, payload) values (?, ?::jsonb) on conflict (event_id) do nothing returning event_id",
+        [event.eventId, JSON.stringify(event)],
+      );
+      applied += inserted.length;
+    }
+    expect(applied).toBe(4);
+    expect(
+      await orm.em.execute(
+        "select event_id as id, payload from verification_effects order by event_id",
+      ),
+    ).toEqual([...before].sort((a, b) => a.id.localeCompare(b.id)));
+    expect(
+      await orm.em.execute(
+        "select id from outbox_messages where published_at is null",
+      ),
+    ).toEqual([]);
+    expect(await publisher.runOnce()).toBe(0);
+    expect(
+      (
+        await sqs.send(
+          new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 1 }),
+        )
+      ).Messages ?? [],
+    ).toEqual([]);
+    const reconciliation = await fetch(
+      `${base}/wallets/${identity.walletId}/reconciliation`,
+      { method: "POST" },
+    );
+    expect(await reconciliation.json()).toMatchObject({
+      consistent: true,
+      storedBalance: { amount: "75.00", currency: "BRL" },
+      checkedEntries: 2,
+    });
+  } finally {
+    for (const child of children) {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+    await orm.em.execute("drop table verification_effects");
+  }
+}, 25000);

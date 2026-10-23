@@ -69,7 +69,11 @@ Após agendar o retry, o lote continua sobre outros eventos elegíveis, até 100
 
 A migration `20261023000700` adiciona contagem não negativa, agenda finita e índice parcial para pendências. Registros antigos começam com zero falhas e sem prazo, prontos para envio. O down preserva envelopes e marcações, mas remove o histórico de tentativas e a agenda; após novo up, pendências voltam a ser imediatamente elegíveis. Pare publishers durante rollback do schema.
 
-A entrega é at-least-once. Se o SQS aceitar a mensagem e o processo morrer antes do commit da marcação, haverá reenvio do mesmo `eventId`. Os consumidores devem deduplicar por essa identidade. Não há garantia de ordem de entrega; `walletVersion` permite reconhecer a sequência financeira. `SKIP LOCKED` evita disputa da mesma linha durante uma execução, e o ticket 16 exercita recuperação após SIGKILL; concorrência entre publishers e crash após envio continuam no ticket 17.
+A entrega é at-least-once. Se o SQS aceitar a mensagem e o processo morrer antes do commit da marcação, haverá reenvio do mesmo `eventId`. Os consumidores devem deduplicar por essa identidade. Não há garantia de ordem de entrega; `walletVersion` permite reconhecer a sequência financeira. `SKIP LOCKED` evita disputa da mesma linha durante uma execução. O lock é a reserva: commit, rollback ou fechamento da conexão o libera, sem lease persistido ou tarefa de limpeza. O worker vivo pula a linha reservada e processa outras; uma varredura posterior retoma a linha abandonada. A recuperação depende de o PostgreSQL detectar a conexão encerrada; uma partição de rede pode atrasar essa detecção. O timeout de envio limita a chamada ao SQS, não substitui timeouts de conexão do banco.
+
+O ticket 17 verifica dois processos com locks simultâneos, SIGKILL após envio aceito e antes da marcação, progresso do sobrevivente e reenvio do mesmo envelope. Um consumidor de verificação grava o efeito em tabela com chave primária `event_id`, usando `INSERT ... ON CONFLICT DO NOTHING`: cinco entregas produzem quatro efeitos persistidos. Um consumidor real deve confirmar a deduplicação e seu efeito na mesma transação, antes do ack. A prova não implementa inbox de produção nem garante um limite global de duplicatas da fila standard.
+
+Mantivemos o lock transacional já existente em vez de introduzir claim com prazo: um lease exigiria expiração, renovação e proteção contra um worker antigo ainda ativo. A contrapartida é manter uma conexão/transação durante o envio. Referências consultadas via Context7: [PostgreSQL 17 — SKIP LOCKED para consumidores de fila](https://www.postgresql.org/docs/17/sql-select.html#SQL-FOR-UPDATE-SHARE) e [duração dos locks](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS). Setup e cenário reproduzível no [README](README.md#publicar-e-inspecionar-eventos); resultados na [verificação](docs/verification.md#publishers-concorrentes--2026-10-23).
 
 O envelope existente contém `eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt` ISO-8601, `version` e `data` com MoneyProps. `causationId` é opcional e atualmente omitido pelos produtores. `WalletBalanceChanged` inclui wallet, transação, direção, valor, saldos anterior/posterior e versão da wallet. Rejeição produz `WagerTransactionRejected`, sem evento de saldo.
 
@@ -84,7 +88,7 @@ Referências consultadas via Context7: [AWS SDK v3](https://github.com/aws/aws-s
 - Banco protege saldo não negativo, unicidade, aritmética do ledger e consistência de identidade/moeda por FKs compostas. Trigger rejeita UPDATE, DELETE e TRUNCATE do ledger. Administrador capaz de remover trigger/schema não está contido por essa proteção.
 - Correspondência saldo/ledger depende do caso de uso transacional; schema não promete impedir toda escrita administrativa arbitrária. Separação entre usuário de migrations e aplicação ainda é necessária antes de exposição real.
 - Sem lock global. BET, WIN, LOSS, REFUND e ROLLBACK usam lock pessimista da wallet antes da leitura do saldo. Concorrência financeira de BET foi exercitada em três processos com pools independentes; isso não comprova os fluxos de mensageria.
-- Eventos persistidos: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference`, com envelope versionado e MoneyProps. Publicação real está coberta no ticket 15; backoff persistido e provas de crash dos publishers continuam pendentes.
+- Eventos persistidos: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference`, com envelope versionado e MoneyProps. Publicação real, backoff persistido e provas de crash e concorrência dos publishers estão cobertos nos tickets 15–17.
 
 ## Processamento de BET
 
@@ -124,7 +128,7 @@ Uma transação de controle segura a linha da wallet antes do lote. O teste iden
 
 Outro cenário mantém uma wallet bloqueada e confirma duas BET em wallets distintas nos outros processos antes de liberar o lock. Depois reconcilia todas. Não há benchmark: uma hot wallet continua serializada até o fim da transação, e suas chamadas podem ocupar conexões do pool. Mais instâncias não eliminam essa contenção.
 
-Falha antes do commit desfaz a transação e libera o lock; depois do commit, resultado, saldo, ledger e outbox já estão persistidos. Se a resposta se perder, o reenvio usa resultado original e unicidades do banco, não estado do processo. Este ticket não simula morte entre commit e ack: inbox e consumidor SQS ainda estão pendentes; provas de crash dos publishers também.
+Falha antes do commit desfaz a transação e libera o lock; depois do commit, resultado, saldo, ledger e outbox já estão persistidos. Se a resposta se perder, o reenvio usa resultado original e unicidades do banco, não estado do processo. Este ticket não simula morte entre commit e ack: inbox e consumidor SQS ainda estão pendentes. As provas dos publishers estão na seção de publicação da outbox.
 
 Alternativa seria optimistic locking com retry limitado ou update condicionado. A prova multiprocesso não exigiu trocar o lock por linha já adotado. Referências: [PostgreSQL 17 — locks de linha](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS) para duração e escopo; [Bun — IPC](https://bun.sh/docs/runtime/child-process#inter-process-communication-ipc) para comunicação da fixture, consultada via Context7 e exercitada no Bun 1.3.14. Evidências: [verificação do ticket 08](docs/verification.md#concorrência-entre-processos--2026-10-23).
 
@@ -293,7 +297,7 @@ Erros conhecidos retornam `{ "code": "..." }`, exceto a rejeição 422, que reto
 
 ## Ainda não entregue
 
-Inbox/consumidor SQS, prova de publishers concorrentes, retry/DLQ de mensageria, health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). Resolução de referências e publicação de outbox têm workers separados. Próximo ticket: 16, backoff persistido e recuperação do publisher.
+Inbox/consumidor SQS, retry/DLQ de entrada, health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). Resolução de referências e publicação de outbox têm workers separados. Próximo ticket: 18, BET pela fila com inbox.
 
 API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown atual espera os workers de resolução e publicação, fecha HTTP e ORM; não há consumer, ack ou tratamento de visibilidade.
 

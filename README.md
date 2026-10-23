@@ -73,7 +73,17 @@ docker compose exec postgres psql -U wagering -d wagering \
 
 Se o envio falhar, `published_at` continua nulo; `attempts` e `next_attempt_at` persistem no PostgreSQL. O retry espera 2s, 4s, 8s e dobra até o teto de 300s, sem limite de falhas ou descarte. Reiniciar a API preserva o prazo. Execute `bun run migration:up` antes de iniciar o publisher atualizado. Queda após envio e antes da marcação pode duplicar o mesmo `eventId`; consumidores precisam deduplicá-lo. Decisão e limites: [publicação da outbox](ARCHITECTURE.md#publicação-da-outbox).
 
-Teste focal: `bun test tests/integration/outbox.test.ts`. Ele exige `TEST_DATABASE_URL` terminado em `_test` e LocalStack em `TEST_SQS_ENDPOINT` (padrão `http://127.0.0.1:4566`). Cria schema e fila exclusivos, verifica HTTP → SQS, rejeição, falha de rede, retomada após SIGKILL, backoff e rollback financeiro; remove esses recursos no fim.
+Teste focal: `bun test tests/integration/outbox.test.ts`. Ele exige `TEST_DATABASE_URL` terminado em `_test` e LocalStack em `TEST_SQS_ENDPOINT` (padrão `http://127.0.0.1:4566`). Cria schema e fila exclusivos, verifica HTTP → SQS, rejeição, falha de rede, retomada após SIGKILL, backoff e rollback financeiro; remove esses recursos no fim. Também executa dois publishers em processos distintos, pausa ambos após envios aceitos pelo SQS, mata um deles antes da marcação e verifica recuperação com deduplicação persistente por `eventId`.
+
+Para repetir somente a prova de concorrência e crash, com os serviços locais disponíveis:
+
+```sh
+docker compose up -d --wait postgres-test localstack
+TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test \
+  bun test tests/integration/outbox.test.ts --test-name-pattern 'two publishers'
+```
+
+A fixture pausa o retorno do SDK após a resposta real de `SendMessage`; não substitui PostgreSQL nem SQS. O teste observa dois locks simultâneos, progresso do worker vivo e recuperação após SIGKILL. No cenário sem novas falhas, quatro eventos geram cinco entregas, quatro efeitos deduplicados e nenhuma pendência. Isso não limita quantas duplicatas um SQS standard pode entregar ou quantos reenvios novas quedas podem causar. O consumidor de verificação existe apenas no teste; inbox de produção continua pendente.
 
 Para experimentar a retomada no Compose sem apagar mensagens, execute `docker compose pause localstack`, submeta uma BET e consulte a outbox com o comando acima. Após a falha, `attempts` aumenta e `next_attempt_at` recebe um prazo. Execute `docker compose restart app` e `docker compose unpause localstack`; depois do prazo e da próxima varredura, confira `published_at` e receba os eventos. Use sempre `unpause` ao terminar. Este roteiro interrompe o broker compartilhado do ambiente local.
 

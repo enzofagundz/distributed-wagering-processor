@@ -383,3 +383,29 @@ Nest Boost via cliente MCP stdio: handshake, `application_info` e `module_graph`
 Registro técnico em PT-BR para desenvolvedor e avaliador, revisado com humanizer-pt-br e no-ai-slop. "Ainda não há tentativas/backoff persistidos" foi substituído pelos campos, prazos e comportamento entregues; a política provisória do ticket 15 foi substituída na arquitetura. Foram preservados os limites de duplicação, descarte do estado do broker e logs silenciados no bootstrap. A revisão de prosa não acrescentou promessas ou resultados.
 
 Não foram executados pausa do broker compartilhado, rebuild da imagem, concorrência entre publishers ou crash após envio aceito e antes da marcação. O roteiro de pause/unpause no README está disponível para execução manual; o smoke executado acima usa interrupção do processo. A entrega permite duplicatas por eventId, e o estado do LocalStack continua descartável.
+
+
+## Publishers concorrentes — 2026-10-23
+
+Ticket 17, baseline `d623e94cb0d9fa11ac3fffa2500821333abe0697`, branch atual mantida conforme a skill implement. Bun 1.3.14, NestJS 11.1.16, MikroORM 6.6.8, SDK SQS 3.1156.0, PostgreSQL 17.6 e LocalStack 4.11.1 em containers locais preexistentes.
+
+O publisher já tinha a reserva transacional necessária. A mudança acrescenta uma prova comportamental em `tests/integration/outbox.test.ts` e uma pausa controlada na fixture, sem alterar código de produção, schema da aplicação ou dependências. Não houve ciclo red/green de lógica de produção: o comportamento existente passou na primeira execução da nova prova. As fronteiras observadas são as exigidas pelo ticket: processos do publisher, broker real e estado persistido.
+
+O cenário abre wallet de `100.00 BRL` e confirma BET de `25.00`, com quatro eventos. Dois processos Bun usam ORM e cliente SQS próprios. Um middleware da fixture espera a resposta real de SendMessage e pausa antes de devolver o controle ao publisher. O primeiro processo reserva a primeira linha; o segundo envia outra, enquanto a primeira continua bloqueada. Uma terceira conexão com SKIP LOCKED encontra somente duas das quatro linhas, confirmando duas reservas simultâneas.
+
+O segundo processo é liberado e marca três linhas sem esperar a primeira. SIGKILL encerra o primeiro após envio aceito, antes da marcação; outra execução do publisher recupera a única linha pendente. O teste recebe cinco mensagens: dois envelopes idênticos da primeira identidade e uma entrega de cada outra. Um consumidor de verificação grava o efeito em tabela PostgreSQL com chave primária `event_id`; cinco entregas produzem quatro inserções. Todas as marcações ficam preenchidas, nova varredura retorna zero e long polling de um segundo não recebe novas mensagens. Reconciliação confirma `75.00 BRL` e dois lançamentos. Processos, tabela, schema e fila temporários são removidos.
+
+Executados:
+
+- `bun run typecheck` e `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/outbox.test.ts`: sete testes, 105 assertions, zero falhas.
+- `bun run format`, `bun run lint` e `bun run typecheck`: aprovados; somente o teste novo precisou de formatação.
+- Suíte completa `bun test`, com a mesma TEST_DATABASE_URL, executada uma vez ao final: 248 testes em 23 arquivos, 1.974 assertions, zero falhas.
+- Smoke independente `bun .scratch/ticket16-smoke.ts`, com a mesma TEST_DATABASE_URL: bootstrap real da API, falha de envio, SIGKILL e reinício; quatro envelopes recuperados e quatro marcações. Wallet `b16da1fe-ec69-4e12-abbc-d74e8e6fc886`, saldo materializado/calculado `75.00 BRL`, diferença `0.00`, dois lançamentos. Banco e fila exclusivos removidos. O smoke reaproveita o harness local do ticket 16; a prova de concorrência reproduzível está no teste versionado.
+- Nest Boost MCP por stdio: handshake, `application_info` e `module_graph`, com OutboxModule/OutboxPublisher entre oito módulos. Sem evaluate.
+
+Context7 consultou documentação oficial do PostgreSQL 17 sobre SKIP LOCKED e duração dos locks. Mantivemos lock transacional em vez de adicionar lease e renovação. Registro técnico para desenvolvedor e avaliador, revisado com humanizer-pt-br e no-ai-slop: "concorrência entre publishers e crash após envio continuam no ticket 17" foi substituído pelo cenário executado; a promessa ficou limitada à falha provocada. Não houve promoção, atribuição vaga ou conclusão genérica. Identidades, comandos e resultados foram preservados.
+
+Limites: a pausa é instrumentação da fixture após resposta real do broker, não interrupção aleatória do processo. Não foram simulados partição de rede com conexão PostgreSQL ainda viva, duplicatas espontâneas adicionais do SQS, inbox de produção ou ack de entrada. As cinco entregas comprovam término neste cenário sem novas falhas; não estabelecem limite global de duplicatas de uma fila standard. O consumidor real ainda precisa gravar deduplicação e efeito na mesma transação antes do ack.
+
+
+Revisão code-review em dois agentes independentes contra o baseline e alterações locais: Standards, zero achados; Spec, zero achados após inclusão desta seção e fechamento do ticket. Cobertura, continuidade e ticket foram atualizados nos arquivos locais já ignorados pelo Git, sem inclusão forçada. A revisão não repetiu os testes. Nenhuma alteração de produção ou dependência foi necessária.

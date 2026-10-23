@@ -24,6 +24,21 @@ const client = new SQSClient({
   credentials: { accessKeyId: "test", secretAccessKey: "test" },
   maxAttempts: 1,
 });
+if (process.env.OUTBOX_GATE === "true") {
+  let gated = false;
+  client.middlewareStack.add(
+    (next) => async (args) => {
+      const result = await next(args);
+      if (!gated) {
+        gated = true;
+        console.log("sent");
+        await Bun.stdin.stream().getReader().read();
+      }
+      return result;
+    },
+    { step: "initialize", name: "pauseAfterAcceptedSend" },
+  );
+}
 if (process.env.OUTBOX_HOLD !== "true")
   await new OutboxPublisher(
     orm,
