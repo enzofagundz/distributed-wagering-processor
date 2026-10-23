@@ -51,8 +51,8 @@ export class SubmitTransactionDto {
   gameId!: string;
 
   @IsDefined({ message: 'INVALID_TRANSACTION_PAYLOAD' })
-  @IsIn(['BET', 'WIN', 'LOSS'], { message: 'INVALID_TRANSACTION_KIND' })
-  kind!: 'BET' | 'WIN' | 'LOSS';
+  @IsIn(['BET', 'WIN', 'LOSS', 'REFUND'], { message: 'INVALID_TRANSACTION_KIND' })
+  kind!: 'BET' | 'WIN' | 'LOSS' | 'REFUND';
 
   @ValidateIf((_object, value) => value !== undefined)
   @IsString({ message: 'INVALID_IDENTITY' })

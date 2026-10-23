@@ -22,11 +22,11 @@ export abstract class IntegrationEvent<T> {
 }
 
 export class WagerTransactionProcessed extends IntegrationEvent<{
-  transactionId: string; walletId: string; kind: 'OPENING' | 'BET' | 'WIN' | 'LOSS'; status: 'PROCESSED';
+  transactionId: string; walletId: string; kind: 'OPENING' | 'BET' | 'WIN' | 'LOSS' | 'REFUND'; status: 'PROCESSED';
   money: MoneyProps; balance: MoneyProps;
 }> {
   readonly eventType = 'WagerTransactionProcessed';
-  static from(wallet: Wallet, entry: WalletLedgerEntry, kind: 'OPENING' | 'BET' | 'WIN' = 'OPENING') {
+  static from(wallet: Wallet, entry: WalletLedgerEntry, kind: 'OPENING' | 'BET' | 'WIN' | 'REFUND' = 'OPENING') {
     return new WagerTransactionProcessed(wallet.id, entry.transactionId, entry.createdAt, {
       transactionId: entry.transactionId, walletId: wallet.id, kind, status: 'PROCESSED',
       money: entry.money.toJSON(), balance: wallet.balance.toJSON(),
@@ -45,7 +45,7 @@ export class WagerTransactionProcessed extends IntegrationEvent<{
 }
 
 export class WagerTransactionRejected extends IntegrationEvent<{
-  transactionId: string; walletId: string; kind: 'BET' | 'WIN'; status: 'REJECTED';
+  transactionId: string; walletId: string; kind: 'BET' | 'WIN' | 'REFUND'; status: 'REJECTED';
   failureCode: FailureCode; money: MoneyProps; balance: MoneyProps;
   referenceExternalTransactionId?: string; referenceTransactionId?: string;
 }> {
@@ -66,17 +66,17 @@ export class WagerTransactionRejected extends IntegrationEvent<{
 }
 
 export class WagerTransactionPendingReference extends IntegrationEvent<{
-  transactionId: string; walletId: string; kind: 'WIN'; status: 'PENDING_REFERENCE';
+  transactionId: string; walletId: string; kind: 'WIN' | 'REFUND'; status: 'PENDING_REFERENCE';
   referenceExternalTransactionId: string; referenceTransactionId?: string;
   money: MoneyProps; balance: MoneyProps;
 }> {
   readonly eventType = 'WagerTransactionPendingReference';
   static from(wallet: Wallet, transaction: WagerTransaction) {
-    if (transaction.status !== 'PENDING_REFERENCE' || transaction.kind !== 'WIN' || !transaction.referenceExternalTransactionId) {
+    if (transaction.status !== 'PENDING_REFERENCE' || (transaction.kind !== 'WIN' && transaction.kind !== 'REFUND') || !transaction.referenceExternalTransactionId) {
       throw new DomainError('INVALID_TRANSACTION_STATE');
     }
     return new WagerTransactionPendingReference(wallet.id, transaction.id, transaction.createdAt, {
-      transactionId: transaction.id, walletId: wallet.id, kind: 'WIN', status: 'PENDING_REFERENCE',
+      transactionId: transaction.id, walletId: wallet.id, kind: transaction.kind, status: 'PENDING_REFERENCE',
       referenceExternalTransactionId: transaction.referenceExternalTransactionId,
       ...(transaction.referenceTransactionId ? { referenceTransactionId: transaction.referenceTransactionId } : {}),
       money: transaction.money.toJSON(), balance: wallet.balance.toJSON(),

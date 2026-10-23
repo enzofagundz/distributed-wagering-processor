@@ -139,7 +139,7 @@ test('invalid contracts and cross-wallet identities fail before any financial wr
   const invalid: [unknown, string][] = [
     [null, 'INVALID_TRANSACTION_PAYLOAD'], [[], 'INVALID_TRANSACTION_PAYLOAD'], [{}, 'INVALID_TRANSACTION_PAYLOAD'],
     [{ ...body, status: 'PROCESSED' }, 'INVALID_TRANSACTION_PAYLOAD'],
-    [{ ...body, kind: 'OPENING' }, 'INVALID_TRANSACTION_KIND'], [{ ...body, kind: 'REFUND' }, 'INVALID_TRANSACTION_KIND'],
+    [{ ...body, kind: 'OPENING' }, 'INVALID_TRANSACTION_KIND'],
     [{ ...body, money: null }, 'INVALID_TRANSACTION_PAYLOAD'],
     [{ ...body, money: { ...body.money, extra: 1 } }, 'INVALID_TRANSACTION_PAYLOAD'],
     [{ ...body, money: { ...body.money, amount: 25 } }, 'INVALID_AMOUNT'],

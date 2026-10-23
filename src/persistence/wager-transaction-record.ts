@@ -7,7 +7,7 @@ export interface WagerTransactionRecord {
   playerId: string;
   currency: string;
   amount: string;
-  kind: 'OPENING' | 'BET' | 'WIN' | 'LOSS';
+  kind: 'OPENING' | 'BET' | 'WIN' | 'LOSS' | 'REFUND';
   status: 'PROCESSED' | 'REJECTED' | 'PENDING_REFERENCE';
   providerId?: string | null;
   externalTransactionId?: string | null;
@@ -50,6 +50,9 @@ export const wagerTransactionSchema = new EntitySchema<WagerTransactionRecord>({
   indexes: [{
     name: 'wager_transactions_opening_wallet_unique',
     expression: "create unique index wager_transactions_opening_wallet_unique on wager_transactions (wallet_id) where kind = 'OPENING'",
+  }, {
+    name: 'wager_transactions_refund_reference_unique',
+    expression: "create unique index wager_transactions_refund_reference_unique on wager_transactions (reference_transaction_id) where kind = 'REFUND' and status = 'PROCESSED'",
   }],
   uniques: [
     { name: 'wager_transactions_provider_external_unique', properties: ['providerId', 'externalTransactionId'] },

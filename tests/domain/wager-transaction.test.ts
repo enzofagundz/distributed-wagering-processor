@@ -11,7 +11,7 @@ function props(overrides: Partial<CreateWagerTransactionProps> = {}): CreateWage
 function reference(transaction: WagerTransaction, overrides: Partial<WagerReference> = {}): WagerReference {
   return { id: crypto.randomUUID(), providerId: transaction.providerId,
     externalTransactionId: transaction.referenceExternalTransactionId!, walletId: transaction.walletId,
-    playerId: transaction.playerId, currency: transaction.money.currency, roundId: transaction.roundId,
+    playerId: transaction.playerId, currency: transaction.money.currency, amount: '17.23', roundId: transaction.roundId,
     kind: 'BET', status: 'PROCESSED', ...overrides };
 }
 

@@ -1,7 +1,7 @@
 import { DomainError, Money } from './money';
 import { uuidPattern } from './wallet';
 
-export type FailureCode = 'INSUFFICIENT_FUNDS' | 'REFERENCE_MISMATCH' | 'REFERENCE_NOT_PROCESSED';
+export type FailureCode = 'INSUFFICIENT_FUNDS' | 'REFERENCE_MISMATCH' | 'REFERENCE_NOT_PROCESSED' | 'REFERENCE_ALREADY_REFUNDED';
 
 export interface CreateWagerTransactionProps {
   id: string;
@@ -12,7 +12,7 @@ export interface CreateWagerTransactionProps {
   playerId: string;
   roundId: string;
   gameId: string;
-  kind: 'BET' | 'WIN' | 'LOSS';
+  kind: 'BET' | 'WIN' | 'LOSS' | 'REFUND';
   money: Money;
   referenceExternalTransactionId?: string;
 }
@@ -24,6 +24,7 @@ export interface WagerReference {
   walletId: string;
   playerId: string;
   currency: string;
+  amount: string;
   roundId?: string | null;
   kind: string;
   status: string;
@@ -53,7 +54,7 @@ export class WagerTransaction {
 
   static create(props: CreateWagerTransactionProps): WagerTransaction {
     if (!props || typeof props !== 'object' || Array.isArray(props)) throw new DomainError('INVALID_TRANSACTION_PAYLOAD');
-    if (props.kind !== 'BET' && props.kind !== 'WIN' && props.kind !== 'LOSS') throw new DomainError('INVALID_TRANSACTION_KIND');
+    if (props.kind !== 'BET' && props.kind !== 'WIN' && props.kind !== 'LOSS' && props.kind !== 'REFUND') throw new DomainError('INVALID_TRANSACTION_KIND');
     if (typeof props.id !== 'string' || !uuidPattern.test(props.id)
       || typeof props.walletId !== 'string' || !uuidPattern.test(props.walletId)
       || typeof props.playerId !== 'string' || !uuidPattern.test(props.playerId)) {
@@ -67,7 +68,9 @@ export class WagerTransaction {
     if (!(props.money instanceof Money) || !props.money.isPositive() || props.money.toString().indexOf('.') > 28) {
       throw new DomainError('INVALID_AMOUNT');
     }
-    if ('referenceTransactionId' in props || (props.kind !== 'WIN' && 'referenceExternalTransactionId' in props)) {
+    if ('referenceTransactionId' in props
+      || (props.kind !== 'WIN' && props.kind !== 'REFUND' && 'referenceExternalTransactionId' in props)
+      || (props.kind === 'REFUND' && props.referenceExternalTransactionId === undefined)) {
       throw new DomainError('INVALID_TRANSACTION_PAYLOAD');
     }
     if ('referenceExternalTransactionId' in props && !isIdentity(props.referenceExternalTransactionId)) {
@@ -91,7 +94,7 @@ export class WagerTransaction {
   get playerId(): string { return this.#state.playerId; }
   get roundId(): string { return this.#state.roundId; }
   get gameId(): string { return this.#state.gameId; }
-  get kind(): 'BET' | 'WIN' | 'LOSS' { return this.#state.kind; }
+  get kind(): CreateWagerTransactionProps['kind'] { return this.#state.kind; }
   get money(): Money { return this.#state.money; }
   get status(): WagerTransactionState['status'] { return this.#state.status; }
   get referenceExternalTransactionId(): string | undefined { return this.#state.referenceExternalTransactionId; }
@@ -102,7 +105,7 @@ export class WagerTransaction {
 
   resolveReference(reference: WagerReference | undefined, at: Date): void {
     this.assertPending(at);
-    if (this.kind !== 'WIN' || !this.referenceExternalTransactionId) throw new DomainError('INVALID_TRANSACTION_STATE');
+    if ((this.kind !== 'WIN' && this.kind !== 'REFUND') || !this.referenceExternalTransactionId) throw new DomainError('INVALID_TRANSACTION_STATE');
     if (!reference) {
       this.markPendingReference();
       return;
@@ -111,7 +114,8 @@ export class WagerTransaction {
     if (reference.kind !== 'BET' || reference.providerId !== this.providerId
       || reference.externalTransactionId !== this.referenceExternalTransactionId
       || reference.walletId !== this.walletId || reference.playerId !== this.playerId
-      || reference.currency !== this.money.currency || reference.roundId !== this.roundId) {
+      || reference.currency !== this.money.currency || reference.roundId !== this.roundId
+      || (this.kind === 'REFUND' && reference.amount !== this.money.toString())) {
       this.reject('REFERENCE_MISMATCH', at);
     } else if (reference.status === 'REJECTED' || reference.status === 'FAILED') {
       this.reject('REFERENCE_NOT_PROCESSED', at);
@@ -124,7 +128,7 @@ export class WagerTransaction {
 
   markPendingReference(): void {
     this.assertPending(new Date());
-    if (this.kind !== 'WIN' || !this.referenceExternalTransactionId) throw new DomainError('INVALID_TRANSACTION_STATE');
+    if ((this.kind !== 'WIN' && this.kind !== 'REFUND') || !this.referenceExternalTransactionId) throw new DomainError('INVALID_TRANSACTION_STATE');
     this.#state = Object.freeze({ ...this.#state, status: 'PENDING_REFERENCE', failureCode: undefined, processedAt: undefined });
   }
 
@@ -139,7 +143,8 @@ export class WagerTransaction {
   reject(code: FailureCode, at: Date): void {
     this.assertPending(at);
     if (this.kind === 'BET' ? code !== 'INSUFFICIENT_FUNDS'
-      : !this.referenceExternalTransactionId || (code !== 'REFERENCE_MISMATCH' && code !== 'REFERENCE_NOT_PROCESSED')) {
+      : !this.referenceExternalTransactionId || (code !== 'REFERENCE_MISMATCH' && code !== 'REFERENCE_NOT_PROCESSED'
+        && !(this.kind === 'REFUND' && this.referenceTransactionId && code === 'REFERENCE_ALREADY_REFUNDED'))) {
       throw new DomainError('INVALID_TRANSACTION_STATE');
     }
     this.#state = Object.freeze({ ...this.#state, status: 'REJECTED', failureCode: code, processedAt: new Date(at) });

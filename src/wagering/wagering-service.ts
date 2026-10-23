@@ -20,7 +20,7 @@ export interface SubmitTransactionInput {
   playerId: string;
   roundId: string;
   gameId: string;
-  kind: 'BET' | 'WIN' | 'LOSS';
+  kind: 'BET' | 'WIN' | 'LOSS' | 'REFUND';
   money: MoneyProps;
   referenceExternalTransactionId?: string;
 }
@@ -101,6 +101,12 @@ export class WageringService {
             providerId: transaction.providerId, externalTransactionId: transaction.referenceExternalTransactionId,
           });
           transaction.resolveReference(reference ?? undefined, at);
+          if (transaction.kind === 'REFUND' && transaction.status === 'PENDING' && transaction.referenceTransactionId) {
+            const refunded = await em.findOne(wagerTransactionSchema, {
+              kind: 'REFUND', status: 'PROCESSED', referenceTransactionId: transaction.referenceTransactionId,
+            });
+            if (refunded) transaction.reject('REFERENCE_ALREADY_REFUNDED', at);
+          }
         }
         let resultingWallet = wallet;
         if (transaction.status === 'PENDING') {
@@ -143,8 +149,8 @@ export class WageringService {
           });
           await em.persist(ledgerEntry).flush();
         }
-        const events = entry ? [
-          WagerTransactionProcessed.from(resultingWallet, entry, transaction.kind === 'BET' ? 'BET' : 'WIN'),
+        const events = entry && transaction.kind !== 'LOSS' ? [
+          WagerTransactionProcessed.from(resultingWallet, entry, transaction.kind),
           WalletBalanceChanged.from(resultingWallet, entry),
         ] : status === 'PROCESSED'
           ? [WagerTransactionProcessed.fromLoss(wallet, transaction)]
@@ -180,7 +186,7 @@ export class WageringService {
 
   private replay(record: WagerTransactionRecord, payloadHash: string): SubmitTransactionResult {
     if (record.payloadHash !== payloadHash) throw new DomainError('IDEMPOTENCY_CONFLICT');
-    if ((record.kind !== 'BET' && record.kind !== 'WIN' && record.kind !== 'LOSS') || record.observedBalance == null) {
+    if (record.kind === 'OPENING' || record.observedBalance == null) {
       throw new Error('Invalid persisted wagering result');
     }
     return {
