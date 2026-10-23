@@ -4,7 +4,7 @@ Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECH
 
 A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET, WIN, LOSS, REFUND e ROLLBACK por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva e operações financeiras persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL. LOSS confirma resultado e evento sem movimentar saldo. Um worker agendado resolve WIN, REFUND e ROLLBACK que chegaram antes da referência.
 
-Publisher, SQS/inbox, autenticação e health estão pendentes. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+O publisher envia eventos confirmados da outbox ao SQS no LocalStack. Entrada por SQS/inbox, autenticação e health estão pendentes. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
@@ -17,13 +17,13 @@ Wallets ficam em `src/wallets/`; submissão de BET, WIN, LOSS, REFUND e ROLLBACK
 
 ## Executar
 
-Requisitos: Docker com Compose v2+. Para desenvolvimento/testes no host: Bun 1.3.14. Portas locais: HTTP 3000, PostgreSQL 55432 e banco descartável de testes 55433.
+Requisitos: Docker com Compose v2+. Para desenvolvimento/testes no host: Bun 1.3.14. Portas locais: HTTP 3000, PostgreSQL 55432, banco descartável de testes 55433 e LocalStack 4566.
 
 ### Containers
 
 ```sh
 docker compose build app
-docker compose up -d --wait postgres
+docker compose up -d --wait postgres localstack
 docker compose run --rm app bun run migration:up
 docker compose up -d app
 docker compose logs app
@@ -38,7 +38,7 @@ Se a porta estiver ocupada, use `APP_PORT=3109 docker compose up -d app` e ajust
 ```sh
 bun install --frozen-lockfile
 test -f .env || cp .env.example .env
-docker compose up -d --wait postgres postgres-test
+docker compose up -d --wait postgres postgres-test localstack
 bun run migration:up
 bun run start
 ```
@@ -52,6 +52,28 @@ Variáveis exportadas no terminal têm prioridade sobre `.env`. Se uma configura
 No container da API, o Compose define `DATABASE_URL`, `HOST` e `PORT`: banco em `postgres:5432` e bind em `0.0.0.0`. Essas configurações não vêm do `.env` do host, e a imagem exclui arquivos `.env`. Para mudar a porta publicada pelo Compose, defina `APP_PORT` no `.env` local.
 
 **Ambiente exclusivamente local, sem autenticação. Não expor em produção.** Credenciais do Compose são locais. Publicação HTTP fica em loopback; bind interno do container é `0.0.0.0`. No host, bind padrão é `127.0.0.1`.
+
+## Publicar e inspecionar eventos
+
+O Compose inicia LocalStack 4.11.1 e cria a fila standard `wagering-events` pelo hook `infra/localstack/init-sqs.sh`. O health check só passa quando a fila existe. A fila é de saída; ainda não há consumidor de operações. O estado do broker é descartável: recriar o container apaga mensagens, inclusive eventos que o PostgreSQL já marcou como publicados.
+
+No host, complete as chaves SQS de `.env.example` no seu `.env` existente. Use região `us-east-1`, credenciais locais `test`/`test`, `SQS_ENDPOINT=http://127.0.0.1:4566` e `OUTBOX_QUEUE_URL=http://127.0.0.1:4566/queue/us-east-1/000000000000/wagering-events`. No container da API, o Compose troca o host por `localstack`.
+
+`bun run start` inicia o publisher junto da API. A cada segundo, ele envia até 100 eventos, um por transação SQL. Depois de criar uma wallet positiva e submeter a BET abaixo, inspecione os eventos:
+
+```sh
+docker compose exec localstack awslocal sqs receive-message \
+  --queue-url http://localhost:4566/queue/us-east-1/000000000000/wagering-events \
+  --max-number-of-messages 10 --wait-time-seconds 2
+docker compose exec postgres psql -U wagering -d wagering \
+  -c 'select id, event_type, published_at from outbox_messages order by occurred_at desc limit 10'
+```
+
+`receive-message` torna as mensagens temporariamente invisíveis; sem `delete-message`, elas voltam após o visibility timeout. Uma abertura positiva e uma BET processada produzem quatro eventos no total; uma BET rejeitada produz somente `WagerTransactionRejected`. Cada corpo preserva o envelope persistido, com `eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt`, `version` e `data`; `causationId` é opcional e os produtores atuais o omitem. Valores monetários usam `{amount, currency}`, com duas casas em string.
+
+Se o envio falhar, `published_at` continua nulo e a próxima varredura tenta novamente. Ainda não há tentativas/backoff persistidos. Queda após envio e antes da marcação pode duplicar o mesmo `eventId`; consumidores precisam deduplicá-lo. Decisão e limites: [publicação da outbox](ARCHITECTURE.md#publicação-da-outbox).
+
+Teste focal: `bun test tests/integration/outbox.test.ts`. Ele exige `TEST_DATABASE_URL` terminado em `_test` e LocalStack em `TEST_SQS_ENDPOINT` (padrão `http://127.0.0.1:4566`). Cria schema e fila exclusivos, verifica HTTP → SQS, rejeição, erro de envio e rollback financeiro; remove esses recursos no fim.
 
 ## Experimentar HTTP
 
@@ -193,7 +215,7 @@ bun run lint
 bun run format:check
 bun run typecheck
 bun run test:domain
-docker compose up -d --wait postgres-test
+docker compose up -d --wait postgres-test localstack
 bun run test:integration
 bun test
 ```

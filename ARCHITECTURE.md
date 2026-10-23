@@ -8,7 +8,7 @@ Este documento descreve a implementação atual. Os requisitos estão no [enunci
 |---|---|---|
 | Bootstrap | `src/main.ts` | Inicializa ORM/HTTP; fecha aplicação e pool em sinais ou falha de startup |
 | Criação da aplicação | `src/create-application.ts` | Recebe ORM do chamador e cria aplicação Nest |
-| Composição | `src/app.module.ts`, `src/{wallets,wagering}/*.module.ts` | Módulo raiz compõe funcionalidades; cada módulo registra controller e serviço |
+| Composição | `src/app.module.ts`, `src/{wallets,wagering,outbox}/*.module.ts` | Módulo raiz compõe funcionalidades; cada módulo registra controller e serviço |
 | Transporte | `src/wallets/wallet.controller.ts`, `src/wallets/*dto.ts` | Wallets, reconciliação e métrica Prometheus; validação estrutural |
 | Erros compartilhados | `src/shared/domain-error.filter.ts` | Tradução global de erros conhecidos, registrada uma vez pelo módulo raiz |
 | Caso de uso e leitura | `src/wallets/wallet-service.ts` | Abertura atômica, reidratação, ledger keyset e reconciliação em snapshot único |
@@ -20,7 +20,7 @@ Este documento descreve a implementação atual. Os requisitos estão no [enunci
 
 ## Composição e injeção
 
-`createApplication(orm)` monta `AppModule.register(orm)`, que importa `WalletsModule.register(orm)` e `WageringModule.register(orm)`. Ambos importam `PersistenceModule.register(orm)`, que exporta o token `MikroORM`; factories explícitas injetam a mesma instância fornecida pelo chamador. Não há provider global, conexão adicional por funcionalidade, configuração mutável compartilhada ou Repository intermediário. Providers de um módulo pai não ficam automaticamente visíveis nos filhos.
+`createApplication(orm)` monta `AppModule.register(orm)`, que importa `WalletsModule.register(orm)`, `WageringModule.register(orm)` e `OutboxModule.register(orm)`. Os módulos importam `PersistenceModule.register(orm)`, que exporta o token `MikroORM`; factories explícitas injetam a mesma instância fornecida pelo chamador. Não há provider global, conexão adicional por funcionalidade, configuração mutável compartilhada ou Repository intermediário. Providers de um módulo pai não ficam automaticamente visíveis nos filhos.
 
 Controller recebe HTTP e delega; DTO valida estrutura; serviço coordena domínio e persistência. `Money`, `Wallet` e `WalletLedgerEntry` mantêm invariantes fora do NestJS, e `EntitySchema` continua separado do domínio. Para quem vem de Laravel: controller e service têm papéis semelhantes, mas módulo Nest declara a composição e a visibilidade de dependências; `WalletService` pode acessar ORM diretamente, sem transformar objetos de domínio em models Eloquent. Esse layout é convenção adotada, não obrigação de diretórios do framework.
 
@@ -55,7 +55,23 @@ sequenceDiagram
 
 Falha antes do commit desfaz todas as escritas. `persist(...).flush()` envia SQL dentro da transação, não antecipa commit. Abertura zero persiste somente wallet; ambas começam em versão 1. OPENING é interna, sem IDs fictícios de provedor, rodada ou jogo, e nasce persistida como PROCESSED.
 
-A constraint única `(player_id, currency)` resolve aberturas concorrentes no PostgreSQL; duplicatas retornam 409. Abertura não reproduz resultado original; BET usa o replay descrito abaixo. Nenhum publisher consome a outbox neste estágio.
+A constraint única `(player_id, currency)` resolve aberturas concorrentes no PostgreSQL; duplicatas retornam 409. Abertura não reproduz resultado original; BET usa o replay descrito abaixo. O publisher consome a outbox após o commit, conforme a seção de publicação abaixo.
+
+## Publicação da outbox
+
+`OutboxModule` injeta o ORM existente e um `SQSClient` v3 no `OutboxPublisher`. `main.ts` inicia as varreduras após abrir HTTP. Encerramento espera a execução em andamento antes de fechar o ORM; `app.close()` também para o publisher e destrói o cliente SQS.
+
+Cada varredura tenta até 100 registros, com uma transação SQL por evento. `SELECT ... FOR UPDATE SKIP LOCKED` escolhe a primeira linha com `published_at IS NULL`, ordenada por `occurred_at, id`. Outra conexão não enxerga eventos ainda sem commit. O publisher envia `payload` como JSON sem reconstruir identidade, valores ou datas, e só depois de `SendMessage` retornar atualiza `published_at` com o relógio do banco. Falha de envio ou SQL desfaz a marcação; o evento continua elegível. O lock pertence à linha de outbox, sem bloquear wallet ou manter aberta a transação financeira.
+
+A fila de integração é standard, criada no LocalStack pelo Compose. O SDK faz uma tentativa por envio, com abort após cinco segundos. O próximo ciclo ocorre um segundo após o anterior terminar; erro interrompe o lote e chama o Logger Nest com `OutboxPublicationFailed` e tipo do erro, sem payload ou credenciais. O `logger: false` atual de `createApplication` silencia essa chamada no bootstrap; emissão operacional de logs continua pendente. Ainda não há agenda ou contagem persistida: um evento que falha repetidamente pode atrasar os seguintes. Essa política será substituída no ticket 16.
+
+A entrega é at-least-once. Se o SQS aceitar a mensagem e o processo morrer antes do commit da marcação, haverá reenvio do mesmo `eventId`. Os consumidores devem deduplicar por essa identidade. Não há garantia de ordem de entrega; `walletVersion` permite reconhecer a sequência financeira. `SKIP LOCKED` evita disputa da mesma linha durante uma execução, mas o cenário de crash e recuperação com publishers concorrentes pertence ao ticket 17.
+
+O envelope existente contém `eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt` ISO-8601, `version` e `data` com MoneyProps. `causationId` é opcional e atualmente omitido pelos produtores. `WalletBalanceChanged` inclui wallet, transação, direção, valor, saldos anterior/posterior e versão da wallet. Rejeição produz `WagerTransactionRejected`, sem evento de saldo.
+
+Alternativa descartada: enviar no handler HTTP após o commit, pois uma queda nesse intervalo perderia o evento. Marcar antes de enviar também perderia eventos em caso de erro de rede. Manter um lock de outbox durante um envio limitado evita claims com lease neste incremento, ao custo de ocupar uma conexão durante a chamada. Não foi adicionada migration; os campos existentes bastam para este fluxo.
+
+Referências consultadas via Context7: [AWS SDK v3](https://github.com/aws/aws-sdk-js-v3), [URLs SQS no LocalStack](https://docs.localstack.cloud/aws/services/sqs/) e [hooks de inicialização](https://docs.localstack.cloud/aws/capabilities/config/initialization-hooks/). Comandos no [README](README.md#publicar-e-inspecionar-eventos); resultados em [verificação](docs/verification.md#publicação-da-outbox--2026-10-23).
 
 ## Garantias e limites
 
@@ -64,7 +80,7 @@ A constraint única `(player_id, currency)` resolve aberturas concorrentes no Po
 - Banco protege saldo não negativo, unicidade, aritmética do ledger e consistência de identidade/moeda por FKs compostas. Trigger rejeita UPDATE, DELETE e TRUNCATE do ledger. Administrador capaz de remover trigger/schema não está contido por essa proteção.
 - Correspondência saldo/ledger depende do caso de uso transacional; schema não promete impedir toda escrita administrativa arbitrária. Separação entre usuário de migrations e aplicação ainda é necessária antes de exposição real.
 - Sem lock global. BET, WIN, LOSS, REFUND e ROLLBACK usam lock pessimista da wallet antes da leitura do saldo. Concorrência financeira de BET foi exercitada em três processos com pools independentes; isso não comprova os fluxos de mensageria.
-- Eventos persistidos: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference`, com envelope versionado e MoneyProps. Persistência não comprova publicação, retry ou recuperação de publisher.
+- Eventos persistidos: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference`, com envelope versionado e MoneyProps. Publicação real está coberta no ticket 15; backoff persistido e provas de crash dos publishers continuam pendentes.
 
 ## Processamento de BET
 
@@ -76,7 +92,7 @@ A constraint única `(player_id, currency)` resolve aberturas concorrentes no Po
 
 O serviço valida player e moeda contra a wallet carregada antes de escrever. Provider tem validação de formato e nome reservado, não autenticação nem cadastro. A API permanece local e sem IdP.
 
-Com saldo suficiente, `Wallet.debit` retorna nova wallet imutável com versão incrementada. SQL confirma BET PROCESSED, saldo observado, um DEBIT, saldo materializado e eventos Processed/BalanceChanged juntos. Sem saldo, confirma BET REJECTED com `INSUFFICIENT_FUNDS` e evento Rejected; saldo, versão e ledger não mudam. Resposta sai após commit. Falha ao gravar qualquer evento desfaz também escritas anteriores. Não há publisher.
+Com saldo suficiente, `Wallet.debit` retorna nova wallet imutável com versão incrementada. SQL confirma BET PROCESSED, saldo observado, um DEBIT, saldo materializado e eventos Processed/BalanceChanged juntos. Sem saldo, confirma BET REJECTED com `INSUFFICIENT_FUNDS` e evento Rejected; saldo, versão e ledger não mudam. Resposta sai após commit. Falha ao gravar qualquer evento desfaz também escritas anteriores. A publicação ocorre no worker separado, após commit.
 
 `WagerTransaction.create` nasce PENDING; `markProcessed` e `reject` levam a estados terminais, que recusam novas transições. `rehydrate` recompõe estado sem repetir regras. BET e LOSS persistem somente estados terminais; WIN, REFUND e ROLLBACK também podem persistir PENDING_REFERENCE, conforme seções abaixo. Código de falha existe apenas na rejeição.
 
@@ -104,7 +120,7 @@ Uma transação de controle segura a linha da wallet antes do lote. O teste iden
 
 Outro cenário mantém uma wallet bloqueada e confirma duas BET em wallets distintas nos outros processos antes de liberar o lock. Depois reconcilia todas. Não há benchmark: uma hot wallet continua serializada até o fim da transação, e suas chamadas podem ocupar conexões do pool. Mais instâncias não eliminam essa contenção.
 
-Falha antes do commit desfaz a transação e libera o lock; depois do commit, resultado, saldo, ledger e outbox já estão persistidos. Se a resposta se perder, o reenvio usa resultado original e unicidades do banco, não estado do processo. Este ticket não simula morte entre commit e ack: inbox, SQS e publishers ainda estão pendentes.
+Falha antes do commit desfaz a transação e libera o lock; depois do commit, resultado, saldo, ledger e outbox já estão persistidos. Se a resposta se perder, o reenvio usa resultado original e unicidades do banco, não estado do processo. Este ticket não simula morte entre commit e ack: inbox e consumidor SQS ainda estão pendentes; provas de crash dos publishers também.
 
 Alternativa seria optimistic locking com retry limitado ou update condicionado. A prova multiprocesso não exigiu trocar o lock por linha já adotado. Referências: [PostgreSQL 17 — locks de linha](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS) para duração e escopo; [Bun — IPC](https://bun.sh/docs/runtime/child-process#inter-process-communication-ipc) para comunicação da fixture, consultada via Context7 e exercitada no Bun 1.3.14. Evidências: [verificação do ticket 08](docs/verification.md#concorrência-entre-processos--2026-10-23).
 
@@ -129,7 +145,7 @@ Validação da wallet precede resolução da referência: player ou moeda incomp
 
 PENDING_REFERENCE mantém payload/hash, referência externa e saldo observado no aceite. Não tem `processedAt`; não gera ledger ou BalanceChanged. Replay e GET consultam o registro, sem tentar resolução, mesmo que a BET apareça depois. O worker resolve ou encerra a pendência conforme a [política de referências](#resolução-de-referências-pendentes). Não se deve tratar HTTP 202 como crédito concluído.
 
-Alternativa descartada: ignorar referência opcional informada e creditar antes de validá-la. Isso aceitaria prêmio associado a outra wallet ou rodada. Exigir referência para todo WIN também restringiria o contrato além do enunciado. Publicar diretamente no broker após o crédito deixaria uma janela de perda; este fluxo apenas grava outbox, sem publisher.
+Alternativa descartada: ignorar referência opcional informada e creditar antes de validá-la. Isso aceitaria prêmio associado a outra wallet ou rodada. Exigir referência para todo WIN também restringiria o contrato além do enunciado. Publicar diretamente no broker após o crédito deixaria uma janela de perda; o caso de uso grava a outbox e deixa a publicação para o worker separado.
 
 Migration `20261023000200` adiciona WIN, PENDING_REFERENCE, IDs de referência e checks de formato/estado. Uma FK composta liga o ID interno ao provider e ID externo resolvidos; rejeições por incompatibilidade preservam a referência para auditoria. O `down` restaura o contrato BET anterior somente quando não há WIN ou histórico de referência. Caso contrário, recusa a reversão sem apagar dados. Unicidades de chave/identidade externa, FKs financeiras e proteção append-only do ledger permanecem.
 
@@ -145,7 +161,7 @@ Valor continua positivo e segue o contrato monetário comum, mas não exige sald
 
 Migration `20261023000300` amplia checks existentes sem relaxar contratos BET/WIN: LOSS exige identidade externa, hash, saldo observado e metadados terminais, sem referência ou failure code. `down` restaura checks anteriores apenas sem histórico LOSS; caso contrário, recusa sem apagar dados. A correspondência saldo/ledger continua sob responsabilidade do caso de uso transacional, não de um trigger novo.
 
-HTTP retorna 201, inclusive no replay; validação e conflitos seguem códigos existentes. Publisher e SQS continuam pendentes. Referência consultada: [MikroORM 6.6 — transações](https://mikro-orm.io/docs/6.6/transactions). Resultados executados: [LOSS HTTP](docs/verification.md#loss-por-http--2026-10-23).
+HTTP retorna 201, inclusive no replay; validação e conflitos seguem códigos existentes. Os eventos são publicados pelo worker da outbox; entrada por SQS continua pendente. Referência consultada: [MikroORM 6.6 — transações](https://mikro-orm.io/docs/6.6/transactions). Resultados executados: [LOSS HTTP](docs/verification.md#loss-por-http--2026-10-23).
 
 
 ## Devolução de BET com REFUND
@@ -217,7 +233,7 @@ Status, contador, próximo horário, saldo observado terminal e evento de rejei�
 
 Migration `20261023000600` adiciona `reference_attempts` de 0 a 10 e `reference_next_attempt_at`, finito e obrigatório apenas em `PENDING_REFERENCE`; pendência exige contador menor que 10. Estados terminais ficam sem próximo horário. Pendências anteriores recebem contador zero e horário `created_at`, sem perda de identidade, hash ou saldo do aceite. O índice parcial `(reference_next_attempt_at, id)` atende à busca de pendências vencidas. `down` recusa histórico com `REFERENCE_NOT_FOUND`; sem esse histórico, remove campos/índice e restaura checks anteriores. Exige APIs paradas.
 
-SQS, publisher e inbox continuam pendentes. A segurança entre instâncias vem do PostgreSQL, não de scheduler distribuído. Cenários SQL/HTTP não comprovam ack, redelivery ou publicação. Testes focais e setup: [README](README.md#resolver-referência-pendente). Registro de execução do ticket 14: [expiração de referências](docs/verification.md#expiração-de-referências--2026-10-23); resultados devem ser lidos nessa seção, sem extrapolar evidências históricas do ticket 13.
+O publisher envia os eventos ao SQS; inbox e consumo de operações continuam pendentes. A segurança entre instâncias vem do PostgreSQL, não de scheduler distribuído. Cenários SQL/HTTP não comprovam ack, redelivery ou publicação. Testes focais e setup: [README](README.md#resolver-referência-pendente). Registro de execução do ticket 14: [expiração de referências](docs/verification.md#expiração-de-referências--2026-10-23); resultados devem ser lidos nessa seção, sem extrapolar evidências históricas do ticket 13.
 
 Referências dos locks mantidas da resolução: [MikroORM 6.6 — pessimistic locking](https://mikro-orm.io/docs/6.6/transactions#pessimistic-locking) e [PostgreSQL 17 — row-level locks](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS). Evidências históricas do ticket 13: [resolução de referências](docs/verification.md#resolução-de-referências--2026-10-23).
 
@@ -273,9 +289,9 @@ Erros conhecidos retornam `{ "code": "..." }`, exceto a rejeição 422, que reto
 
 ## Ainda não entregue
 
-Inbox/SQS, publishers concorrentes, retry/DLQ de mensageria, health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). O worker resolve referências disponíveis e encerra pendências por esgotamento; não publica a outbox. Próximo ticket: 15, publisher.
+Inbox/consumidor SQS, prova de publishers concorrentes, retry/DLQ de mensageria, health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). Resolução de referências e publicação de outbox têm workers separados. Próximo ticket: 16, backoff persistido e recuperação do publisher.
 
-API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown atual para o worker de resolução, fecha HTTP e ORM; não há consumer, ack ou tratamento de visibilidade.
+API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown atual espera os workers de resolução e publicação, fecha HTTP e ORM; não há consumer, ack ou tratamento de visibilidade.
 
 Setup, migrations e riscos de reversão: [README](README.md). Resultados executados e limites das provas: [evidências](docs/verification.md).
 

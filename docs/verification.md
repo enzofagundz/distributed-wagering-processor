@@ -331,3 +331,32 @@ Registro técnico para desenvolvedor e avaliador. Revisão de prosa com humanize
 Code-review em dois eixos contra o baseline: Spec sem lacunas ou escopo indevido; Standards encontrou índice de decisões desatualizado e apontou uso do horário inicial da varredura para todas as tentativas. Ambos corrigidos. A seleção mantém um corte fixo por varredura, mas cada tentativa em produção captura seu próprio instante após obter o lock da wallet; datas explícitas continuam disponíveis nos testes. A barreira concorrente agora verifica `processedAt` posterior ou igual à liberação da wallet. Rechecagem após a correção: `bun run format && bun run lint && bun run typecheck && bun test tests/integration/pending-reference.test.ts`, 11 testes, 129 assertions, zero falhas. O worker agendado real também foi exercitado nesse arquivo. A suíte completa acima precede essa correção focada e não foi repetida.
 
 Sugestões de extração de helpers de schema, objeto de política e predicado de rejeição não foram adotadas: a mudança não exige uma abstração nova. Continuidade e ticket locais ignorados foram atualizados sem inclusão forçada no Git. Entrega preparada na branch main, sem push.
+
+
+## Publicação da outbox — 2026-10-23
+
+Ticket 15, baseline `54be8f5f3263f636a9eafbf22a4c4b156a07f65d`, branch main conforme instrução de commitar na branch atual. Bun 1.3.14, NestJS 11.1.16, MikroORM 6.6.8, PostgreSQL 17.6 e AWS SDK SQS 3.1156.0. LocalStack 4.11.1 iniciado pelo Compose via Podman; imagem baixada nesta execução. Não houve migration nova nem rebuild da API.
+
+Seams confirmados: BET HTTP → evento recebido no SQS real; execução do publisher → estado persistido após sucesso/falha. O primeiro red falhou porque `OutboxPublisher` ainda não existia. Depois da implementação, o teste recebeu os quatro eventos de abertura/BET e comparou o corpo recebido com o payload persistido, sem reconstruir valores financeiros no publisher.
+
+`bun test tests/integration/outbox.test.ts`: cinco testes, 40 assertions, zero falhas. Schema PostgreSQL e fila SQS exclusivos foram criados e removidos. Foram observados:
+
+- BET com débito `25.00 BRL`, saldos `100.00`/`75.00`, versão 2 e envelope persistido;
+- rejeição por saldo insuficiente com somente `WagerTransactionRejected`, sem evento de saldo;
+- erro real `QueueDoesNotExist`, preservação de payload e marcação nula, seguido de envio à fila existente;
+- linha de outbox ainda sem commit invisível ao publisher; após commit, envio preservou também `causationId` opcional;
+- falha SQL induzida na outbox da BET com HTTP 500, rollback da operação, nenhum evento no SQS e reconciliação de `100.00 BRL` com um lançamento de abertura.
+
+Verificação final: `bun run format`, `bun run lint`, `bun run format:check`, `bun run typecheck` e `bun test` aprovados. Suíte completa executada uma vez: 246 testes em 23 arquivos, 1909 assertions, zero falhas. Typecheck identificou uma anotação ausente no payload do último teste; a anotação foi corrigida e typecheck passou, sem mudar comportamento. `podman compose config --quiet` e `podman compose up -d --wait localstack` passaram. O health check confirmou a fila criada pelo hook executável. A primeira configuração com container init separado retornou erro do `--wait` após saída 0; foi substituída pelo hook antes da verificação final.
+
+Smoke independente: `bun .scratch/outbox-smoke.ts` iniciou `bun src/main.ts` com banco descartável e fila exclusivos. Abriu wallet de `100.00 BRL`, confirmou BET de `25.00`, recebeu quatro eventos reais pelo worker agendado e verificou as quatro marcações no banco. Replay retornou `idempotentReplay: true`; saldo materializado e reconstruído ficaram em `75.00 BRL`, diferença zero, dois lançamentos. SIGTERM encerrou com código 0. Wallet `c65aca78-f8e1-4c93-a5d2-2cea72cb0010`, BET `e659d2c1-2df6-4da0-bb46-04901c9f846f`, evento de saldo `cfeaacce-3896-4e30-923d-e80babfdf459`. Banco e fila temporários foram removidos.
+
+A primeira tentativa desse smoke usou search_path para isolar o schema, mas o bootstrap acessou public: recebeu eventos antigos e a asserção de correlação falhou. O harness passou a usar banco exclusivo antes do resultado acima. Houve publicação de pendências antigas no banco de testes nessa tentativa; nenhum dado de desenvolvimento foi usado. Os testes permanentes configuram schema explicitamente e não compartilham a fila da aplicação.
+
+Nest Boost: handshake MCP, `application_info`, `module_graph` e `list_routes` aprovados fora do sandbox. Grafo contém `OutboxModule` com `OutboxPublisher`, oito módulos e oito rotas; nenhum `evaluate`. No sandbox, o servidor stdio fechou antes do handshake. Context7 consultado para SDK v3 e LocalStack; links e decisões ficam na [arquitetura](../ARCHITECTURE.md#publicação-da-outbox).
+
+Registro técnico PT-BR para desenvolvedor e avaliador, revisado com humanizer-pt-br e no-ai-slop. "Os eventos da outbox ainda não são publicados" foi substituído pelo fluxo entregue; alegações de publisher pendente foram removidas das fontes atuais. Comandos, identidades e limites foram preservados. Não foram acrescentados promoção, atribuição vaga, paralelismo negativo ou conclusão genérica.
+
+Limites: backoff/tentativas persistidos, crash entre envio e marcação, publishers concorrentes e consumidor/inbox não foram exercitados. A fila de saída é standard e descartável; a entrega permite duplicatas do mesmo eventId. Tickets 16/17 cobrem recuperação e concorrência. O teste de rollback inspeciona a ausência de mensagens após long polling de um segundo, junto da ausência da BET no banco.
+
+Code-review em dois agentes independentes contra o baseline: Spec, zero achados; Standards, dois achados de documentação corrigidos. Glossário passou a descrever publicação real; arquitetura agora informa que `logger: false` silencia a chamada do publisher. Nenhum smell material. Humanizer-pt-br/no-ai-slop foram reaplicados aos trechos: mecanismo e limitações ficaram explícitos, sem acrescentar garantias. Harnesses temporários e container init substituído foram removidos; arquivos locais ignorados de cobertura e continuidade foram atualizados sem inclusão forçada.

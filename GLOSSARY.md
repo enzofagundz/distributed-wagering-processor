@@ -52,7 +52,7 @@ Direções aceitas pelo lançamento: `CREDIT` soma o valor ao saldo anterior; `D
 
 ## Evento de integração
 
-Envelope versionado com `eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt` e `data`. Abertura positiva e BET processada geram `WagerTransactionProcessed` e `WalletBalanceChanged`; rejeição gera `WagerTransactionRejected`. Payloads usam MoneyProps; eventos ficam na outbox, sem publicação.
+Envelope com `eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt`, `version` e `data` com MoneyProps; `causationId` é opcional. Eventos confirmados na outbox são publicados no SQS com a mesma identidade; movimento financeiro gera `WalletBalanceChanged`, rejeição gera `WagerTransactionRejected` sem evento de saldo.
 
 ## Correlação
 
@@ -60,7 +60,7 @@ Envelope versionado com `eventId`, `eventType`, `aggregateId`, `correlationId`, 
 
 ## Outbox
 
-Tabela `outbox_messages` que persiste eventos junto da abertura ou BET, com `published_at` nulo. Publisher, publicação, retries e inbox não estão implementados; outbox persistida não comprova entrega a consumidor.
+Tabela `outbox_messages` que persiste eventos na mesma transação SQL da operação e só recebe `published_at` após envio ao SQS. Falha conserva a pendência; entrega pode repetir o mesmo `eventId`, e backoff persistido e inbox continuam pendentes (ver [publicação da outbox](ARCHITECTURE.md#publicação-da-outbox)).
 
 ## Unit of Work / flush
 

@@ -3,15 +3,18 @@ import { MikroORM } from "@mikro-orm/postgresql";
 import { createApplication } from "./create-application";
 import { databaseConfig } from "./persistence/config";
 import { PendingReferenceWorker } from "./wagering/pending-reference-worker";
+import { OutboxPublisher } from "./outbox/outbox-publisher";
 
 const orm = await MikroORM.init(databaseConfig());
 let app: INestApplication | undefined;
 let worker: PendingReferenceWorker | undefined;
+let publisher: OutboxPublisher | undefined;
 let closing: Promise<void> | undefined;
 function close() {
   return (closing ??= (async () => {
     try {
       await worker?.stop();
+      await publisher?.stop();
       await app?.close();
     } finally {
       await orm.close();
@@ -27,6 +30,8 @@ try {
   const pendingWorker = app.get(PendingReferenceWorker);
   worker = pendingWorker;
   pendingWorker.start();
+  publisher = app.get(OutboxPublisher);
+  publisher!.start();
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, close);
   }
