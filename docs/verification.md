@@ -274,3 +274,34 @@ Registro técnico PT-BR para desenvolvedor/avaliador, revisado com humanizer-pt-
 Code-review contra baseline em dois agentes independentes: Standards sem violações documentadas ou smells materiais; Spec sem lacunas, escopo extra ou implementação incorreta. Revisão estática incluiu migration e testes novos ainda não rastreados, sem repetir checks. Harness de smoke removido; histórico e containers preexistentes preservados. Arquivos ignorados de continuidade e ticket atualizados sem inclusão forçada.
 
 Entrega na branch main, sem push. README, arquitetura, evidências, implementação e testes versionados; registros locais ignorados permaneceram fora do commit.
+
+## Resolução de referências — 2026-10-23
+
+Ticket 13, baseline `40b7e8d`, branch main por solicitação de usar a branch atual. Bun 1.3.14, NestJS 11.1.16, MikroORM 6.6.8 e PostgreSQL 17.6 no container Podman preexistente, porta 55433. Nenhuma dependência ou migration nova.
+
+Seams acordados: `WageringService` com PostgreSQL real e smoke HTTP separado. O primeiro red chamou `resolvePendingReference` inexistente e falhou com `TypeError`. A implementação extraiu `settle`, que já era o caminho de `submit`, para reutilizar validação de referência, direção, insuficiência, ledger e eventos. O worker foi ligado ao bootstrap e testado depois do serviço.
+
+`tests/integration/pending-reference.test.ts` cobre oito fluxos:
+
+- REFUND pendente resolve depois da BET com um CREDIT, eventos `PendingReference`, `Processed` e `BalanceChanged`, replay e `GET` coerentes;
+- instância nova de ORM lê a pendência persistida, processa a referência e o worker paginado resolve com lote 2;
+- dois resolvedores concorrentes disputam a mesma pendência com a wallet bloqueada por uma terceira transação; a barreira vê uma sessão bloqueada no PostgreSQL e o resultado é `PROCESSED` + `SKIPPED`, sem segundo crédito;
+- duas pendências REFUND distintas sobre a mesma BET resolvem para `PROCESSED` e `REJECTED` com `REFERENCE_ALREADY_REFUNDED`, um único lançamento e eventos separados;
+- ROLLBACK pendente de BET cuja referência terminaliza como REJECTED vira `REFERENCE_NOT_PROCESSED`, sem ledger, e novas tentativas retornam `SKIPPED`;
+- ROLLBACK pendente de WIN posterior aplica DEBIT inverso uma vez;
+- varredura ainda sem referência preserva o saldo observado no aceite mesmo depois de outro WIN alterar a wallet;
+- worker iniciado com intervalo de 20 ms resolve sem chamada explícita e para sem deixar execução pendente.
+
+Execução focal: `bun test tests/integration/pending-reference.test.ts`; 8 testes, 61 assertions, zero falhas. Typecheck foi executado entre os incrementos.
+
+Verificação final: `bun run format`, `bun run lint`, `bun run format:check`, `bun run typecheck` e `bun test` aprovados. Suíte completa: 232 testes em 21 arquivos, 1701 assertions, zero falhas. Nenhum teste de wiring, cópia de lista ou mock de PostgreSQL foi adicionado.
+
+Smoke com três processos reais: `bun src/main.ts` na porta 3144, `PENDING_REFERENCE_INTERVAL_MS=100`, `PENDING_REFERENCE_PAGE_SIZE=50`, banco de testes. O primeiro processo abriu wallet de `100.00 BRL`, recebeu REFUND de `25.00` antes da BET e retornou 202 `PENDING_REFERENCE`; encerrou por SIGTERM com código 0. O segundo recebeu a BET referenciada, retornou 201 `PROCESSED` e o worker resolveu a pendência; o GET passou a `PROCESSED` com saldo `100.00`. O replay retornou 201 com `idempotentReplay: true`; o terceiro processo, após outro reinício, repetiu a mesma resposta terminal. Reconciliação: `100.00 BRL` armazenados e reconstruídos, diferença `0.00`, três lançamentos (`CREDIT 100.00`, `DEBIT 25.00`, `CREDIT 25.00`). Wallet `6de782f2-ce96-4cd2-a3de-c2057d768962`, transação REFUND `7276b073-086c-4833-9865-86810bd02fbe`, referência externa `bet-4ab8acdf-1b3a-49a1-805a-30042073afbc`. Os três processos encerraram com código 0; o harness temporário foi removido.
+
+Nest Boost em processo novo, com `DATABASE_URL` deliberadamente inalcançável: handshake MCP, `application_info`, `module_graph` e `list_routes`. Versões confirmadas; seis providers e oito rotas. O grafo de `WageringModule` passou a listar `WageringService` e `PendingReferenceWorker`. Nenhum `evaluate` foi executado. Documentação oficial consultada via Context7: [MikroORM 6.6 — pessimistic locking](https://mikro-orm.io/docs/6.6/transactions#pessimistic-locking) e [PostgreSQL 17 — row-level locks](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS).
+
+Limites: não há SQS, publisher, expiração, backoff ou TTL persistidos; a varredura percorre todas as pendências a cada intervalo. A prova concorrente usa dois pools de ORM no mesmo processo, não três processos. O smoke reiniciou o processo real, mas a resolução foi observada em uma wallet. Pendências antigas do banco de testes também foram resolvidas quando suas referências existiam; isso não foi tratado como teste adicional.
+
+Code-review em dois eixos apontou uma sobrescrita do saldo observado quando a varredura ainda não encontrava a referência; a linha agora só é atualizada ao sair de `PENDING_REFERENCE`, com teste de regressão. A rechecagem focada confirmou a correção e os outros achados eram operacionais. Revisão estática, sem repetir suíte.
+
+Documentação em PT-BR revisada com humanizer-pt-br e no-ai-slop. Comandos novos ficaram no README, decisão e limites na arquitetura, resultados aqui. Não houve rebuild da imagem, Postman gráfico, crash entre commit e ack ou publicação de outbox.

@@ -2,13 +2,16 @@ import type { INestApplication } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { createApplication } from "./create-application";
 import { databaseConfig } from "./persistence/config";
+import { PendingReferenceWorker } from "./wagering/pending-reference-worker";
 
 const orm = await MikroORM.init(databaseConfig());
 let app: INestApplication | undefined;
+let worker: PendingReferenceWorker | undefined;
 let closing: Promise<void> | undefined;
 function close() {
   return (closing ??= (async () => {
     try {
+      await worker?.stop();
       await app?.close();
     } finally {
       await orm.close();
@@ -21,6 +24,9 @@ try {
     Number(process.env.PORT ?? "3000"),
     process.env.HOST ?? "127.0.0.1",
   );
+  const pendingWorker = app.get(PendingReferenceWorker);
+  worker = pendingWorker;
+  pendingWorker.start();
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, close);
   }

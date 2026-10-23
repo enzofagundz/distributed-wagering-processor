@@ -2,9 +2,9 @@
 
 Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECHNICAL_CHALLENGE.md), com Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL.
 
-A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET, WIN, LOSS, REFUND e ROLLBACK por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva e operações financeiras persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL. LOSS confirma resultado e evento sem movimentar saldo.
+A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET, WIN, LOSS, REFUND e ROLLBACK por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva e operações financeiras persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL. LOSS confirma resultado e evento sem movimentar saldo. Um worker agendado resolve WIN, REFUND e ROLLBACK que chegaram antes da referência.
 
-Publisher, SQS/inbox, autenticação e health estão pendentes. WIN, REFUND e ROLLBACK com referência ainda indisponível ficam persistidos, sem movimento financeiro; o worker de resolução também está pendente. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+Publisher, SQS/inbox, autenticação e health estão pendentes. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker tenta resolvê-la a cada intervalo, e a expiração de pendências antigas continua pendente. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
@@ -99,7 +99,7 @@ Após a BET de `80.00` sobre `100.00`, esse WIN retorna 201 com saldo `170.00 BR
 
 Omitir `referenceExternalTransactionId` permite prêmio independente. Quando informada, a referência usa o ID externo da BET no mesmo provider e deve coincidir em player, wallet, moeda e rodada; valor do prêmio e jogo não precisam coincidir. Incompatibilidade retorna 422 `REFERENCE_MISMATCH`; BET rejeitada retorna 422 `REFERENCE_NOT_PROCESSED`. Nenhuma rejeição move saldo ou cria ledger.
 
-Referência informada ainda inexistente ou não terminal retorna 202 `PENDING_REFERENCE`, sem crédito. Reenvio mantém a pendência; não tenta resolvê-la. Não há worker de resolução neste estágio. Decisão e limites: [WIN e referências](ARCHITECTURE.md#crédito-de-win-e-referências).
+Referência informada ainda inexistente ou não terminal retorna 202 `PENDING_REFERENCE`, sem crédito. Reenvio mantém a pendência e devolve o saldo observado no aceite; quem resolve é o worker agendado, não o replay. Quando a BET chega, a próxima execução do worker credita uma vez e grava os eventos Processed/BalanceChanged. Expiração de referência que nunca chega: ticket 14. Decisão e limites: [WIN e referências](ARCHITECTURE.md#crédito-de-win-e-referências).
 
 Teste focal com PostgreSQL de testes iniciado: `bun test tests/integration/win-http.test.ts`.
 
@@ -131,7 +131,7 @@ curl -i http://127.0.0.1:3000/wagering/transactions \
 
 Retorna 201 com saldo `100.00 BRL`, um CREDIT e eventos Processed/BalanceChanged. Referência externa é obrigatória: somente BET PROCESSED do mesmo provider, player, wallet, moeda e rodada, com valor igual. Jogo pode diferir. Valor ou identidade incompatível retorna 422 `REFERENCE_MISMATCH`; BET rejeitada, `REFERENCE_NOT_PROCESSED`. Segunda devolução com nova identidade retorna 422 `REFERENCE_ALREADY_REFUNDED`, auditada sem crédito.
 
-Referência ausente retorna 202 `PENDING_REFERENCE`, sem mudar saldo ou ledger. Reenvio com mesma chave/payload preserva resultado e saldo originais, inclusive pendência; não tenta resolver a referência. Worker pertence ao ticket 13. Omissão do campo obrigatório retorna 400 `INVALID_TRANSACTION_PAYLOAD`; referência integra o hash de idempotência.
+Referência ausente retorna 202 `PENDING_REFERENCE`, sem mudar saldo ou ledger. Reenvio com mesma chave/payload preserva resultado e saldo originais, inclusive pendência; não tenta resolver a referência. O worker agendado consulta a pendência de novo e aplica um único crédito quando a BET existir como PROCESSED. Omissão do campo obrigatório retorna 400 `INVALID_TRANSACTION_PAYLOAD`; referência integra o hash de idempotência.
 
 Aplique `bun run migration:up` antes do startup. Testes com PostgreSQL real: `bun test tests/integration/refund.test.ts tests/integration/refund-schema.test.ts`; regras de domínio: `bun test tests/domain/wager-transaction.test.ts`. Decisão: [devolução de BET](ARCHITECTURE.md#devolução-de-bet-com-refund).
 
@@ -148,9 +148,25 @@ curl -i http://127.0.0.1:3000/wagering/transactions \
 
 Retorna 201 com saldo `100.00 BRL` e um CREDIT. ROLLBACK de WIN ou REFUND gera DEBIT do valor integral. Referência obrigatória deve estar PROCESSED, com mesmo provider, player, wallet, moeda e rodada. LOSS, OPENING e ROLLBACK não são referências elegíveis. Códigos de incompatibilidade e pendência seguem o contrato de REFUND.
 
-Débito sem saldo retorna 422 `INSUFFICIENT_REVERSAL_FUNDS`, distinto de BET sem saldo. Segunda reversão ROLLBACK da mesma referência retorna 422 `REFERENCE_ALREADY_ROLLED_BACK`. Ambas ficam auditadas, sem movimento. REFUND e ROLLBACK da mesma BET podem coexistir: unicidade é por tipo, conforme §7.4. Replay preserva resultado e saldo originais; pendência retorna 202 mesmo após a referência chegar.
+Débito sem saldo retorna 422 `INSUFFICIENT_REVERSAL_FUNDS`, distinto de BET sem saldo. Segunda reversão ROLLBACK da mesma referência retorna 422 `REFERENCE_ALREADY_ROLLED_BACK`. Ambas ficam auditadas, sem movimento. REFUND e ROLLBACK da mesma BET podem coexistir: unicidade é por tipo, conforme §7.4. Replay preserva o resultado terminal depois da resolução; enquanto a pendência não for resolvida, retorna 202 com o saldo do aceite.
 
 Aplique `bun run migration:up` antes do startup. Testes focais: `bun test tests/domain/rollback.test.ts tests/integration/rollback.test.ts tests/integration/rollback-schema.test.ts`. Decisão e limites: [ROLLBACK](ARCHITECTURE.md#reversão-de-movimento-com-rollback); resultados executados: [verificação](docs/verification.md#rollback-de-movimento--2026-10-23).
+
+### Resolver referência pendente
+
+`bun run start` inicia o worker junto com a API. A cada `PENDING_REFERENCE_INTERVAL_MS` (padrão `1000`), ele varre as pendências em páginas de `PENDING_REFERENCE_PAGE_SIZE` (padrão `100`) e tenta resolver cada uma em transação própria. Não existe rota administrativa para disparar a varredura.
+
+Exemplo: envie um REFUND antes da BET. A resposta é 202 `PENDING_REFERENCE`, sem crédito. Depois que a BET for processada, a próxima varredura aplica um único crédito e grava Processed/BalanceChanged. O replay do REFUND passa a devolver 201 com `PROCESSED` e o saldo resultante; `GET` mostra o mesmo estado. Enquanto a referência não chega, replay e `GET` continuam em `PENDING_REFERENCE` com o saldo observado no aceite, mesmo que outra operação já tenha mudado a wallet.
+
+Para ajustar o intervalo e o lote:
+
+```sh
+PENDING_REFERENCE_INTERVAL_MS=250 PENDING_REFERENCE_PAGE_SIZE=50 bun run start
+```
+
+O worker para em `SIGTERM`/`SIGINT` depois de concluir a execução em andamento, antes de fechar o ORM. Várias instâncias podem rodar o worker: a linha da pendência é bloqueada no PostgreSQL com `SKIP LOCKED`, e só uma aplica o movimento. Referência que nunca chega continua pendente; expiração e limite de tentativas ficam no ticket 14.
+
+Teste focal: `bun test tests/integration/pending-reference.test.ts`. Ele cobre REFUND/ROLLBACK, replay durante e após a pendência, duas instâncias concorrentes, referência rejeitada e uma instância nova lendo a pendência persistida. Decisão e limites: [resolução de referências](ARCHITECTURE.md#resolução-de-referências-pendentes).
 
 ### Consultar transação
 
@@ -183,6 +199,8 @@ bun test
 A integração exige PostgreSQL real e banco dedicado terminado em `_test`; os testes falham se esses requisitos não forem atendidos. Os testes aplicam migrations automaticamente. Fixtures de constraints usam rollback; testes HTTP positivos preservam auditoria append-only com identidades novas por execução.
 
 Para verificar somente BET: `bun test tests/integration/bet-http.test.ts`. O arquivo cobre contrato, sucesso, rejeição, rollback induzido, replay, conflitos e reinício de aplicação/pool.
+
+Para verificar a resolução de referências: `bun test tests/integration/pending-reference.test.ts`. Usa o mesmo PostgreSQL de testes e não inicia o worker no bootstrap dos testes HTTP; a varredura é chamada pelo próprio teste.
 
 ### Concorrência entre processos
 

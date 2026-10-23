@@ -127,7 +127,7 @@ Referência é opcional para WIN. Omissão significa prêmio independente, não 
 
 Validação da wallet precede resolução da referência: player ou moeda incompatível com a própria wallet continua erro 400, sem transação aceita. Referência rejeitada fica auditada como rejeição de negócio, com saldo observado e sem ledger.
 
-PENDING_REFERENCE mantém payload/hash, referência externa e saldo observado no aceite. Não tem `processedAt`; não gera ledger ou BalanceChanged. Replay e GET consultam o registro, sem tentar resolução, mesmo que a BET apareça depois. O worker e a política de expiração pertencem aos tickets 13/14 e ainda não existem. Não se deve tratar HTTP 202 como crédito concluído.
+PENDING_REFERENCE mantém payload/hash, referência externa e saldo observado no aceite. Não tem `processedAt`; não gera ledger ou BalanceChanged. Replay e GET consultam o registro, sem tentar resolução, mesmo que a BET apareça depois. A resolução é responsabilidade do worker agendado; a expiração de uma referência que nunca chega pertence ao ticket 14. Não se deve tratar HTTP 202 como crédito concluído.
 
 Alternativa descartada: ignorar referência opcional informada e creditar antes de validá-la. Isso aceitaria prêmio associado a outra wallet ou rodada. Exigir referência para todo WIN também restringiria o contrato além do enunciado. Publicar diretamente no broker após o crédito deixaria uma janela de perda; este fluxo apenas grava outbox, sem publisher.
 
@@ -156,7 +156,7 @@ Referência incompatível resulta em REJECTED com `REFERENCE_MISMATCH`; BET term
 
 Após validar a referência e ainda sob lock da wallet, o serviço procura REFUND PROCESSED para a mesma BET. Nova tentativa com identidade própria é auditada como REJECTED com `REFERENCE_ALREADY_REFUNDED`. Migration `20261023000400` adiciona índice único parcial `wager_transactions_refund_reference_unique` sobre `reference_transaction_id` somente para REFUND PROCESSED. Essa é a garantia final contra dois créditos; pendências e rejeições não reservam a BET. O lock serializa tentativas válidas da mesma wallet e permite registrar rejeição de negócio, em vez de expor violação de unicidade como erro inesperado.
 
-No sucesso, `Wallet.credit` devolve o valor integral; saldo/versão, REFUND PROCESSED, CREDIT e eventos Processed/BalanceChanged confirmam juntos. Flush não antecipa commit; falha na outbox desfaz inclusive a reserva no índice. Replay mantém identidade, status, failure code e saldo originais, sem consultar novamente a BET ou emitir evento. Mesmo após a BET chegar, replay de pendência não a resolve; agendamento e expiração continuam nos tickets 13/14.
+No sucesso, `Wallet.credit` devolve o valor integral; saldo/versão, REFUND PROCESSED, CREDIT e eventos Processed/BalanceChanged confirmam juntos. Flush não antecipa commit; falha na outbox desfaz inclusive a reserva no índice. Replay mantém identidade, status, failure code e saldo originais, sem consultar novamente a BET ou emitir evento. Replay de pendência não a resolve; o worker agendado tenta a resolução, e a expiração de referências ausentes fica no ticket 14.
 
 Alternativa descartada: índice único sobre todas as tentativas, que faria uma rejeição por valor inválido impedir devolução válida posterior. Checar apenas no serviço, sem índice, deixaria a unicidade dependente da disciplina dos escritores. Não há lock adicional na BET: uma referência válida pertence à wallet já bloqueada.
 
@@ -172,11 +172,35 @@ Decisão D-015, ticket 12 (§6.3, §7, §9 e §11): ROLLBACK exige referência e
 
 Após resolver a referência, o serviço procura reversão PROCESSED do mesmo tipo sob o lock existente. Segunda tentativa ROLLBACK recebe `REFERENCE_ALREADY_ROLLED_BACK`. Migration `20261023000500` acrescenta `wager_transactions_rollback_reference_unique`, índice único parcial sobre a referência somente para ROLLBACK PROCESSED. REFUND mantém seu índice separado. As duas operações podem reverter a mesma BET uma vez cada: proibição cruzada ampliaria §7.4 sem base no enunciado. Tentativas rejeitadas ou pendentes não reservam sucesso.
 
-Saldo/versão, ROLLBACK, ledger invertido e eventos Processed/BalanceChanged confirmam na mesma transação SQL. Falha de outbox antes do commit desfaz o conjunto, inclusive a reserva no índice; nova tentativa continua possível. Replay lê status, código e saldo originais, mesmo após reinício, sem reaplicar movimento ou resolver pendência. Resolução agendada permanece no ticket 13.
+Saldo/versão, ROLLBACK, ledger invertido e eventos Processed/BalanceChanged confirmam na mesma transação SQL. Falha de outbox antes do commit desfaz o conjunto, inclusive a reserva no índice; nova tentativa continua possível. Replay lê status, código e saldo originais, mesmo após reinício, sem reaplicar movimento ou resolver pendência. A resolução agendada reutiliza as mesmas regras na seção abaixo.
 
 O schema amplia checks de kind, referência obrigatória, hash e estados, sem alterar migrations anteriores. Down recusa qualquer histórico ROLLBACK; sem histórico, restaura o contrato REFUND. Compatibilidade financeira continua no domínio; checks/FKs protegem formato e vínculo externo, não toda escrita administrativa arbitrária.
 
 Alternativas descartadas: unicidade de todas as tentativas impediria correção após rejeição; unicidade compartilhada com REFUND proibiria operação permitida; checagem sem índice deixaria a exclusão dependente dos escritores. Não há segundo lock na referência, pois referência elegível pertence à wallet já bloqueada. Fontes: [MikroORM 6.6](https://mikro-orm.io/docs/6.6/transactions) e [PostgreSQL 17](https://www.postgresql.org/docs/17/indexes-partial.html#INDEXES-PARTIAL-EX3). Provas executadas e limites: [verificação](docs/verification.md#rollback-de-movimento--2026-10-23).
+
+## Resolução de referências pendentes
+
+Decisão D-016, ticket 13 (§6.3, §7.1 e §13): `WageringService.settle` concentra a aplicação financeira usada por `submit` e pela resolução. A extração manteve o fluxo HTTP: carregar referência, validar identidade/tipo/valor, procurar reversão já processada, mover a wallet e persistir transação, ledger e outbox. A resolução troca apenas a origem do estado, reidratando o registro `PENDING_REFERENCE` em vez de criar uma transação nova.
+
+`PendingReferenceWorker` inicia no bootstrap de `src/main.ts` e para em `SIGTERM`/`SIGINT` antes de fechar o ORM. Cada execução lista pendências por `id` em páginas de `PENDING_REFERENCE_PAGE_SIZE` e tenta cada registro em uma transação independente. `PENDING_REFERENCE_INTERVAL_MS` controla o intervalo. A varredura não tem rota HTTP.
+
+A transação de resolução bloqueia a linha da transação com `LockMode.PESSIMISTIC_PARTIAL_WRITE`, que no PostgreSQL vira `FOR UPDATE SKIP LOCKED`, e só segue quando o status ainda é `PENDING_REFERENCE`. Em seguida bloqueia a wallet com `PESSIMISTIC_WRITE` e aplica as regras do caminho síncrono. Um worker concorrente pula a linha bloqueada; se o primeiro confirmar `PROCESSED` ou `REJECTED`, a linha deixa de atender ao filtro. Os índices parciais de REFUND/ROLLBACK e o lock da wallet continuam como garantia final, inclusive para pendências distintas que apontam para a mesma referência: uma aplica e a outra é auditada com `REFERENCE_ALREADY_REFUNDED` ou `REFERENCE_ALREADY_ROLLED_BACK`.
+
+| Situação na varredura | Resultado | Escritas |
+|---|---|---|
+| Referência ausente ou ainda não terminal | Continua `PENDING_REFERENCE` | Nenhuma; sem novo `PendingReference` a cada tentativa |
+| Referência `PROCESSED` compatível | Movimento aplicado | Saldo/versão, ledger, `Processed` e `BalanceChanged` juntos |
+| Referência incompatível | `REJECTED` com o código existente | Evento `Rejected`, sem ledger |
+| Referência terminal sem processamento | `REJECTED` com `REFERENCE_NOT_PROCESSED` | Evento `Rejected`, sem ledger |
+| Status já terminal | `SKIPPED` | Nenhuma |
+
+Replay e GET durante a pendência leem o registro aceito, com o saldo observado no aceite, e não disparam resolução. Depois da resolução, replay devolve o resultado terminal e o novo saldo observado; retries seguintes repetem esse resultado, porque estados terminais não são reabertos.
+
+Falha antes do commit desfaz status, saldo, ledger e evento: a linha continua `PENDING_REFERENCE` e a próxima varredura tenta outra vez. Processo que morre depois do commit deixa o resultado terminal persistido; a varredura seguinte não encontra pendência e não repete o movimento. Os eventos são gravados na transação financeira; publicação continua fora do worker.
+
+Limites atuais: a varredura percorre todas as pendências a cada intervalo. Não há backoff, limite de tentativas nem TTL persistidos, então uma referência que nunca chega é consultada de novo a cada execução; o ticket 14 trata desse caso. SQS, publisher e inbox continuam pendentes, e a segurança entre instâncias vem do PostgreSQL, não de um scheduler distribuído.
+
+Referências: [MikroORM 6.6 — pessimistic locking](https://mikro-orm.io/docs/6.6/transactions#pessimistic-locking) para os modos de lock e sua tradução no PostgreSQL; [PostgreSQL 17 — row-level locks](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS) para `FOR UPDATE` e escopo da transação. Evidências executadas: [verificação](docs/verification.md#resolução-de-referências--2026-10-23).
 
 ## Consultas e paginação
 
@@ -229,9 +253,9 @@ Erros conhecidos retornam `{ "code": "..." }`, exceto a rejeição 422, que reto
 
 ## Ainda não entregue
 
-Resolução/expiração de referências fora de ordem, inbox/SQS, publishers concorrentes, retry/DLQ, health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). WIN, REFUND e ROLLBACK pendentes não são resolvidos automaticamente no estágio atual.
+Expiração de referências fora de ordem (ticket 14), inbox/SQS, publishers concorrentes, retry/DLQ, health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). O worker resolve pendências quando a referência fica disponível; não há expiração para referência que nunca chega nem publicação da outbox.
 
-API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown atual fecha HTTP e ORM, sem consumer, ack ou tratamento de visibilidade.
+API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown atual para o worker de resolução, fecha HTTP e ORM; não há consumer, ack ou tratamento de visibilidade.
 
 Setup, migrations e riscos de reversão: [README](README.md). Resultados executados e limites das provas: [evidências](docs/verification.md).
 
