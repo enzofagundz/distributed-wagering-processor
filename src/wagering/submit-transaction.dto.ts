@@ -1,9 +1,9 @@
 import { HttpException, ValidationPipe } from '@nestjs/common';
 import { Type } from 'class-transformer';
-import { IsDefined, IsIn, IsObject, IsString, Matches, MaxLength, ValidateNested, type ValidationError } from 'class-validator';
+import { IsDefined, IsIn, IsObject, IsString, Matches, MaxLength, ValidateIf, ValidateNested, type ValidationError } from 'class-validator';
 import { uuidPattern } from '../domain/wallet';
 
-class BetMoneyDto {
+class TransactionMoneyDto {
   @IsDefined({ message: 'INVALID_TRANSACTION_PAYLOAD' })
   @IsString({ message: 'INVALID_AMOUNT' })
   @Matches(/^(0|[1-9]\d{0,27})\.\d{2}$/, { message: 'INVALID_AMOUNT' })
@@ -15,7 +15,7 @@ class BetMoneyDto {
   currency!: string;
 }
 
-export class SubmitBetDto {
+export class SubmitTransactionDto {
   @IsDefined({ message: 'INVALID_TRANSACTION_PAYLOAD' })
   @IsString({ message: 'INVALID_PROVIDER' })
   @Matches(/^\S(?:[\s\S]*\S)?$/, { message: 'INVALID_PROVIDER' })
@@ -51,14 +51,20 @@ export class SubmitBetDto {
   gameId!: string;
 
   @IsDefined({ message: 'INVALID_TRANSACTION_PAYLOAD' })
-  @IsIn(['BET'], { message: 'INVALID_TRANSACTION_KIND' })
-  kind!: 'BET';
+  @IsIn(['BET', 'WIN'], { message: 'INVALID_TRANSACTION_KIND' })
+  kind!: 'BET' | 'WIN';
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsString({ message: 'INVALID_IDENTITY' })
+  @Matches(/^\S(?:[\s\S]*\S)?$/, { message: 'INVALID_IDENTITY' })
+  @MaxLength(200, { message: 'INVALID_IDENTITY' })
+  declare referenceExternalTransactionId?: string;
 
   @IsDefined({ message: 'INVALID_TRANSACTION_PAYLOAD' })
   @IsObject({ message: 'INVALID_TRANSACTION_PAYLOAD' })
   @ValidateNested({ message: 'INVALID_TRANSACTION_PAYLOAD' })
-  @Type(() => BetMoneyDto)
-  money!: BetMoneyDto;
+  @Type(() => TransactionMoneyDto)
+  money!: TransactionMoneyDto;
 }
 
 function validationCodes(errors: ValidationError[]): string[] {
@@ -69,8 +75,8 @@ function validationCodes(errors: ValidationError[]): string[] {
   ]);
 }
 
-export const submitBetValidation = new ValidationPipe({
-  expectedType: SubmitBetDto,
+export const submitTransactionValidation = new ValidationPipe({
+  expectedType: SubmitTransactionDto,
   transform: true,
   transformOptions: { enableImplicitConversion: false },
   whitelist: true,

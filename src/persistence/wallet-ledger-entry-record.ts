@@ -1,4 +1,4 @@
-import { EntitySchema } from '@mikro-orm/core';
+import { EntitySchema, StringType } from '@mikro-orm/core';
 
 export interface WalletLedgerEntryRecord {
   id: string;
@@ -20,10 +20,10 @@ export const walletLedgerEntrySchema = new EntitySchema<WalletLedgerEntryRecord>
     walletId: { type: 'uuid' },
     transactionId: { type: 'uuid' },
     direction: { type: 'string', columnType: 'text' },
-    amount: { type: 'decimal', precision: 30, scale: 2 },
+    amount: { type: new StringType(), columnType: 'numeric(30,2)' },
     currency: { type: 'string', length: 3 },
-    balanceBefore: { type: 'decimal', precision: 30, scale: 2 },
-    balanceAfter: { type: 'decimal', precision: 30, scale: 2 },
+    balanceBefore: { type: new StringType(), columnType: 'numeric(30,2)' },
+    balanceAfter: { type: new StringType(), columnType: 'numeric(30,2)' },
     createdAt: { type: 'Date', columnType: 'timestamptz' },
   },
   indexes: [{ name: 'wallet_ledger_entries_wallet_order_index', properties: ['walletId', 'createdAt', 'id'] }],

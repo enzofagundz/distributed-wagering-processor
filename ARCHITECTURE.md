@@ -12,7 +12,7 @@ Este documento descreve a implementação atual. Os requisitos estão no [enunci
 | Transporte | `src/wallets/wallet.controller.ts`, `src/wallets/*dto.ts` | Wallets, reconciliação e métrica Prometheus; validação estrutural |
 | Erros compartilhados | `src/shared/domain-error.filter.ts` | Tradução global de erros conhecidos, registrada uma vez pelo módulo raiz |
 | Caso de uso e leitura | `src/wallets/wallet-service.ts` | Abertura atômica, reidratação, ledger keyset e reconciliação em snapshot único |
-| Submissão de BET | `src/wagering/` | Contrato HTTP, lock da wallet, débito/rejeição e persistência atômica |
+| Submissão de BET/WIN | `src/wagering/` | Contrato HTTP, lock da wallet, débito/crédito, referências e persistência atômica |
 | Domínio | `src/domain/` | Money, Wallet, WagerTransaction, WalletLedgerEntry e eventos; sem NestJS/ORM |
 | Persistência | `src/persistence/persistence.module.ts`, `*record.ts`, `config.ts` | Provider MikroORM exportado explicitamente, EntitySchema e configuração |
 | Schema | `src/persistence/migrations/` | Constraints, FKs, trigger append-only e índices versionados |
@@ -63,12 +63,12 @@ A constraint única `(player_id, currency)` resolve aberturas concorrentes no Po
 - Domínio encapsula estado; factories criam e `rehydrate` reconstrói sem reaplicar transições. Validação HTTP não substitui invariantes do domínio.
 - Banco protege saldo não negativo, unicidade, aritmética do ledger e consistência de identidade/moeda por FKs compostas. Trigger rejeita UPDATE, DELETE e TRUNCATE do ledger. Administrador capaz de remover trigger/schema não está contido por essa proteção.
 - Correspondência saldo/ledger depende do caso de uso transacional; schema não promete impedir toda escrita administrativa arbitrária. Separação entre usuário de migrations e aplicação ainda é necessária antes de exposição real.
-- Sem lock global. BET usa lock pessimista da wallet antes da leitura do saldo. Concorrência financeira de BET foi exercitada em três processos com pools independentes; demais operações e mensageria continuam pendentes.
-- Eventos persistidos: `WagerTransactionProcessed`, `WagerTransactionRejected` e `WalletBalanceChanged`, com envelope versionado e MoneyProps. Persistência não comprova publicação, retry ou recuperação de publisher.
+- Sem lock global. BET e WIN usam lock pessimista da wallet antes da leitura do saldo. Concorrência financeira de BET foi exercitada em três processos com pools independentes; isso não comprova os fluxos de mensageria.
+- Eventos persistidos: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference`, com envelope versionado e MoneyProps. Persistência não comprova publicação, retry ou recuperação de publisher.
 
 ## Processamento de BET
 
-`POST /wagering/transactions` aceita somente BET e exige `Idempotency-Key`. OPENING continua interna; demais kinds ainda são rejeitados. UUIDs são normalizados para minúsculas. Identificadores textuais têm até 200 caracteres, sem espaços nas extremidades ou controles; provider `internal` é reservado. Valor deve ser positivo, com duas casas e até 28 dígitos inteiros.
+`POST /wagering/transactions` aceita BET e WIN e exige `Idempotency-Key`. OPENING continua interna; demais kinds ainda são rejeitados. UUIDs são normalizados para minúsculas. Identificadores textuais têm até 200 caracteres, sem espaços nas extremidades ou controles; provider `internal` é reservado. Valor deve ser positivo, com duas casas e até 28 dígitos inteiros.
 
 `WageringService.submit` usa um EntityManager novo por chamada e `transactional`. A primeira leitura da wallet usa `PESSIMISTIC_WRITE` (`SELECT … FOR UPDATE`). O lock dura até commit/rollback; a próxima aposta na mesma wallet espera e lê o saldo confirmado pela anterior. Wallets diferentes não compartilham lock financeiro. Alternativa: versão otimista com retry limitado; descartada neste incremento para evitar repetição do caso de uso após conflito.
 
@@ -76,7 +76,7 @@ O serviço valida player e moeda contra a wallet carregada antes de escrever. Pr
 
 Com saldo suficiente, `Wallet.debit` retorna nova wallet imutável com versão incrementada. SQL confirma BET PROCESSED, saldo observado, um DEBIT, saldo materializado e eventos Processed/BalanceChanged juntos. Sem saldo, confirma BET REJECTED com `INSUFFICIENT_FUNDS` e evento Rejected; saldo, versão e ledger não mudam. Resposta sai após commit. Falha ao gravar qualquer evento desfaz também escritas anteriores. Não há publisher.
 
-`WagerTransaction.create` nasce PENDING; `markProcessed` e `reject` levam a estados terminais, que recusam novas transições. `rehydrate` recompõe estado sem repetir regras. Banco armazena somente estados terminais deste fluxo e exige código de falha apenas na rejeição.
+`WagerTransaction.create` nasce PENDING; `markProcessed` e `reject` levam a estados terminais, que recusam novas transições. `rehydrate` recompõe estado sem repetir regras. BET persiste somente estados terminais; WIN também pode persistir PENDING_REFERENCE, conforme seção abaixo. Código de falha existe apenas na rejeição.
 
 Migration 004 mantém uma OPENING por wallet por índice único parcial. Unicidades de `(provider_id, external_transaction_id)` e `idempotency_key` impedem segundo efeito financeiro. O saldo observado fica persistido. FKs compostas, checks de não-negatividade e trigger append-only permanecem ativos. `down` da migration 004 recusa execução com BET persistida, antes de remover colunas ou constraints.
 
@@ -84,7 +84,7 @@ Migration 004 mantém uma OPENING por wallet por índice único parcial. Unicida
 
 Chave do header é obrigatória, global e sensível a maiúsculas; não é derivada automaticamente do payload. Identidade externa é única por `(providerId, externalTransactionId)`, também sensível a maiúsculas, sem escopo por wallet ou rodada. Outra chave para identidade externa existente retorna 409 `TRANSACTION_ALREADY_EXISTS`, mesmo com payload igual; não cria alias. Outro provider pode reutilizar external ID com chave nova.
 
-`payloadHash` é SHA-256 em hexadecimal minúsculo dos bytes UTF-8 de JSON compacto. Campos aparecem nesta ordem lexicográfica: `externalTransactionId`, `gameId`, `kind`, `money`, `playerId`, `providerId`, `roundId`, `walletId`; dentro de `money`: `amount`, `currency`. Todos são obrigatórios; não há opcionais neste contrato BET. UUIDs usam minúsculas e valor monetário usa duas casas. Strings seguem escaping de `JSON.stringify`, sem normalização Unicode. Espaços e ordem das propriedades no JSON recebido não entram no hash. Header, chave, IDs internos, timestamps e demais metadados HTTP ficam fora; campos extras no body continuam inválidos.
+`payloadHash` é SHA-256 em hexadecimal minúsculo dos bytes UTF-8 de JSON compacto. Campos aparecem nesta ordem lexicográfica: `externalTransactionId`, `gameId`, `kind`, `money`, `playerId`, `providerId`, `referenceExternalTransactionId` quando informada, `roundId`, `walletId`; dentro de `money`: `amount`, `currency`. Omitir referência omite também a propriedade no hash, preservando hashes das BETs existentes. UUIDs usam minúsculas e valor monetário usa duas casas. Strings seguem escaping de `JSON.stringify`, sem normalização Unicode. Espaços e ordem das propriedades no JSON recebido não entram no hash. Header, chave, IDs internos, timestamps e demais metadados HTTP ficam fora; campos extras no body continuam inválidos.
 
 Resultado e hash são gravados junto de saldo, ledger e outbox. Antes de procurar wallet, o serviço consulta a chave persistida: hash diferente retorna `IDEMPOTENCY_CONFLICT`; hash igual retorna transactionId, status, failureCode e saldo observado originais, com `idempotentReplay: true`. Rejeição continua 422 no replay, sem reavaliar saldo. Replay de sucesso continua 201. Nenhum replay altera versão ou produz eventos.
 
@@ -107,6 +107,31 @@ Falha antes do commit desfaz a transação e libera o lock; depois do commit, re
 Alternativa seria optimistic locking com retry limitado ou update condicionado. A prova multiprocesso não exigiu trocar o lock por linha já adotado. Referências: [PostgreSQL 17 — locks de linha](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS) para duração e escopo; [Bun — IPC](https://bun.sh/docs/runtime/child-process#inter-process-communication-ipc) para comunicação da fixture, consultada via Context7 e exercitada no Bun 1.3.14. Evidências: [verificação do ticket 08](docs/verification.md#concorrência-entre-processos--2026-10-23).
 
 
+
+## Crédito de WIN e referências
+
+Decisão D-012, ticket 09 (§6.2–6.4, §7, §9 e §11): WIN reutiliza `WageringService.submit`, a chave global e o lock por wallet do BET. `Wallet.credit` aplica dinheiro exato, e a mesma transação SQL persiste WIN PROCESSED, saldo observado, CREDIT, saldo/versão e eventos Processed/BalanceChanged. Qualquer falha antes do commit desfaz o conjunto. A resposta sai depois do commit; replay lê o resultado persistido, sem creditar novamente.
+
+Mapeamentos monetários usam instância explícita de `StringType` com `columnType: 'numeric(30,2)'`. PostgreSQL continua responsável pela representação numérica exata; ORM compara strings canônicas. O `DecimalType` instalado em 6.6.8 converte para `number` em `compareValues`, e deixou de detectar um crédito de `0.01` sobre `9007199254740993.01` no teste HTTP. Declarar apenas `type: 'string'` ou passar a classe `StringType` não bastou: discovery voltou a inferir DecimalType pela coluna. A instância explícita evita essa substituição, sem tipo monetário customizado nem alteração SQL.
+
+Referência é opcional para WIN. Omissão significa prêmio independente, não referência faltante. Se `referenceExternalTransactionId` estiver presente, deve identificar BET no mesmo provider, player, wallet, moeda e rodada. A busca usa `(providerId, externalTransactionId)`: ID de outro provider não é resolvido por aproximação. WIN não é reversão; prêmio pode diferir do valor da BET e `gameId` não integra a regra de compatibilidade do §7, item 2.
+
+| Referência informada | Resultado | Efeito financeiro |
+|---|---|---|
+| BET PROCESSED compatível | PROCESSED, HTTP 201 | Um CREDIT e versão incrementada |
+| Identidade, moeda, rodada ou kind incompatível | REJECTED, HTTP 422, `REFERENCE_MISMATCH` | Nenhum; evento Rejected |
+| BET terminal sem processamento | REJECTED, HTTP 422, `REFERENCE_NOT_PROCESSED` | Nenhum; evento Rejected |
+| Não encontrada ou ainda não terminal | PENDING_REFERENCE, HTTP 202 | Nenhum; evento PendingReference |
+
+Validação da wallet precede resolução da referência: player ou moeda incompatível com a própria wallet continua erro 400, sem transação aceita. Referência rejeitada fica auditada como rejeição de negócio, com saldo observado e sem ledger.
+
+PENDING_REFERENCE mantém payload/hash, referência externa e saldo observado no aceite. Não tem `processedAt`; não gera ledger ou BalanceChanged. Replay e GET consultam o registro, sem tentar resolução, mesmo que a BET apareça depois. O worker e a política de expiração pertencem aos tickets 13/14 e ainda não existem. Não se deve tratar HTTP 202 como crédito concluído.
+
+Alternativa descartada: ignorar referência opcional informada e creditar antes de validá-la. Isso aceitaria prêmio associado a outra wallet ou rodada. Exigir referência para todo WIN também restringiria o contrato além do enunciado. Publicar diretamente no broker após o crédito deixaria uma janela de perda; este fluxo apenas grava outbox, sem publisher.
+
+Migration `20261023000200` adiciona WIN, PENDING_REFERENCE, IDs de referência e checks de formato/estado. Uma FK composta liga o ID interno ao provider e ID externo resolvidos; rejeições por incompatibilidade preservam a referência para auditoria. O `down` restaura o contrato BET anterior somente quando não há WIN ou histórico de referência. Caso contrário, recusa a reversão sem apagar dados. Unicidades de chave/identidade externa, FKs financeiras e proteção append-only do ledger permanecem.
+
+Referência consultada: [MikroORM 6.6 — transações e concorrência](https://mikro-orm.io/docs/6.6/transactions), para lock de linha dentro de transação explícita e rollback de flushes anteriores. Evidências executadas ficam em [WIN HTTP](docs/verification.md#win-por-http--2026-10-23).
 
 ## Consultas e paginação
 
@@ -143,14 +168,15 @@ Referência consultada via Context7: [PostgreSQL 17 — READ COMMITTED](https://
 
 | Status | Códigos / comportamento |
 |---|---|
-| 400 | `INVALID_WALLET_PAYLOAD`, `INVALID_IDENTITY`, `INVALID_AMOUNT`, `INVALID_CURRENCY`, `INITIAL_BALANCE_NEGATIVE`, `INVALID_LEDGER_QUERY`; BET: `INVALID_TRANSACTION_PAYLOAD`, `INVALID_TRANSACTION_KIND`, `INVALID_IDEMPOTENCY_KEY`, `INVALID_PROVIDER`, `PLAYER_WALLET_MISMATCH`, `CURRENCY_MISMATCH` |
+| 400 | `INVALID_WALLET_PAYLOAD`, `INVALID_IDENTITY`, `INVALID_AMOUNT`, `INVALID_CURRENCY`, `INITIAL_BALANCE_NEGATIVE`, `INVALID_LEDGER_QUERY`; BET/WIN: `INVALID_TRANSACTION_PAYLOAD`, `INVALID_TRANSACTION_KIND`, `INVALID_IDEMPOTENCY_KEY`, `INVALID_PROVIDER`, `PLAYER_WALLET_MISMATCH`, `CURRENCY_MISMATCH` |
 | 404 | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND` |
 | 409 | `WALLET_ALREADY_EXISTS`, `TRANSACTION_ALREADY_EXISTS`, `IDEMPOTENCY_CONFLICT` |
-| 422 | BET persistida REJECTED com `failureCode: "INSUFFICIENT_FUNDS"`, transactionId, saldo observado; replay mantém resultado com idempotentReplay true |
-| 503 | BET: `TEMPORARY_UNAVAILABLE` para códigos conhecidos de conexão, shutdown, serialização, deadlock ou timeout/indisponibilidade de lock; sem retry automático |
+| 422 | BET/WIN persistida REJECTED com failureCode, transactionId e saldo observado; `INSUFFICIENT_FUNDS` para BET, `REFERENCE_MISMATCH` ou `REFERENCE_NOT_PROCESSED` para WIN; replay mantém resultado |
+| 202 | WIN PENDING_REFERENCE persistida, sem crédito; replay também retorna 202 |
+| 503 | BET/WIN: `TEMPORARY_UNAVAILABLE` para códigos conhecidos de conexão, shutdown, serialização, deadlock ou timeout/indisponibilidade de lock; sem retry automático |
 | 500 | Falha inesperada: resposta genérica do NestJS, sem SQL/credenciais |
 
-Erros conhecidos retornam `{ "code": "..." }`, exceto a rejeição 422, que retorna o resultado financeiro auditado. BET processada retorna 201. DTO rejeita campos extras, estruturas inválidas e dinheiro não textual, sem conversão implícita; falha estrutural precede formato. JSON malformado na submissão recebe `INVALID_TRANSACTION_PAYLOAD`. Falhas inesperadas não viram 400/409. Política de pendência: 202 fica reservado para aceite persistido PENDING/PENDING_REFERENCE nos tickets de referências; BET atual é síncrona e nunca retorna 202. Kind ainda não suportado retorna 400, não pendência fictícia. Após 503 ou perda da resposta, reenviar mesma chave/payload permite descobrir commit já ocorrido; não trocar chave. Erros 400 corrigem contrato; 409 exige resolver identidade/payload; 422 é resultado terminal, não retry para tentar obter outro saldo.
+Erros conhecidos retornam `{ "code": "..." }`, exceto a rejeição 422, que retorna o resultado financeiro auditado. BET/WIN processada retorna 201, inclusive no replay. DTO rejeita campos extras, estruturas inválidas e dinheiro não textual, sem conversão implícita; falha estrutural precede formato. JSON malformado na submissão recebe `INVALID_TRANSACTION_PAYLOAD`. Falhas inesperadas não viram 400/409. WIN com referência indisponível retorna 202 persistido; BET é síncrona e nunca retorna 202. Kind ainda não suportado retorna 400, não pendência fictícia. Após 503 ou perda da resposta, reenviar mesma chave/payload permite descobrir commit já ocorrido; não trocar chave. Erros 400 corrigem contrato; 409 exige resolver identidade/payload; 422 é resultado terminal, não retry para tentar obter outro saldo.
 
 ## Decisões
 
@@ -158,7 +184,7 @@ Erros conhecidos retornam `{ "code": "..." }`, exceto a rejeição 422, que reto
 
 ## Ainda não entregue
 
-WIN, LOSS, reversões, referências fora de ordem, inbox/SQS, publishers concorrentes, retry/DLQ, health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). Não há promessa de transições ou falhas desses fluxos no comportamento atual.
+LOSS, reversões, resolução/expiração de referências fora de ordem, inbox/SQS, publishers concorrentes, retry/DLQ, health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). WIN pendente não é resolvida automaticamente no estágio atual.
 
 API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown atual fecha HTTP e ORM, sem consumer, ack ou tratamento de visibilidade.
 

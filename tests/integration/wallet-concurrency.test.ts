@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { databaseConfig } from '../../src/persistence/config';
-import type { SubmitBetInput, SubmitBetResult } from '../../src/wagering/wagering-service';
+import type { SubmitTransactionInput, SubmitTransactionResult } from '../../src/wagering/wagering-service';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url || !new URL(url).pathname.endsWith('_test')) throw new Error('TEST_DATABASE_URL must point to a dedicated database ending in _test');
@@ -10,11 +10,11 @@ const instances: ReturnType<typeof startInstance>[] = [];
 
 function startInstance(index: number) {
   const ready = Promise.withResolvers<string>();
-  const pending = new Map<string, ReturnType<typeof Promise.withResolvers<SubmitBetResult>>>();
+  const pending = new Map<string, ReturnType<typeof Promise.withResolvers<SubmitTransactionResult>>>();
   const child = Bun.spawn([process.execPath, `${import.meta.dir}/fixtures/concurrency-instance.ts`], {
     env: { ...process.env, DATABASE_URL: url, PGAPPNAME: `wallet-concurrency-${process.pid}-${index}` },
     stdout: 'ignore', stderr: 'inherit',
-    ipc(message: { base?: string; id?: string; result?: SubmitBetResult; error?: string }) {
+    ipc(message: { base?: string; id?: string; result?: SubmitTransactionResult; error?: string }) {
       if (message.base) ready.resolve(message.base);
       if (message.id) {
         const request = pending.get(message.id);
@@ -30,9 +30,9 @@ function startInstance(index: number) {
       pending.clear();
     },
   });
-  return { child, ready: ready.promise, async submit(input: SubmitBetInput) {
+  return { child, ready: ready.promise, async submit(input: SubmitTransactionInput) {
     const id = crypto.randomUUID();
-    const request = Promise.withResolvers<SubmitBetResult>();
+    const request = Promise.withResolvers<SubmitTransactionResult>();
     pending.set(id, request);
     child.send({ id, input });
     return request.promise;
@@ -65,15 +65,15 @@ async function wallet() {
   const { id } = await response.json() as { id: string };
   return { playerId, walletId: id };
 }
-function bet(identity: { playerId: string; walletId: string }, amount = '80.00'): SubmitBetInput {
+function bet(identity: { playerId: string; walletId: string }, amount = '80.00'): SubmitTransactionInput {
   return { ...identity, providerId: 'provider-concurrency', externalTransactionId: crypto.randomUUID(),
     idempotencyKey: crypto.randomUUID(), roundId: 'round-concurrency', gameId: 'fortune-chimp', kind: 'BET', money: { amount, currency: 'BRL' } };
 }
-async function post(index: number, input: SubmitBetInput) {
+async function post(index: number, input: SubmitTransactionInput) {
   const { idempotencyKey, ...body } = input;
   const response = await http(index, '/wagering/transactions', body, idempotencyKey);
   expect(response.status).toBeOneOf([201, 422]);
-  const result = await response.json() as SubmitBetResult;
+  const result = await response.json() as SubmitTransactionResult;
   expect(response.status).toBe(result.status === 'PROCESSED' ? 201 : 422);
   return result;
 }
@@ -119,7 +119,7 @@ test('50 identical BETs across HTTP and use case in three processes return one o
   const input = bet(identity, '25.00');
   const lock = orm.em.fork();
   await lock.begin();
-  let submissions: Promise<SubmitBetResult>[] = [];
+  let submissions: Promise<SubmitTransactionResult>[] = [];
   try {
     await lock.execute('select id from wallets where id = ? for update', [identity.walletId]);
     submissions = Array.from({ length: 50 }, (_, index) => index % 2 === 0
@@ -148,7 +148,7 @@ test('a blocked hot wallet does not prevent other wallets committing in the othe
   const inputs = identities.map(identity => bet(identity));
   const lock = orm.em.fork();
   await lock.begin();
-  let blocked: Promise<SubmitBetResult> | undefined;
+  let blocked: Promise<SubmitTransactionResult> | undefined;
   let completed = false;
   try {
     await lock.execute('select id from wallets where id = ? for update', [identities[0]!.walletId]);

@@ -1,4 +1,5 @@
-import { EntitySchema } from '@mikro-orm/core';
+import { EntitySchema, StringType } from '@mikro-orm/core';
+import type { FailureCode } from '../domain/wager-transaction';
 
 export interface WagerTransactionRecord {
   id: string;
@@ -6,15 +7,17 @@ export interface WagerTransactionRecord {
   playerId: string;
   currency: string;
   amount: string;
-  kind: 'OPENING' | 'BET';
-  status: 'PROCESSED' | 'REJECTED';
+  kind: 'OPENING' | 'BET' | 'WIN';
+  status: 'PROCESSED' | 'REJECTED' | 'PENDING_REFERENCE';
   providerId?: string | null;
   externalTransactionId?: string | null;
   idempotencyKey?: string | null;
   payloadHash?: string | null;
   roundId?: string | null;
   gameId?: string | null;
-  failureCode?: 'INSUFFICIENT_FUNDS' | null;
+  referenceExternalTransactionId?: string | null;
+  referenceTransactionId?: string | null;
+  failureCode?: FailureCode | null;
   processedAt?: Date | null;
   observedBalance?: string | null;
   createdAt: Date;
@@ -28,7 +31,7 @@ export const wagerTransactionSchema = new EntitySchema<WagerTransactionRecord>({
     walletId: { type: 'uuid' },
     playerId: { type: 'uuid' },
     currency: { type: 'string', length: 3 },
-    amount: { type: 'decimal', precision: 30, scale: 2 },
+    amount: { type: new StringType(), columnType: 'numeric(30,2)' },
     kind: { type: 'string', columnType: 'text' },
     status: { type: 'string', columnType: 'text' },
     providerId: { type: 'string', length: 200, nullable: true },
@@ -37,9 +40,11 @@ export const wagerTransactionSchema = new EntitySchema<WagerTransactionRecord>({
     payloadHash: { type: 'string', length: 64, nullable: true },
     roundId: { type: 'string', length: 200, nullable: true },
     gameId: { type: 'string', length: 200, nullable: true },
+    referenceExternalTransactionId: { type: 'string', length: 200, nullable: true },
+    referenceTransactionId: { type: 'uuid', nullable: true },
     failureCode: { type: 'string', columnType: 'text', nullable: true },
     processedAt: { type: 'Date', columnType: 'timestamptz', nullable: true },
-    observedBalance: { type: 'decimal', precision: 30, scale: 2, nullable: true },
+    observedBalance: { type: new StringType(), columnType: 'numeric(30,2)', nullable: true },
     createdAt: { type: 'Date', columnType: 'timestamptz' },
   },
   indexes: [{
@@ -50,5 +55,6 @@ export const wagerTransactionSchema = new EntitySchema<WagerTransactionRecord>({
     { name: 'wager_transactions_provider_external_unique', properties: ['providerId', 'externalTransactionId'] },
     { name: 'wager_transactions_idempotency_key_unique', properties: ['idempotencyKey'] },
     { name: 'wager_transactions_ledger_identity_unique', properties: ['id', 'walletId', 'currency', 'amount'] },
+    { name: 'wager_transactions_reference_identity_unique', properties: ['id', 'providerId', 'externalTransactionId'] },
   ],
 });

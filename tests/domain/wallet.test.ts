@@ -34,3 +34,25 @@ test('rehydrates persisted state without reopening wallet or resetting version',
   expect(wallet.version).toBe(7);
   expect(wallet.updatedAt.getTime()).toBe(2000);
 });
+
+test('credits exact WIN money once on a new wallet version without mutating prior state', () => {
+  const wallet = Wallet.open({ id, playerId, initialBalance: Money.from({ amount: '9007199254740993.01', currency: 'BRL' }) });
+  const at = new Date('2026-10-23T12:00:00.000Z');
+  const credited = wallet.credit(Money.from({ amount: '0.01', currency: 'BRL' }), at);
+  expect(credited.toJSON()).toEqual({ id, playerId,
+    balance: { amount: '9007199254740993.02', currency: 'BRL' }, version: 2 });
+  expect(credited.updatedAt).toEqual(at);
+  expect(wallet.toJSON()).toEqual({ id, playerId,
+    balance: { amount: '9007199254740993.01', currency: 'BRL' }, version: 1 });
+});
+
+test('rejects nonpositive or foreign-currency WIN credit without changing wallet', () => {
+  const wallet = Wallet.open({ id, playerId, initialBalance: Money.from({ amount: '10.00', currency: 'BRL' }) });
+  const at = new Date();
+  for (const amount of [Money.zero('BRL'), Money.from({ amount: '0.01', currency: 'BRL' }).negate()]) {
+    expect(() => wallet.credit(amount, at)).toThrow(new DomainError('INVALID_AMOUNT'));
+  }
+  expect(() => wallet.credit(Money.from({ amount: '1.00', currency: 'USD' }), at))
+    .toThrow(new DomainError('CURRENCY_MISMATCH'));
+  expect(wallet.toJSON()).toEqual({ id, playerId, balance: { amount: '10.00', currency: 'BRL' }, version: 1 });
+});

@@ -2,7 +2,7 @@ import type { Wallet } from './wallet';
 import type { WalletLedgerEntry } from './wallet-ledger-entry';
 import type { MoneyProps } from './money';
 import { DomainError } from './money';
-import type { WagerTransaction } from './wager-transaction';
+import type { FailureCode, WagerTransaction } from './wager-transaction';
 
 export abstract class IntegrationEvent<T> {
   abstract readonly eventType: string;
@@ -22,11 +22,11 @@ export abstract class IntegrationEvent<T> {
 }
 
 export class WagerTransactionProcessed extends IntegrationEvent<{
-  transactionId: string; walletId: string; kind: 'OPENING' | 'BET'; status: 'PROCESSED';
+  transactionId: string; walletId: string; kind: 'OPENING' | 'BET' | 'WIN'; status: 'PROCESSED';
   money: MoneyProps; balance: MoneyProps;
 }> {
   readonly eventType = 'WagerTransactionProcessed';
-  static from(wallet: Wallet, entry: WalletLedgerEntry, kind: 'OPENING' | 'BET' = 'OPENING') {
+  static from(wallet: Wallet, entry: WalletLedgerEntry, kind: 'OPENING' | 'BET' | 'WIN' = 'OPENING') {
     return new WagerTransactionProcessed(wallet.id, entry.transactionId, entry.createdAt, {
       transactionId: entry.transactionId, walletId: wallet.id, kind, status: 'PROCESSED',
       money: entry.money.toJSON(), balance: wallet.balance.toJSON(),
@@ -35,19 +35,41 @@ export class WagerTransactionProcessed extends IntegrationEvent<{
 }
 
 export class WagerTransactionRejected extends IntegrationEvent<{
-  transactionId: string; walletId: string; kind: 'BET'; status: 'REJECTED';
-  failureCode: 'INSUFFICIENT_FUNDS'; money: MoneyProps; balance: MoneyProps;
+  transactionId: string; walletId: string; kind: 'BET' | 'WIN'; status: 'REJECTED';
+  failureCode: FailureCode; money: MoneyProps; balance: MoneyProps;
+  referenceExternalTransactionId?: string; referenceTransactionId?: string;
 }> {
   readonly eventType = 'WagerTransactionRejected';
   static from(wallet: Wallet, transaction: WagerTransaction) {
     const occurredAt = transaction.processedAt;
     const failureCode = transaction.failureCode;
-    if (transaction.status !== 'REJECTED' || !occurredAt || failureCode !== 'INSUFFICIENT_FUNDS') {
+    if (transaction.status !== 'REJECTED' || !occurredAt || !failureCode) {
       throw new DomainError('INVALID_TRANSACTION_STATE');
     }
     return new WagerTransactionRejected(wallet.id, transaction.id, occurredAt, {
-      transactionId: transaction.id, walletId: wallet.id, kind: 'BET', status: 'REJECTED',
+      transactionId: transaction.id, walletId: wallet.id, kind: transaction.kind, status: 'REJECTED',
       failureCode, money: transaction.money.toJSON(), balance: wallet.balance.toJSON(),
+      ...(transaction.referenceExternalTransactionId ? { referenceExternalTransactionId: transaction.referenceExternalTransactionId } : {}),
+      ...(transaction.referenceTransactionId ? { referenceTransactionId: transaction.referenceTransactionId } : {}),
+    });
+  }
+}
+
+export class WagerTransactionPendingReference extends IntegrationEvent<{
+  transactionId: string; walletId: string; kind: 'WIN'; status: 'PENDING_REFERENCE';
+  referenceExternalTransactionId: string; referenceTransactionId?: string;
+  money: MoneyProps; balance: MoneyProps;
+}> {
+  readonly eventType = 'WagerTransactionPendingReference';
+  static from(wallet: Wallet, transaction: WagerTransaction) {
+    if (transaction.status !== 'PENDING_REFERENCE' || transaction.kind !== 'WIN' || !transaction.referenceExternalTransactionId) {
+      throw new DomainError('INVALID_TRANSACTION_STATE');
+    }
+    return new WagerTransactionPendingReference(wallet.id, transaction.id, transaction.createdAt, {
+      transactionId: transaction.id, walletId: wallet.id, kind: 'WIN', status: 'PENDING_REFERENCE',
+      referenceExternalTransactionId: transaction.referenceExternalTransactionId,
+      ...(transaction.referenceTransactionId ? { referenceTransactionId: transaction.referenceTransactionId } : {}),
+      money: transaction.money.toJSON(), balance: wallet.balance.toJSON(),
     });
   }
 }

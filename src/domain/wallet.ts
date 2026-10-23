@@ -43,6 +43,14 @@ export class Wallet {
     return new Wallet({ ...this.state, balance: this.balance.subtract(money), version: this.version + 1, updatedAt: at });
   }
 
+  credit(money: Money, at: Date): Wallet {
+    if (!money.isPositive()) throw new DomainError('INVALID_AMOUNT');
+    if (money.currency !== this.currency) throw new DomainError('CURRENCY_MISMATCH');
+    const balance = this.balance.add(money);
+    if (balance.toString().indexOf('.') > 28) throw new DomainError('INVALID_AMOUNT');
+    return new Wallet({ ...this.state, balance, version: this.version + 1, updatedAt: at });
+  }
+
   toJSON() {
     return { id: this.id, playerId: this.playerId, balance: this.balance.toJSON(), version: this.version };
   }

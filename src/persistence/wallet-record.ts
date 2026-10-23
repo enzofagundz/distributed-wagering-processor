@@ -1,4 +1,4 @@
-import { EntitySchema } from '@mikro-orm/core';
+import { EntitySchema, StringType } from '@mikro-orm/core';
 
 export interface WalletRecord {
   id: string;
@@ -17,7 +17,7 @@ export const walletSchema = new EntitySchema<WalletRecord>({
     id: { type: 'uuid', primary: true },
     playerId: { type: 'uuid' },
     currency: { type: 'string', length: 3 },
-    balance: { type: 'decimal', precision: 30, scale: 2 },
+    balance: { type: new StringType(), columnType: 'numeric(30,2)' },
     version: { type: 'integer' },
     createdAt: { type: 'Date', columnType: 'timestamptz' },
     updatedAt: { type: 'Date', columnType: 'timestamptz' },

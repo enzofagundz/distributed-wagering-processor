@@ -30,8 +30,8 @@ export class DomainErrorFilter extends BaseExceptionFilter implements ExceptionF
     if (error instanceof BadRequestException) {
       const request = host.switchToHttp().getRequest<{ method: string; url: string }>();
       const path = request.url.split('?')[0];
-      const invalidBet = request.method === 'POST' && (path === '/wagering/transactions' || path === '/wagering/transactions/');
-      super.catch(invalidBet ? new HttpException({ code: 'INVALID_TRANSACTION_PAYLOAD' }, 400) : error, host);
+      const invalidTransaction = request.method === 'POST' && (path === '/wagering/transactions' || path === '/wagering/transactions/');
+      super.catch(invalidTransaction ? new HttpException({ code: 'INVALID_TRANSACTION_PAYLOAD' }, 400) : error, host);
       return;
     }
     const status = statusByCode[error.code];

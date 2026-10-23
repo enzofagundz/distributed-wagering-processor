@@ -3,8 +3,8 @@ import type { WagerTransactionRecord } from '../persistence/wager-transaction-re
 import { LockMode, UniqueConstraintViolationException } from '@mikro-orm/core';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { DomainError, Money, type MoneyProps } from '../domain/money';
-import { WagerTransactionProcessed, WagerTransactionRejected, WalletBalanceChanged } from '../domain/opening-events';
-import { WagerTransaction } from '../domain/wager-transaction';
+import { WagerTransactionPendingReference, WagerTransactionProcessed, WagerTransactionRejected, WalletBalanceChanged } from '../domain/opening-events';
+import { WagerTransaction, type FailureCode } from '../domain/wager-transaction';
 import { Wallet } from '../domain/wallet';
 import { WalletLedgerEntry } from '../domain/wallet-ledger-entry';
 import { outboxMessageSchema } from '../persistence/outbox-message-record';
@@ -12,7 +12,7 @@ import { wagerTransactionSchema } from '../persistence/wager-transaction-record'
 import { walletSchema } from '../persistence/wallet-record';
 import { walletLedgerEntrySchema } from '../persistence/wallet-ledger-entry-record';
 
-export interface SubmitBetInput {
+export interface SubmitTransactionInput {
   providerId: string;
   externalTransactionId: string;
   idempotencyKey: string;
@@ -20,16 +20,17 @@ export interface SubmitBetInput {
   playerId: string;
   roundId: string;
   gameId: string;
-  kind: 'BET';
+  kind: 'BET' | 'WIN';
   money: MoneyProps;
+  referenceExternalTransactionId?: string;
 }
 
-export interface SubmitBetResult {
+export interface SubmitTransactionResult {
   transactionId: string;
-  status: 'PROCESSED' | 'REJECTED';
+  status: 'PROCESSED' | 'REJECTED' | 'PENDING_REFERENCE';
   balance: MoneyProps;
   idempotentReplay: boolean;
-  failureCode?: 'INSUFFICIENT_FUNDS';
+  failureCode?: FailureCode;
 }
 
 const duplicateConstraints: Readonly<Record<string, true>> = {
@@ -63,22 +64,26 @@ export class WageringService {
       transactionId: record.id, providerId: record.providerId, externalTransactionId: record.externalTransactionId,
       walletId: record.walletId, playerId: record.playerId, roundId: record.roundId, gameId: record.gameId,
       kind: record.kind, money: { amount: record.amount, currency: record.currency }, status: record.status,
+      ...(record.referenceExternalTransactionId == null ? {} : { referenceExternalTransactionId: record.referenceExternalTransactionId }),
+      ...(record.referenceTransactionId == null ? {} : { referenceTransactionId: record.referenceTransactionId }),
       ...(record.observedBalance == null ? {} : { balance: { amount: record.observedBalance, currency: record.currency } }),
       ...(record.failureCode ? { failureCode: record.failureCode } : {}),
       createdAt: record.createdAt, processedAt: record.processedAt,
     };
   }
 
-  async submit(input: SubmitBetInput): Promise<SubmitBetResult> {
+  async submit(input: SubmitTransactionInput): Promise<SubmitTransactionResult> {
     const money = Money.from(input.money);
     const transaction = WagerTransaction.create({ ...input, id: crypto.randomUUID(), money });
     const payloadHash = createHash('sha256').update(JSON.stringify({
       externalTransactionId: transaction.externalTransactionId, gameId: transaction.gameId, kind: transaction.kind,
       money: { amount: money.toString(), currency: money.currency }, playerId: transaction.playerId,
-      providerId: transaction.providerId, roundId: transaction.roundId, walletId: transaction.walletId,
+      providerId: transaction.providerId,
+      ...(transaction.referenceExternalTransactionId === undefined ? {} : { referenceExternalTransactionId: transaction.referenceExternalTransactionId }),
+      roundId: transaction.roundId, walletId: transaction.walletId,
     })).digest('hex');
     try {
-      return await this.orm.em.fork().transactional<SubmitBetResult>(async em => {
+      return await this.orm.em.fork().transactional<SubmitTransactionResult>(async em => {
         const existing = await em.findOne(wagerTransactionSchema, { idempotencyKey: transaction.idempotencyKey });
         if (existing) return this.replay(existing, payloadHash);
         const record = await em.findOne(walletSchema, { id: transaction.walletId }, { lockMode: LockMode.PESSIMISTIC_WRITE });
@@ -91,15 +96,28 @@ export class WageringService {
           version: record.version, createdAt: record.createdAt, updatedAt: record.updatedAt,
         });
         const at = new Date();
-        const insufficient = wallet.balance.isLessThan(money);
-        const resultingWallet = insufficient ? wallet : wallet.debit(money, at);
-        if (insufficient) transaction.reject('INSUFFICIENT_FUNDS', at);
-        else transaction.markProcessed(at);
-        const entry = insufficient ? undefined : WalletLedgerEntry.create({
+        if (transaction.referenceExternalTransactionId) {
+          const reference = await em.findOne(wagerTransactionSchema, {
+            providerId: transaction.providerId, externalTransactionId: transaction.referenceExternalTransactionId,
+          });
+          transaction.resolveReference(reference ?? undefined, at);
+        }
+        let resultingWallet = wallet;
+        if (transaction.status === 'PENDING') {
+          if (transaction.kind === 'BET' && wallet.balance.isLessThan(money)) {
+            transaction.reject('INSUFFICIENT_FUNDS', at);
+          } else {
+            resultingWallet = transaction.kind === 'BET' ? wallet.debit(money, at) : wallet.credit(money, at);
+            transaction.markProcessed(at);
+          }
+        }
+        const status = transaction.status;
+        if (status === 'PENDING') throw new DomainError('INVALID_TRANSACTION_STATE');
+        const entry = status === 'PROCESSED' ? WalletLedgerEntry.create({
           id: crypto.randomUUID(), walletId: wallet.id, transactionId: transaction.id,
-          direction: 'DEBIT', money, balanceBefore: wallet.balance,
+          direction: transaction.kind === 'BET' ? 'DEBIT' : 'CREDIT', money, balanceBefore: wallet.balance,
           balanceAfter: resultingWallet.balance, createdAt: at,
-        });
+        }) : undefined;
         if (entry) em.assign(record, {
           balance: resultingWallet.balance.toString(), version: resultingWallet.version, updatedAt: resultingWallet.updatedAt,
         });
@@ -107,11 +125,12 @@ export class WageringService {
           id: transaction.id, walletId: transaction.walletId, playerId: transaction.playerId,
           providerId: transaction.providerId, externalTransactionId: transaction.externalTransactionId,
           idempotencyKey: transaction.idempotencyKey, roundId: transaction.roundId, gameId: transaction.gameId,
-          payloadHash,
-          currency: money.currency, amount: money.toString(), kind: 'BET',
-          status: insufficient ? 'REJECTED' : 'PROCESSED',
-          failureCode: insufficient ? 'INSUFFICIENT_FUNDS' : null,
-          observedBalance: resultingWallet.balance.toString(), createdAt: transaction.createdAt, processedAt: at,
+          payloadHash, referenceExternalTransactionId: transaction.referenceExternalTransactionId ?? null,
+          referenceTransactionId: transaction.referenceTransactionId ?? null,
+          currency: money.currency, amount: money.toString(), kind: transaction.kind,
+          status, failureCode: transaction.failureCode ?? null,
+          observedBalance: resultingWallet.balance.toString(), createdAt: transaction.createdAt,
+          processedAt: transaction.processedAt ?? null,
         });
         await em.persist(persistedTransaction).flush();
         if (entry) {
@@ -123,17 +142,19 @@ export class WageringService {
           await em.persist(ledgerEntry).flush();
         }
         const events = entry ? [
-          WagerTransactionProcessed.from(resultingWallet, entry, 'BET'),
+          WagerTransactionProcessed.from(resultingWallet, entry, transaction.kind),
           WalletBalanceChanged.from(resultingWallet, entry),
-        ] : [WagerTransactionRejected.from(wallet, transaction)];
+        ] : status === 'PENDING_REFERENCE'
+          ? [WagerTransactionPendingReference.from(wallet, transaction)]
+          : [WagerTransactionRejected.from(wallet, transaction)];
         await em.persist(events.map(event => em.create(outboxMessageSchema, {
           id: event.eventId, aggregateId: event.aggregateId, eventType: event.eventType,
           payload: event.toJSON(), occurredAt: event.occurredAt,
         }))).flush();
         return {
-          transactionId: transaction.id, status: insufficient ? 'REJECTED' : 'PROCESSED',
+          transactionId: transaction.id, status,
           balance: resultingWallet.balance.toJSON(), idempotentReplay: false,
-          ...(insufficient ? { failureCode: 'INSUFFICIENT_FUNDS' as const } : {}),
+          ...(transaction.failureCode ? { failureCode: transaction.failureCode } : {}),
         };
       });
     } catch (error) {
@@ -153,9 +174,11 @@ export class WageringService {
     }
   }
 
-  private replay(record: WagerTransactionRecord, payloadHash: string): SubmitBetResult {
+  private replay(record: WagerTransactionRecord, payloadHash: string): SubmitTransactionResult {
     if (record.payloadHash !== payloadHash) throw new DomainError('IDEMPOTENCY_CONFLICT');
-    if (record.kind !== 'BET' || record.observedBalance == null) throw new Error('Invalid persisted BET result');
+    if ((record.kind !== 'BET' && record.kind !== 'WIN') || record.observedBalance == null) {
+      throw new Error('Invalid persisted wagering result');
+    }
     return {
       transactionId: record.id, status: record.status,
       balance: { amount: record.observedBalance, currency: record.currency }, idempotentReplay: true,
