@@ -3,7 +3,7 @@
     "_postman_id": "95a545f1-6ee0-40a6-87e1-613f99b2c733",
     "name": "Distributed Wagering Processor — Wallet HTTP",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Contratos HTTP implementados: abertura e consulta de carteira, leitura de ledger. Selecione environment Local e execute as pastas em ordem. Os exemplos salvos são ilustrativos, derivados de código e testes; não são capturas de execução. Sem autenticação no contrato atual. Manual: docs/postman/README.md."
+    "description": "Contratos HTTP: abertura/consulta de wallet, ledger, BET, replay, conflitos, consulta de transação e reconciliação. Pastas 1 a 4: smoke sequencial. Pasta 5: três APIs e disputa manual com lock PostgreSQL; Runner sequencial não comprova concorrência. Exemplos antigos são ilustrativos. Ambiente local sem autenticação. Guia: docs/postman/README.md."
   },
   "auth": {
     "type": "noauth"
@@ -1659,6 +1659,749 @@
           ]
         }
       ]
-    }
+    },
+      {
+        "name": "4 - BET, replay, consultas e reconciliação",
+        "description": "Executar 20 a 29 em ordem, uma iteração. 20 cria identidades novas; repetir somente 22/24 testa replay.",
+        "item": [
+          {
+            "name": "20 - Abrir wallet para BET",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "url": "{{baseUrl}}/wallets",
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"playerId\": \"{{betPlayerId}}\",\n  \"initialBalance\": {\n    \"amount\": \"100.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "prerequest",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.environment.set('betPlayerId', pm.variables.replaceIn('{{$guid}}'));",
+                    "pm.environment.unset('betWalletId');",
+                    "pm.environment.set('betExternalA', pm.variables.replaceIn('{{$guid}}'));",
+                    "pm.environment.set('betKeyA', pm.variables.replaceIn('{{$guid}}'));",
+                    "pm.environment.unset('betResultA');",
+                    "pm.environment.set('betExternalB', pm.variables.replaceIn('{{$guid}}'));",
+                    "pm.environment.set('betKeyB', pm.variables.replaceIn('{{$guid}}'));",
+                    "pm.environment.unset('betResultB');"
+                  ]
+                }
+              },
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Wallet nova com 100.00 BRL\", function () {",
+                    "  pm.response.to.have.status(201);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.balance).to.eql({amount:'100.00',currency:'BRL'});",
+                    "  pm.expect(body.playerId).to.eql(pm.environment.get('betPlayerId'));",
+                    "  pm.environment.set('betWalletId', body.id);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "21 - BET processada",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Idempotency-Key",
+                  "value": "{{betKeyA}}"
+                }
+              ],
+              "url": "{{baseUrl}}/wagering/transactions",
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{betExternalA}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"BET registra resultado terminal\", function () {",
+                    "  pm.response.to.have.status(201);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.status).to.eql('PROCESSED');",
+                    "  pm.expect(body.balance).to.eql({\"amount\":\"20.00\",\"currency\":\"BRL\"});",
+                    "  pm.expect(body.idempotentReplay).to.eql(false);",
+                    "  if (body.status === 'REJECTED') pm.expect(body.failureCode).to.eql('INSUFFICIENT_FUNDS');",
+                    "  pm.environment.set('betResultA', JSON.stringify(body));",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "22 - Replay de sucesso",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Idempotency-Key",
+                  "value": "{{betKeyA}}"
+                }
+              ],
+              "url": "{{baseUrl}}/wagering/transactions",
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{betExternalA}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Replay preserva resultado original\", function () {",
+                    "  pm.response.to.have.status(201);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.status).to.eql('PROCESSED');",
+                    "  pm.expect(body.balance).to.eql({\"amount\":\"20.00\",\"currency\":\"BRL\"});",
+                    "  const original = JSON.parse(pm.environment.get('betResultA'));",
+                    "  pm.expect(body).to.eql({...original, idempotentReplay:true});",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "23 - BET rejeitada por saldo",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Idempotency-Key",
+                  "value": "{{betKeyB}}"
+                }
+              ],
+              "url": "{{baseUrl}}/wagering/transactions",
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{betExternalB}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"BET registra resultado terminal\", function () {",
+                    "  pm.response.to.have.status(422);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.status).to.eql('REJECTED');",
+                    "  pm.expect(body.balance).to.eql({\"amount\":\"20.00\",\"currency\":\"BRL\"});",
+                    "  pm.expect(body.idempotentReplay).to.eql(false);",
+                    "  if (body.status === 'REJECTED') pm.expect(body.failureCode).to.eql('INSUFFICIENT_FUNDS');",
+                    "  pm.environment.set('betResultB', JSON.stringify(body));",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "24 - Replay de rejeição",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Idempotency-Key",
+                  "value": "{{betKeyB}}"
+                }
+              ],
+              "url": "{{baseUrl}}/wagering/transactions",
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{betExternalB}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Replay preserva resultado original\", function () {",
+                    "  pm.response.to.have.status(422);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.status).to.eql('REJECTED');",
+                    "  pm.expect(body.balance).to.eql({\"amount\":\"20.00\",\"currency\":\"BRL\"});",
+                    "  const original = JSON.parse(pm.environment.get('betResultB'));",
+                    "  pm.expect(body).to.eql({...original, idempotentReplay:true});",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "25 - Mesma chave com payload divergente",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Idempotency-Key",
+                  "value": "{{betKeyA}}"
+                }
+              ],
+              "url": "{{baseUrl}}/wagering/transactions",
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{betExternalA}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"79.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Conflito não é replay\", function () {",
+                    "  pm.response.to.have.status(409);",
+                    "  pm.expect(pm.response.json()).to.eql({code:'IDEMPOTENCY_CONFLICT'});",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "26 - Consultar sucesso por ID interno",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": "{{baseUrl}}/wagering/transactions/{{betTransactionA}}"
+            },
+            "event": [
+              {
+                "listen": "prerequest",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.variables.set('betTransactionA', JSON.parse(pm.environment.get('betResultA')).transactionId);"
+                  ]
+                }
+              },
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Consulta preserva sucesso e saldo original\", function () {",
+                    "  pm.response.to.have.status(200);",
+                    "  const body = pm.response.json();",
+                    "  const original = JSON.parse(pm.environment.get('betResultA'));",
+                    "  pm.expect(body.transactionId).to.eql(original.transactionId);",
+                    "  pm.expect(body.status).to.eql('PROCESSED');",
+                    "  pm.expect(body.balance).to.eql(original.balance);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "27 - Consultar rejeição por provider e ID externo",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": "{{baseUrl}}/providers/provider-postman/wagering/transactions/{{betExternalB}}"
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Consulta de rejeição retorna 200\", function () {",
+                    "  pm.response.to.have.status(200);",
+                    "  const body = pm.response.json();",
+                    "  const original = JSON.parse(pm.environment.get('betResultB'));",
+                    "  pm.expect(body.transactionId).to.eql(original.transactionId);",
+                    "  pm.expect(body.status).to.eql('REJECTED');",
+                    "  pm.expect(body.failureCode).to.eql('INSUFFICIENT_FUNDS');",
+                    "  pm.expect(body.balance).to.eql(original.balance);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "28 - Reconciliar após BET e replays",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "url": "{{baseUrl}}/wallets/{{betWalletId}}/reconciliation",
+              "body": {
+                "mode": "raw",
+                "raw": "{}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Saldo materializado igual ao ledger\", function () {",
+                    "  pm.response.to.have.status(200);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.storedBalance).to.eql({\"amount\":\"20.00\",\"currency\":\"BRL\"});",
+                    "  pm.expect(body.calculatedBalance).to.eql({\"amount\":\"20.00\",\"currency\":\"BRL\"});",
+                    "  pm.expect(body.difference).to.eql({amount:'0.00',currency:'BRL'});",
+                    "  pm.expect(body.consistent).to.eql(true);",
+                    "  pm.expect(body.checkedEntries).to.eql(2);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "29 - Conferir único débito",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": "{{baseUrl}}/wallets/{{betWalletId}}/ledger"
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Um crédito de abertura e um único débito\", function () {",
+                    "  pm.response.to.have.status(200);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.items).to.have.lengthOf(2);",
+                    "  const debits = body.items.filter(item => item.direction === 'DEBIT');",
+                    "  pm.expect(debits).to.have.lengthOf(1);",
+                    "  pm.expect(debits[0].money).to.eql({amount:'80.00',currency:'BRL'});",
+                    "  pm.expect(body.nextCursor).to.eql(null);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          }
+        ]
+      },
+      {
+        "name": "5 - Disputa manual entre três instâncias",
+        "description": "Exige três APIs e PostgreSQL compartilhado. Execute 30; segure sua wallet com SELECT FOR UPDATE em sessão SQL; envie 31 e 32 em abas separadas antes de liberar o lock; execute 33 a 36. Runner sequencial verifica resultados, mas não prova simultaneidade. Guia em docs/postman/README.md.",
+        "item": [
+          {
+            "name": "30 - Abrir wallet para disputa",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "url": "{{instance1Url}}/wallets",
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"playerId\": \"{{racePlayerId}}\",\n  \"initialBalance\": {\n    \"amount\": \"100.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "prerequest",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.environment.set('racePlayerId', pm.variables.replaceIn('{{$guid}}'));",
+                    "pm.environment.unset('raceWalletId');",
+                    "pm.environment.set('raceExternalA', pm.variables.replaceIn('{{$guid}}'));",
+                    "pm.environment.set('raceKeyA', pm.variables.replaceIn('{{$guid}}'));",
+                    "pm.environment.unset('raceResultA');",
+                    "pm.environment.set('raceExternalB', pm.variables.replaceIn('{{$guid}}'));",
+                    "pm.environment.set('raceKeyB', pm.variables.replaceIn('{{$guid}}'));",
+                    "pm.environment.unset('raceResultB');"
+                  ]
+                }
+              },
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Wallet nova com 100.00 BRL\", function () {",
+                    "  pm.response.to.have.status(201);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.balance).to.eql({amount:'100.00',currency:'BRL'});",
+                    "  pm.expect(body.playerId).to.eql(pm.environment.get('racePlayerId'));",
+                    "  pm.environment.set('raceWalletId', body.id);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "31 - Disputa A na instância 1",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Idempotency-Key",
+                  "value": "{{raceKeyA}}"
+                }
+              ],
+              "url": "{{instance1Url}}/wagering/transactions",
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{raceExternalA}}\",\n  \"playerId\": \"{{racePlayerId}}\",\n  \"walletId\": \"{{raceWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"BET registra resultado terminal\", function () {",
+                    "  pm.expect(pm.response.code).to.be.oneOf([201,422]);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.status).to.be.oneOf(['PROCESSED','REJECTED']);",
+                    "  pm.expect(pm.response.code).to.eql(body.status === 'PROCESSED' ? 201 : 422);",
+                    "  pm.expect(body.balance).to.eql({\"amount\":\"20.00\",\"currency\":\"BRL\"});",
+                    "  pm.expect(body.idempotentReplay).to.eql(false);",
+                    "  if (body.status === 'REJECTED') pm.expect(body.failureCode).to.eql('INSUFFICIENT_FUNDS');",
+                    "  pm.environment.set('raceResultA', JSON.stringify(body));",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "32 - Disputa B na instância 2",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Idempotency-Key",
+                  "value": "{{raceKeyB}}"
+                }
+              ],
+              "url": "{{instance2Url}}/wagering/transactions",
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{raceExternalB}}\",\n  \"playerId\": \"{{racePlayerId}}\",\n  \"walletId\": \"{{raceWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"BET registra resultado terminal\", function () {",
+                    "  pm.expect(pm.response.code).to.be.oneOf([201,422]);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.status).to.be.oneOf(['PROCESSED','REJECTED']);",
+                    "  pm.expect(pm.response.code).to.eql(body.status === 'PROCESSED' ? 201 : 422);",
+                    "  pm.expect(body.balance).to.eql({\"amount\":\"20.00\",\"currency\":\"BRL\"});",
+                    "  pm.expect(body.idempotentReplay).to.eql(false);",
+                    "  if (body.status === 'REJECTED') pm.expect(body.failureCode).to.eql('INSUFFICIENT_FUNDS');",
+                    "  pm.environment.set('raceResultB', JSON.stringify(body));",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "33 - Replay A na instância 3",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Idempotency-Key",
+                  "value": "{{raceKeyA}}"
+                }
+              ],
+              "url": "{{instance3Url}}/wagering/transactions",
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{raceExternalA}}\",\n  \"playerId\": \"{{racePlayerId}}\",\n  \"walletId\": \"{{raceWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Replay preserva resultado original\", function () {",
+                    "  pm.expect(pm.response.code).to.be.oneOf([201,422]);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.status).to.be.oneOf(['PROCESSED','REJECTED']);",
+                    "  pm.expect(pm.response.code).to.eql(body.status === 'PROCESSED' ? 201 : 422);",
+                    "  pm.expect(body.balance).to.eql({\"amount\":\"20.00\",\"currency\":\"BRL\"});",
+                    "  const original = JSON.parse(pm.environment.get('raceResultA'));",
+                    "  pm.expect(body).to.eql({...original, idempotentReplay:true});",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "34 - Replay B na instância 3",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Idempotency-Key",
+                  "value": "{{raceKeyB}}"
+                }
+              ],
+              "url": "{{instance3Url}}/wagering/transactions",
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{raceExternalB}}\",\n  \"playerId\": \"{{racePlayerId}}\",\n  \"walletId\": \"{{raceWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Replay preserva resultado original\", function () {",
+                    "  pm.expect(pm.response.code).to.be.oneOf([201,422]);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.status).to.be.oneOf(['PROCESSED','REJECTED']);",
+                    "  pm.expect(pm.response.code).to.eql(body.status === 'PROCESSED' ? 201 : 422);",
+                    "  pm.expect(body.balance).to.eql({\"amount\":\"20.00\",\"currency\":\"BRL\"});",
+                    "  const original = JSON.parse(pm.environment.get('raceResultB'));",
+                    "  pm.expect(body).to.eql({...original, idempotentReplay:true});",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "35 - Reconciliar disputa na instância 3",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "url": "{{instance3Url}}/wallets/{{raceWalletId}}/reconciliation",
+              "body": {
+                "mode": "raw",
+                "raw": "{}",
+                "options": {
+                  "raw": {
+                    "language": "json"
+                  }
+                }
+              }
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Saldo materializado igual ao ledger\", function () {",
+                    "  pm.response.to.have.status(200);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.storedBalance).to.eql({\"amount\":\"20.00\",\"currency\":\"BRL\"});",
+                    "  pm.expect(body.calculatedBalance).to.eql({\"amount\":\"20.00\",\"currency\":\"BRL\"});",
+                    "  pm.expect(body.difference).to.eql({amount:'0.00',currency:'BRL'});",
+                    "  pm.expect(body.consistent).to.eql(true);",
+                    "  pm.expect(body.checkedEntries).to.eql(2);",
+                    "});",
+                    "pm.test(\"Disputa produziu um sucesso e uma rejeição\", function () {",
+                    "  const a = JSON.parse(pm.environment.get('raceResultA'));",
+                    "  const b = JSON.parse(pm.environment.get('raceResultB'));",
+                    "  pm.expect([a.status,b.status].sort()).to.eql(['PROCESSED','REJECTED']);",
+                    "  pm.expect(a.transactionId).not.to.eql(b.transactionId);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          },
+          {
+            "name": "36 - Conferir débito da disputa",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": "{{instance3Url}}/wallets/{{raceWalletId}}/ledger"
+            },
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "type": "text/javascript",
+                  "exec": [
+                    "pm.test(\"Um crédito de abertura e um único débito\", function () {",
+                    "  pm.response.to.have.status(200);",
+                    "  const body = pm.response.json();",
+                    "  pm.expect(body.items).to.have.lengthOf(2);",
+                    "  const debits = body.items.filter(item => item.direction === 'DEBIT');",
+                    "  pm.expect(debits).to.have.lengthOf(1);",
+                    "  pm.expect(debits[0].money).to.eql({amount:'80.00',currency:'BRL'});",
+                    "  pm.expect(body.nextCursor).to.eql(null);",
+                    "});"
+                  ]
+                }
+              }
+            ],
+            "response": []
+          }
+        ]
+      }
   ]
 }

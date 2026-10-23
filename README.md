@@ -9,7 +9,7 @@ WIN, LOSS, reversões, publisher, SQS/inbox, autenticação e health estão pend
 ## Roteiro para leitura e avaliação
 
 1. Execute API e migrations abaixo.
-2. Importe [collection e environment Postman](docs/postman/README.md); percorra abertura, consulta, ledger e erros. Não exige conta ou publicação em workspace.
+2. Importe [collection e environment Postman](docs/postman/README.md); percorra abertura, ledger, BET, replay, consultas e reconciliação. O guia inclui disputa manual entre três instâncias. Não exige conta ou publicação em workspace.
 3. Leia [arquitetura e garantias atuais](ARCHITECTURE.md), [glossário](GLOSSARY.md) e decisões vinculadas.
 4. Consulte [evidências executadas](docs/verification.md) e [pendências por requisito](PROGRESS.md). Resultados históricos não substituem execução local.
 

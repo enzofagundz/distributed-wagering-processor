@@ -7,7 +7,7 @@ Material para executar e avaliar a API atual, sem instalar dependências ou publ
 1. Prepare banco, migrations e aplicação conforme o README; espere a API estar pronta.
 2. Em Import no Postman, importe [wallets.postman_collection.json](wallets.postman_collection.json) e [local.postman_environment.json](local.postman_environment.json).
 3. Selecione o environment Wallet HTTP — Local. `baseUrl` começa em `http://127.0.0.1:3000`, sem barra final; ajuste para a porta publicada localmente, se necessário.
-4. Use Send na sequência abaixo ou o Collection Runner com as três pastas em ordem e uma iteração. Os scripts ficam em Pre-request e Post-response; resultados aparecem em Test Results.
+4. Para smoke em uma API, execute as pastas 1 a 4 em ordem, com uma iteração no Collection Runner. Scripts ficam em Pre-request e Post-response; resultados aparecem em Test Results. A pasta 5 usa três APIs e tem roteiro manual próprio abaixo.
 
 Não há credenciais no environment nem autenticação nos endpoints atuais. Use ambiente local descartável: cada envio de abertura válida cria dados persistentes; a coleção não limpa o banco e não existe endpoint HTTP de exclusão.
 
@@ -25,9 +25,61 @@ Não há credenciais no environment nem autenticação nos endpoints atuais. Use
 | 08 — Consultar ledger vazio | 200; `{ "items": [], "nextCursor": null }`. |
 | 09–19 — Erros do contrato | 400, 404 ou 409 conforme o cenário, com código exato verificado pelos scripts. |
 
-Para um smoke completo, execute 01–19. Os requests 18–19 dependem de 01; 02–05 também. Os requests 07–08 dependem de 06. Os demais erros são independentes. Para repetir somente a duplicata, reenvie 03, não 01: 01 sempre troca `playerId`, limpa `walletId` antigo e cria outra carteira. UUID e ID de carteira só são capturados no environment selecionado; não use variáveis homônimas em dados de iteração.
+Requests 01 a 19 cobrem abertura, ledger e erros. Os requests 18 e 19 dependem de 01; 02 a 05 também. Os requests 07 e 08 dependem de 06. Para repetir somente a duplicata, reenvie 03: 01 sempre cria outro jogador e outra wallet.
 
-Os scripts verificam status, códigos de erro, identidade, versão, strings monetárias exatas e conteúdo do ledger. Eles não inspecionam tabelas internas nem comprovam concorrência, rollback ou publicação de eventos; esses comportamentos exigem os testes de integração do repositório. Exemplos salvos nas respostas são ilustrativos, derivados dos contratos e testes, não capturas de um smoke executado.
+A pasta 4 é independente das anteriores: execute 20 a 29 em ordem. Request 20 cria wallet de `100.00 BRL` e gera novas chaves e identidades externas; não o repita para testar replay. Requests 21 e 22 processam BET de `80.00` e repetem seu resultado; 23 e 24 rejeitam outra BET de `80.00` e repetem a rejeição. Request 25 verifica payload divergente com a mesma chave: 409 `IDEMPOTENCY_CONFLICT`. Requests 26 e 27 consultam sucesso por ID interno e rejeição por provider/ID externo; ambos retornam 200. Requests 28 e 29 conferem reconciliação e único débito.
+
+As variáveis `bet*` e `race*` são preenchidas pelos scripts no environment selecionado, separadas das wallets originais. Não crie variáveis homônimas nos dados de iteração. Respostas originais são guardadas para comparar identidade, status, saldo e código de falha no replay.
+
+Os scripts verificam contratos HTTP e efeitos visíveis no ledger. Não inspecionam tabelas internas nem comprovam rollback ou publicação de eventos. Exemplos salvos nos requests antigos são ilustrativos; requests novos não apresentam capturas inventadas.
+
+## Disputa visual entre três instâncias
+
+A pasta 5 usa `instance1Url`, `instance2Url` e `instance3Url`, com valores iniciais `http://127.0.0.1:3101`, `http://127.0.0.1:3102` e `http://127.0.0.1:3103`. `baseUrl` continua independente, para o smoke em uma API.
+
+Prepare PostgreSQL e migrations:
+
+```sh
+docker compose up -d --wait postgres-test
+export DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test
+bun run migration:up
+```
+
+Em três terminais, exporte a mesma `DATABASE_URL` e inicie uma API por terminal:
+
+```sh
+PORT=3101 bun run start
+PORT=3102 bun run start
+PORT=3103 bun run start
+```
+
+Cada comando fica em seu próprio terminal. Aguarde `Wallet HTTP listening`. Se usar Podman, substitua `docker compose` por `podman compose`.
+
+1. No Postman, execute 30. Ele abre wallet de `100.00 BRL` e preenche `raceWalletId`, jogador, chaves e IDs externos.
+2. No DBeaver ou pgAdmin, conecte ao banco `wagering_test` em `127.0.0.1:55433`, usuário/senha locais `wagering`. Abra uma sessão SQL e execute o bloco abaixo, substituindo o UUID pelo valor de `raceWalletId`. Mantenha a transação aberta.
+
+```sql
+BEGIN;
+SELECT id FROM wallets WHERE id = 'UUID_DE_RACE_WALLET_ID' FOR UPDATE;
+```
+
+3. Abra 31 e 32 em abas separadas. Clique Send nas duas antes de liberar o lock. São apostas diferentes de `80.00`, enviadas às instâncias 1 e 2; ambas devem ficar esperando.
+4. Na mesma sessão SQL, execute `ROLLBACK;`. A transação de controle não mudou saldo; apenas segurou a linha. Uma aposta deve retornar 201/PROCESSED e outra 422/REJECTED com `INSUFFICIENT_FUNDS`. Qual vence pode variar. Não abandone a sessão com transação aberta.
+5. Execute 33 e 34. A instância 3 deve reproduzir cada resultado, com `idempotentReplay: true`, mesma transação e saldo `20.00`.
+6. Execute 35 e 36. Reconciliação deve retornar saldo armazenado e calculado `20.00 BRL`, diferença zero, `consistent: true` e dois lançamentos. Ledger deve conter um CREDIT de abertura e um único DEBIT de `80.00`.
+
+No Runner, a pasta 5 também pode conferir esses resultados em sequência, mas isso não demonstra simultaneidade. Para repetir a disputa, comece em 30: uma wallet já debitada não representa novamente o cenário inicial.
+
+Para observar wallets independentes, mantenha uma wallet bloqueada em sessão SQL e envie sua BET. Antes de liberar o lock, crie outra wallet com jogador novo e envie uma BET válida para ela por outra instância. A segunda deve concluir enquanto a primeira espera. Não execute 30 nesse intervalo: ele substituiria as variáveis da disputa em andamento.
+
+A prova automatizada inclui 50 envios concorrentes, barreira de locks em três processos e progresso entre wallets:
+
+```sh
+TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test \
+  bun test tests/integration/wallet-concurrency.test.ts
+```
+
+A collection não dispara um lote de 50 envios concorrentes. O teste acima inicia seus próprios processos e confere o ledger. Hot wallet continua serializada; esse roteiro não mede throughput. Evidências executadas ficam em [verificação](../verification.md).
 
 ## Formatos e respostas
 
@@ -45,7 +97,7 @@ Abertura positiva persiste carteira, uma transação `OPENING` processada, um la
 - Ordem do ledger: crescente por `createdAt` e, em empate, por `id`. Cursor aponta para um lançamento existente da mesma carteira, codificado em base64url canônico; não é um offset.
 - O request 05 envia `limit=1`. O parâmetro `cursor={{ledgerCursor}}` está desmarcado na aba Params, portanto não é enviado. `ledgerCursor` vazio no environment não causa `cursor=` no smoke padrão.
 - Só habilite `cursor` depois de preencher `ledgerCursor` com um `nextCursor` não nulo retornado pela mesma carteira. Não envie `null`, vazio ou um cursor de outra carteira. Para voltar à primeira página, desmarque `cursor` novamente.
-- OPENING é a única escrita atual: cada carteira positiva tem apenas um lançamento. Por isso, mesmo com `limit=1`, `nextCursor: null` é normal, não falta de paginação. Abertura zero tem ledger vazio. O smoke não inventa uma segunda página nem semeia registros via SQL.
+- Nos requests 01 a 19, cada wallet positiva tem somente a abertura e `nextCursor: null` é normal. As pastas de BET acrescentam débito em wallets próprias; request 29 lê ambos os lançamentos com o limite padrão.
 
 ## Erros exercitados
 

@@ -150,3 +150,15 @@ Nest Boost `application_info` confirmou Nest 11.1.16 e MikroORM 6.6.8; não foi 
 Documentação mantém voz técnica para desenvolvedor/avaliador. humanizer-pt-br e no-ai-slop aplicadas: "prova com três processos pertence ao ticket 08" foi substituído pelo comando executável e seus limites; "três processos financeiros [...] pendentes" foi atualizado para separar BET validada de operações futuras. Sem alterar garantias para fluxos não exercitados.
 
 Code-review contra baseline em dois agentes independentes, incluindo teste e fixture novos: Standards sem violações documentadas ou smells materiais; Spec sem lacunas nos seis critérios do ticket. Revisão somente leitura, sem repetir checks.
+
+## Collection Postman atualizada — 2026-10-23
+
+Collection ampliada de 19 para 36 requests. Preservados abertura, ledger e erros; adicionados BET processada/rejeitada, replay dos dois resultados, conflito de payload, consulta por ID interno e provider/ID externo, reconciliação e roteiro manual com três instâncias. Environment inclui URLs independentes para cada instância; identidades e resultados dos novos fluxos usam variáveis próprias.
+
+Smoke executado com Newman 6.2.3, obtido por `npx --yes newman`, sem adicionar dependência ao projeto. Harness em memória iniciou três processos de `bun src/main.ts` com portas dinâmicas e PostgreSQL real de testes em container na porta 55433. Executou a collection inteira com `-e docs/postman/local.postman_environment.json` e `--env-var` para `baseUrl` e as três URLs de instância.
+
+Resultado: 36 requests, 36 scripts de resposta, sete scripts de preparação e 37 assertions, zero falhas, saída 0. BET retornou 201, rejeição 422, replays preservaram resultado, payload divergente retornou 409, consultas retornaram 200 e ledger/reconciliação confirmaram saldo `20.00 BRL` e único débito. Três APIs encerradas por SIGTERM com saída 0. Auditoria preservada; nenhum arquivo temporário ou dependência nova no repositório.
+
+Limite: Newman executou requests em sequência, inclusive a pasta de três instâncias. Essa execução valida os requests e scripts exportados, não simultaneidade. O guia ensina a segurar lock em sessão SQL para envio manual em duas abas; esse roteiro gráfico não foi executado nesta atualização. A collection não envia 50 requests em paralelo; a prova permanece no teste do ticket 08. Interface gráfica do Postman não inspecionada. Sem mudança TypeScript, migrations ou código financeiro.
+
+Guia mantém registro técnico para desenvolvedor, com passos de Send e resultados concretos. Removida afirmação desatualizada de que OPENING era a única escrita disponível. Referência consultada via Context7: [execução de collection com Newman](https://learning.postman.com/docs/reference/newman-cli/installing-running-newman).
