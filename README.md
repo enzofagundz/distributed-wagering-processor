@@ -118,7 +118,6 @@ Retorna 201 com `PROCESSED` e saldo atual, sem alterar saldo, versão ou ledger.
 
 Setup permanece o mesmo; aplique `bun run migration:up` antes de iniciar a API. Testes focais: `bun test tests/domain/wager-transaction.test.ts` e `bun test tests/integration/loss-http.test.ts`. Decisão: [LOSS sem movimento](ARCHITECTURE.md#loss-sem-movimento).
 
-
 ### Consultar transação
 
 ```sh
@@ -136,12 +135,16 @@ Teste focal: `bun test tests/integration/transaction-query-http.test.ts`. Usa `T
 
 ```sh
 test -f .env || cp .env.example .env
+bun run lint
+bun run format:check
 bun run typecheck
 bun run test:domain
 docker compose up -d --wait postgres-test
 bun run test:integration
 bun test
 ```
+
+`bun run lint:fix` aplica correções automáticas do ESLint; `bun run format` formata arquivos com Prettier.
 
 A integração exige PostgreSQL real e banco dedicado terminado em `_test`; os testes falham se esses requisitos não forem atendidos. Os testes aplicam migrations automaticamente. Fixtures de constraints usam rollback; testes HTTP positivos preservam auditoria append-only com identidades novas por execução.
 
