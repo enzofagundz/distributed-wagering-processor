@@ -102,3 +102,17 @@ test('BET keeps rejecting WIN-only reference input', () => {
   expect(() => WagerTransaction.create(props({ kind: 'BET', referenceExternalTransactionId: 'bet-external' })))
     .toThrow(new DomainError('INVALID_TRANSACTION_PAYLOAD'));
 });
+
+test('LOSS processes once and rejects every transition from its terminal state', () => {
+  const transaction = WagerTransaction.create(props({ kind: 'LOSS' }));
+  transaction.markProcessed(at);
+  expect(transaction.status).toBe('PROCESSED');
+  expect(transaction.processedAt).toEqual(at);
+  expect(transaction.failureCode).toBeUndefined();
+  for (const transition of [() => transaction.markProcessed(at), () => transaction.markPendingReference(),
+    () => transaction.reject('INSUFFICIENT_FUNDS', at), () => transaction.resolveReference(undefined, at)]) {
+    expect(transition).toThrow(new DomainError('INVALID_TRANSACTION_STATE'));
+    expect(transaction.status).toBe('PROCESSED');
+    expect(transaction.processedAt).toEqual(at);
+  }
+});

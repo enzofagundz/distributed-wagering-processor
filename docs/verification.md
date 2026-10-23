@@ -198,3 +198,23 @@ Documentação mantém registro técnico em PT-BR para desenvolvedor/avaliador. 
 Limites: pendência WIN não resolve nem expira automaticamente; tickets 13/14 continuam responsáveis pelo worker/backoff/TTL. Não houve SQS, publicação, crash forçado entre commit/ack, rebuild da imagem ou verificação gráfica/Postman. Duplicatas WIN foram exercitadas em duas aplicações no mesmo processo; prova multiprocesso do teste existente é de BET.
 
 Code-review contra baseline em dois agentes independentes: Standards sem violações documentadas ou smells acionáveis; Spec sem requisitos do ticket ausentes, escopo extra ou implementação incorreta identificada. Revisão incluiu arquivos novos e rename do DTO, sem repetir checks. Harnesses temporários removidos. Cobertura, índice de decisões, estado do projeto e ticket local atualizados; caminhos ignorados não foram incluídos à força no commit.
+
+## LOSS por HTTP — 2026-10-23
+
+Ticket 10, baseline `8fd530269337e8a20e6538c4e9b45a7de9782a45`, branch main conforme pedido de commit na branch atual. Mesmo ambiente local e versões do ticket 09; PostgreSQL real em `TEST_DATABASE_URL`. Nenhuma dependência adicionada.
+
+Seams do ticket: domínio e HTTP/PostgreSQL real. Teste unitário inicial falhou com `INVALID_TRANSACTION_KIND`; HTTP inicial retornou 400 em vez de 201. Após ampliar domínio, typecheck apontou consumidores ainda limitados a BET/WIN, atualizados no incremento HTTP. Typecheck seguinte encontrou tipo estreito da resposta no teste; corrigido sem alterar contrato. Uma expectativa nova usava 422 para player/moeda incompatíveis; filtro existente define 400, preservado.
+
+Verificações executadas:
+
+- `bun test tests/domain/wager-transaction.test.ts`: 27 testes, 116 assertions, zero falhas; LOSS processa uma vez e recusa todas as transições públicas após estado terminal.
+- `bun test tests/integration/loss-http.test.ts`: 4 testes, 75 assertions, zero falhas. Resultado/evento, ausência de ledger/BalanceChanged, saldo/versão/updatedAt estáveis, replay após mudança de saldo e reinício de aplicação/pool, dez duplicatas concorrentes no primeiro aceite e no replay, conflito de payload, rollback induzido na outbox, wallet zerada e checks SQL de hash/estado/referência.
+- `bun run typecheck && bun test`: aprovados; suíte completa executada uma vez ao final, 144 testes em 14 arquivos, 1218 assertions, zero falhas.
+
+Smoke independente: `bun .scratch/loss-smoke.ts`, harness temporário, iniciou `bun src/main.ts` com porta dinâmica em banco exclusivo. Aplicou todas as migrations e executou down/up da migration LOSS sem histórico. Abriu wallet com `100.00 BRL`; LOSS de `25.00` retornou PROCESSED com saldo `100.00`, versão 1, nenhum ledger próprio e somente evento Processed. Após BET de `25.00` e reinício do processo, replay de LOSS manteve saldo original `100.00`; payload divergente retornou 409. Reconciliação final: armazenado e reconstruído `75.00 BRL`, diferença `0.00`, dois lançamentos. Down com histórico LOSS foi recusado e registro permaneceu PROCESSED. Ambos os processos encerraram por SIGTERM com saída 0; somente banco temporário foi removido.
+
+Nest Boost confirmou POST `/wagering/transactions`, sem `evaluate`. Context7 e [documentação oficial MikroORM 6.6](https://mikro-orm.io/docs/6.6/transactions) consultados para transação, flush e rollback. Busca semântica falhou por indisponibilidade do provedor; busca textual substituiu. LSP sem servidor disponível.
+
+Documentação em registro técnico PT-BR para desenvolvedor/avaliador, revisada com humanizer-pt-br e no-ai-slop: "LOSS pendente" saiu do estado atual; comportamento concreto e limites entraram sem promessa de publicação. Decisão fica na arquitetura, comandos no README e resultados aqui. Não houve SQS, publisher, crash forçado entre commit e ack, rebuild Docker ou execução gráfica/Postman. Concorrência LOSS foi exercitada em uma aplicação; prova multiprocesso existente continua sendo de BET.
+
+Code-review do commit `077417b` contra baseline acima, em dois agentes independentes: Standards sem violações documentadas ou smells acionáveis; Spec sem requisito ausente, escopo extra ou implementação incorreta identificados. Revisão estática, sem repetir checks. Harness temporário removido; arquivos ignorados de continuidade e ticket atualizados sem inclusão forçada no commit.

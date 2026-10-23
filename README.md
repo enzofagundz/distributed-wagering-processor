@@ -2,9 +2,9 @@
 
 Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECHNICAL_CHALLENGE.md), com Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL.
 
-A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET e WIN por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva e operações confirmadas persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL.
+A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET, WIN e LOSS por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva, BET e WIN persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL. LOSS confirma resultado e evento sem movimentar saldo.
 
-LOSS, reversões, publisher, SQS/inbox, autenticação e health estão pendentes. WIN com referência ainda indisponível fica persistida, sem crédito; o worker de resolução também está pendente. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+Reversões, publisher, SQS/inbox, autenticação e health estão pendentes. WIN com referência ainda indisponível fica persistida, sem crédito; o worker de resolução também está pendente. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. Os eventos da outbox ainda não são publicados. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
@@ -13,7 +13,7 @@ LOSS, reversões, publisher, SQS/inbox, autenticação e health estão pendentes
 3. Leia [arquitetura e garantias atuais](ARCHITECTURE.md), [glossário](GLOSSARY.md) e decisões vinculadas.
 4. Consulte [evidências executadas](docs/verification.md) e [pendências por requisito](PROGRESS.md). Resultados históricos não substituem execução local.
 
-Wallets ficam em `src/wallets/`; submissão de BET e WIN, em `src/wagering/`. Cada funcionalidade tem controller, DTO, serviço e módulo. `src/app.module.ts` compõe módulos e registra filtro global compartilhado; `src/create-application.ts` recebe o ORM inicializado pelo chamador. Domínio e mapeamentos permanecem separados. Justificativa e injeção de dependências: [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) e [composição na arquitetura](ARCHITECTURE.md#composição-e-injeção).
+Wallets ficam em `src/wallets/`; submissão de BET, WIN e LOSS, em `src/wagering/`. Cada funcionalidade tem controller, DTO, serviço e módulo. `src/app.module.ts` compõe módulos e registra filtro global compartilhado; `src/create-application.ts` recebe o ORM inicializado pelo chamador. Domínio e mapeamentos permanecem separados. Justificativa e injeção de dependências: [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) e [composição na arquitetura](ARCHITECTURE.md#composição-e-injeção).
 
 ## Executar
 
@@ -80,7 +80,7 @@ curl -i http://127.0.0.1:3000/wagering/transactions \
   -d '{"providerId":"provider-a","externalTransactionId":"bet-001","playerId":"PLAYER_RETORNADO","walletId":"ID_RETORNADO","roundId":"round-001","gameId":"fortune-chimp","kind":"BET","money":{"amount":"80.00","currency":"BRL"}}'
 ```
 
-Envie outra aposta de `80.00` com nova chave e novo `externalTransactionId`: retorna 422 com `REJECTED`, `failureCode: "INSUFFICIENT_FUNDS"` e saldo `20.00`. Rejeição fica auditada, sem ledger nem incremento de versão. Header obrigatório; BET e WIN são os kinds externos aceitos. Identificadores textuais têm até 200 caracteres; valor deve ser positivo e caber em `numeric(30,2)`.
+Envie outra aposta de `80.00` com nova chave e novo `externalTransactionId`: retorna 422 com `REJECTED`, `failureCode: "INSUFFICIENT_FUNDS"` e saldo `20.00`. Rejeição fica auditada, sem ledger nem incremento de versão. Header obrigatório; BET, WIN e LOSS são os kinds externos aceitos. Identificadores textuais têm até 200 caracteres; valor deve ser positivo e caber em `numeric(30,2)`.
 
 Reenvie exatamente a primeira BET com a mesma chave: retorna 201, identidade e saldo originais, com `idempotentReplay: true`, mesmo após outras apostas ou reinício. Payload diferente com a mesma chave retorna 409 `IDEMPOTENCY_CONFLICT`. Outra chave com o mesmo par provider/external ID retorna 409 `TRANSACTION_ALREADY_EXISTS`. Nenhum desses reenvios gera novo débito ou evento. Chave tem escopo global; identidade externa tem escopo por provider. Hash, precedência dos conflitos e política HTTP: [idempotência de BET](ARCHITECTURE.md#idempotência-de-bet).
 
@@ -102,6 +102,22 @@ Omitir `referenceExternalTransactionId` permite prêmio independente. Quando inf
 Referência informada ainda inexistente ou não terminal retorna 202 `PENDING_REFERENCE`, sem crédito. Reenvio mantém a pendência; não tenta resolvê-la. Não há worker de resolução neste estágio. Decisão e limites: [WIN e referências](ARCHITECTURE.md#crédito-de-win-e-referências).
 
 Teste focal com PostgreSQL de testes iniciado: `bun test tests/integration/win-http.test.ts`.
+
+### Registrar LOSS
+
+Use nova identidade externa e nova chave, mantendo player e wallet da abertura:
+
+```sh
+curl -i http://127.0.0.1:3000/wagering/transactions \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: provider-a:loss-001' \
+  -d '{"providerId":"provider-a","externalTransactionId":"loss-001","playerId":"PLAYER_RETORNADO","walletId":"ID_RETORNADO","roundId":"round-001","gameId":"fortune-chimp","kind":"LOSS","money":{"amount":"80.00","currency":"BRL"}}'
+```
+
+Retorna 201 com `PROCESSED` e saldo atual, sem alterar saldo, versão ou ledger. Persiste apenas o resultado e `WagerTransactionProcessed` na outbox. Valor positivo descreve a operação; não é novo débito e não exige saldo disponível. LOSS não aceita referência. Reenvio com mesma chave/payload devolve saldo observado original, mesmo após outras operações ou reinício; payload divergente retorna 409.
+
+Setup permanece o mesmo; aplique `bun run migration:up` antes de iniciar a API. Testes focais: `bun test tests/domain/wager-transaction.test.ts` e `bun test tests/integration/loss-http.test.ts`. Decisão: [LOSS sem movimento](ARCHITECTURE.md#loss-sem-movimento).
+
 
 ### Consultar transação
 
@@ -161,6 +177,8 @@ DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun ru
 Migration `20261022000400` preserva OPENING e adiciona BET; seu `down` recusa execução se houver BET persistida, sem apagar histórico. Migration `20261022000300` troca apenas índice. Reverter também `20261022000200` remove ledger, transações e outbox: exige backup antes e serviço parado. Reaplicar schema não recupera auditoria removida.
 
 Migration `20261023000100` adiciona hash obrigatório para BET, preenche histórico existente e preserva OPENING sem hash. Seu `down` remove apenas hash e check; histórico financeiro permanece. Pare todas as APIs antes de migrar ou reverter; código antigo não grava o hash exigido pelo novo schema.
+
+Migration `20261023000300` adiciona LOSS com hash e resultado terminal obrigatórios. Seu `down` restaura contrato BET/WIN somente sem histórico LOSS; com histórico, recusa reversão sem apagar auditoria. Pare APIs antes de migrar ou reverter.
 
 Migration `20261023000200` adiciona WIN, pendência e referências. Antes de haver WIN, permite down/up; com histórico WIN ou referência, o `down` recusa a reversão e preserva auditoria. Pare as APIs antes da migration. Mapeamentos monetários usam comparação exata de strings sobre as mesmas colunas `numeric(30,2)`, conforme [decisão WIN](ARCHITECTURE.md#crédito-de-win-e-referências).
 

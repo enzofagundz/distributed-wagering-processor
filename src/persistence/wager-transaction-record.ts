@@ -7,7 +7,7 @@ export interface WagerTransactionRecord {
   playerId: string;
   currency: string;
   amount: string;
-  kind: 'OPENING' | 'BET' | 'WIN';
+  kind: 'OPENING' | 'BET' | 'WIN' | 'LOSS';
   status: 'PROCESSED' | 'REJECTED' | 'PENDING_REFERENCE';
   providerId?: string | null;
   externalTransactionId?: string | null;

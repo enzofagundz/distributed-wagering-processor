@@ -20,7 +20,7 @@ export interface SubmitTransactionInput {
   playerId: string;
   roundId: string;
   gameId: string;
-  kind: 'BET' | 'WIN';
+  kind: 'BET' | 'WIN' | 'LOSS';
   money: MoneyProps;
   referenceExternalTransactionId?: string;
 }
@@ -107,13 +107,15 @@ export class WageringService {
           if (transaction.kind === 'BET' && wallet.balance.isLessThan(money)) {
             transaction.reject('INSUFFICIENT_FUNDS', at);
           } else {
-            resultingWallet = transaction.kind === 'BET' ? wallet.debit(money, at) : wallet.credit(money, at);
+            if (transaction.kind !== 'LOSS') {
+              resultingWallet = transaction.kind === 'BET' ? wallet.debit(money, at) : wallet.credit(money, at);
+            }
             transaction.markProcessed(at);
           }
         }
         const status = transaction.status;
         if (status === 'PENDING') throw new DomainError('INVALID_TRANSACTION_STATE');
-        const entry = status === 'PROCESSED' ? WalletLedgerEntry.create({
+        const entry = status === 'PROCESSED' && transaction.kind !== 'LOSS' ? WalletLedgerEntry.create({
           id: crypto.randomUUID(), walletId: wallet.id, transactionId: transaction.id,
           direction: transaction.kind === 'BET' ? 'DEBIT' : 'CREDIT', money, balanceBefore: wallet.balance,
           balanceAfter: resultingWallet.balance, createdAt: at,
@@ -142,11 +144,13 @@ export class WageringService {
           await em.persist(ledgerEntry).flush();
         }
         const events = entry ? [
-          WagerTransactionProcessed.from(resultingWallet, entry, transaction.kind),
+          WagerTransactionProcessed.from(resultingWallet, entry, transaction.kind === 'BET' ? 'BET' : 'WIN'),
           WalletBalanceChanged.from(resultingWallet, entry),
-        ] : status === 'PENDING_REFERENCE'
-          ? [WagerTransactionPendingReference.from(wallet, transaction)]
-          : [WagerTransactionRejected.from(wallet, transaction)];
+        ] : status === 'PROCESSED'
+          ? [WagerTransactionProcessed.fromLoss(wallet, transaction)]
+          : status === 'PENDING_REFERENCE'
+            ? [WagerTransactionPendingReference.from(wallet, transaction)]
+            : [WagerTransactionRejected.from(wallet, transaction)];
         await em.persist(events.map(event => em.create(outboxMessageSchema, {
           id: event.eventId, aggregateId: event.aggregateId, eventType: event.eventType,
           payload: event.toJSON(), occurredAt: event.occurredAt,
@@ -176,7 +180,7 @@ export class WageringService {
 
   private replay(record: WagerTransactionRecord, payloadHash: string): SubmitTransactionResult {
     if (record.payloadHash !== payloadHash) throw new DomainError('IDEMPOTENCY_CONFLICT');
-    if ((record.kind !== 'BET' && record.kind !== 'WIN') || record.observedBalance == null) {
+    if ((record.kind !== 'BET' && record.kind !== 'WIN' && record.kind !== 'LOSS') || record.observedBalance == null) {
       throw new Error('Invalid persisted wagering result');
     }
     return {

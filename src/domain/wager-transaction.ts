@@ -12,7 +12,7 @@ export interface CreateWagerTransactionProps {
   playerId: string;
   roundId: string;
   gameId: string;
-  kind: 'BET' | 'WIN';
+  kind: 'BET' | 'WIN' | 'LOSS';
   money: Money;
   referenceExternalTransactionId?: string;
 }
@@ -53,7 +53,7 @@ export class WagerTransaction {
 
   static create(props: CreateWagerTransactionProps): WagerTransaction {
     if (!props || typeof props !== 'object' || Array.isArray(props)) throw new DomainError('INVALID_TRANSACTION_PAYLOAD');
-    if (props.kind !== 'BET' && props.kind !== 'WIN') throw new DomainError('INVALID_TRANSACTION_KIND');
+    if (props.kind !== 'BET' && props.kind !== 'WIN' && props.kind !== 'LOSS') throw new DomainError('INVALID_TRANSACTION_KIND');
     if (typeof props.id !== 'string' || !uuidPattern.test(props.id)
       || typeof props.walletId !== 'string' || !uuidPattern.test(props.walletId)
       || typeof props.playerId !== 'string' || !uuidPattern.test(props.playerId)) {
@@ -91,7 +91,7 @@ export class WagerTransaction {
   get playerId(): string { return this.#state.playerId; }
   get roundId(): string { return this.#state.roundId; }
   get gameId(): string { return this.#state.gameId; }
-  get kind(): 'BET' | 'WIN' { return this.#state.kind; }
+  get kind(): 'BET' | 'WIN' | 'LOSS' { return this.#state.kind; }
   get money(): Money { return this.#state.money; }
   get status(): WagerTransactionState['status'] { return this.#state.status; }
   get referenceExternalTransactionId(): string | undefined { return this.#state.referenceExternalTransactionId; }

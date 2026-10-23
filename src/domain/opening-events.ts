@@ -22,7 +22,7 @@ export abstract class IntegrationEvent<T> {
 }
 
 export class WagerTransactionProcessed extends IntegrationEvent<{
-  transactionId: string; walletId: string; kind: 'OPENING' | 'BET' | 'WIN'; status: 'PROCESSED';
+  transactionId: string; walletId: string; kind: 'OPENING' | 'BET' | 'WIN' | 'LOSS'; status: 'PROCESSED';
   money: MoneyProps; balance: MoneyProps;
 }> {
   readonly eventType = 'WagerTransactionProcessed';
@@ -30,6 +30,16 @@ export class WagerTransactionProcessed extends IntegrationEvent<{
     return new WagerTransactionProcessed(wallet.id, entry.transactionId, entry.createdAt, {
       transactionId: entry.transactionId, walletId: wallet.id, kind, status: 'PROCESSED',
       money: entry.money.toJSON(), balance: wallet.balance.toJSON(),
+    });
+  }
+  static fromLoss(wallet: Wallet, transaction: WagerTransaction) {
+    const at = transaction.processedAt;
+    if (transaction.kind !== 'LOSS' || transaction.status !== 'PROCESSED' || !at) {
+      throw new DomainError('INVALID_TRANSACTION_STATE');
+    }
+    return new WagerTransactionProcessed(wallet.id, transaction.id, at, {
+      transactionId: transaction.id, walletId: wallet.id, kind: 'LOSS', status: 'PROCESSED',
+      money: transaction.money.toJSON(), balance: wallet.balance.toJSON(),
     });
   }
 }
@@ -43,7 +53,7 @@ export class WagerTransactionRejected extends IntegrationEvent<{
   static from(wallet: Wallet, transaction: WagerTransaction) {
     const occurredAt = transaction.processedAt;
     const failureCode = transaction.failureCode;
-    if (transaction.status !== 'REJECTED' || !occurredAt || !failureCode) {
+    if (transaction.kind === 'LOSS' || transaction.status !== 'REJECTED' || !occurredAt || !failureCode) {
       throw new DomainError('INVALID_TRANSACTION_STATE');
     }
     return new WagerTransactionRejected(wallet.id, transaction.id, occurredAt, {
