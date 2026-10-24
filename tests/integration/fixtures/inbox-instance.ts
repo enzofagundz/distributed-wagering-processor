@@ -1,3 +1,4 @@
+import { WageringInbox } from "../../../src/wagering/wagering-inbox";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { databaseConfig } from "../../../src/persistence/config";
@@ -39,7 +40,7 @@ sqs.middlewareStack.add(
   { step: "initialize", name: "pauseBeforeAck" },
 );
 const consumer = new WagerConsumer(
-  new WageringService(orm),
+  new WageringService(orm, new WageringInbox()),
   sqs,
   process.env.WAGER_QUEUE_URL!,
   process.env.WAGER_DLQ_URL!,

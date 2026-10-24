@@ -1,3 +1,6 @@
+import { PendingReferenceBatchRunner } from "../../src/wagering/pending-reference-batch-runner";
+import { WageringInbox } from "../../src/wagering/wagering-inbox";
+import { WageringQueries } from "../../src/wagering/wagering-queries";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { databaseConfig } from "../../src/persistence/config";
@@ -15,6 +18,7 @@ if (!url || !new URL(url).pathname.endsWith("_test"))
   );
 let orm: MikroORM;
 let wagering: WageringService;
+let queries: WageringQueries;
 let wallets: WalletService;
 beforeAll(async () => {
   orm = await MikroORM.init({
@@ -24,7 +28,8 @@ beforeAll(async () => {
     },
   });
   await orm.migrator.up();
-  wagering = new WageringService(orm);
+  wagering = new WageringService(orm, new WageringInbox());
+  queries = new WageringQueries(orm);
   wallets = new WalletService(orm);
 });
 afterAll(async () => {
@@ -100,7 +105,7 @@ test("resolving a pending REFUND after its BET arrives applies one credit", asyn
     ),
   ).toBe("PROCESSED");
 
-  expect(await wagering.get({ id: pending.transactionId })).toMatchObject({
+  expect(await queries.get({ id: pending.transactionId })).toMatchObject({
     status: "PROCESSED",
     referenceTransactionId: betResult.transactionId,
     processedAt: expect.any(Date),
@@ -159,11 +164,17 @@ test("worker resolves a pending REFUND persisted before a fresh service instance
     },
   });
   try {
-    const restarted = new WageringService(restartedOrm);
+    const restarted = new WageringService(restartedOrm, new WageringInbox());
+    const restartedQueries = new WageringQueries(restartedOrm);
     expect((await restarted.submit(bet)).status).toBe("PROCESSED");
-    const worker = new PendingReferenceWorker(restarted, { pageSize: 2 });
+    const worker = new PendingReferenceWorker(
+      new PendingReferenceBatchRunner(restartedOrm, restarted),
+      { pageSize: 2 },
+    );
     expect((await worker.runOnce()).processed).toBeGreaterThanOrEqual(1);
-    expect(await restarted.get({ id: pending.transactionId })).toMatchObject({
+    expect(
+      await restartedQueries.get({ id: pending.transactionId }),
+    ).toMatchObject({
       status: "PROCESSED",
       balance: { amount: "100.00", currency: "BRL" },
     });
@@ -185,7 +196,11 @@ async function secondService(name: string) {
       connection: { application_name: `pending-${process.pid}-${name}` },
     },
   });
-  return { orm: otherOrm, service: new WageringService(otherOrm) };
+  return {
+    orm: otherOrm,
+    service: new WageringService(otherOrm, new WageringInbox()),
+    queries: new WageringQueries(otherOrm),
+  };
 }
 
 test("concurrent resolvers apply a pending REFUND once and the other skips", async () => {
@@ -228,7 +243,7 @@ test("concurrent resolvers apply a pending REFUND once and the other skips", asy
       "PROCESSED",
       "SKIPPED",
     ]);
-    const resolved = await wagering.get({ id: pending.transactionId });
+    const resolved = await queries.get({ id: pending.transactionId });
     expect(resolved.processedAt!.getTime()).toBeGreaterThanOrEqual(
       releasedAt.getTime(),
     );
@@ -290,7 +305,7 @@ test("two pending REFUNDs later resolve to one credit and one audited rejection"
     await other.orm.close();
   }
   const resolved = await Promise.all(
-    pending.map((result) => wagering.get({ id: result.transactionId })),
+    pending.map((result) => queries.get({ id: result.transactionId })),
   );
   expect(resolved.map((record) => record.status).sort()).toEqual([
     "PROCESSED",
@@ -343,7 +358,7 @@ test("a reference that terminalizes without processing rejects the pending ROLLB
   expect(await wagering.resolvePendingReference(pending.transactionId)).toBe(
     "REJECTED",
   );
-  expect(await wagering.get({ id: pending.transactionId })).toMatchObject({
+  expect(await queries.get({ id: pending.transactionId })).toMatchObject({
     status: "REJECTED",
     failureCode: "REFERENCE_NOT_PROCESSED",
     balance: { amount: "100.00", currency: "BRL" },
@@ -379,17 +394,20 @@ test("scheduled worker resolves a pending reference without an explicit run", as
   const refund = input(identity, "REFUND", bet.externalTransactionId);
   const pending = await wagering.submit(refund);
   expect((await wagering.submit(bet)).status).toBe("PROCESSED");
-  const worker = new PendingReferenceWorker(wagering, {
-    intervalMs: 20,
-    pageSize: 1000,
-  });
+  const worker = new PendingReferenceWorker(
+    new PendingReferenceBatchRunner(orm, wagering),
+    {
+      intervalMs: 20,
+      pageSize: 1000,
+    },
+  );
   worker.start();
   try {
     const deadline = Date.now() + 2000;
     let status = "PENDING_REFERENCE";
     while (Date.now() < deadline && status === "PENDING_REFERENCE") {
       await Bun.sleep(10);
-      status = (await wagering.get({ id: pending.transactionId })).status;
+      status = (await queries.get({ id: pending.transactionId })).status;
     }
     expect(status).toBe("PROCESSED");
   } finally {
@@ -423,7 +441,7 @@ test("a pending ROLLBACK of a later WIN applies the inverse debit once", async (
   expect(await wagering.resolvePendingReference(pending.transactionId)).toBe(
     "PROCESSED",
   );
-  expect(await wagering.get({ id: pending.transactionId })).toMatchObject({
+  expect(await queries.get({ id: pending.transactionId })).toMatchObject({
     status: "PROCESSED",
     referenceTransactionId: won.transactionId,
     balance: { amount: "100.00", currency: "BRL" },
@@ -475,7 +493,7 @@ test("an unresolved sweep keeps the balance observed at acceptance", async () =>
   expect(await wagering.resolvePendingReference(pending.transactionId)).toBe(
     "PENDING_REFERENCE",
   );
-  expect(await wagering.get({ id: pending.transactionId })).toMatchObject({
+  expect(await queries.get({ id: pending.transactionId })).toMatchObject({
     status: "PENDING_REFERENCE",
     processedAt: null,
     balance: { amount: "100.00", currency: "BRL" },
@@ -491,7 +509,7 @@ test("an unresolved sweep keeps the balance observed at acceptance", async () =>
       new Date(Date.now() + 1000),
     ),
   ).toBe("PROCESSED");
-  expect(await wagering.get({ id: pending.transactionId })).toMatchObject({
+  expect(await queries.get({ id: pending.transactionId })).toMatchObject({
     status: "PROCESSED",
     balance: { amount: "125.00", currency: "BRL" },
   });
@@ -518,7 +536,9 @@ test("missing reference retries with persisted backoff and rejects after restart
   ).toBe("SKIPPED");
   const restarted = await secondService("expiry");
   try {
-    const worker = new PendingReferenceWorker(restarted.service);
+    const worker = new PendingReferenceWorker(
+      new PendingReferenceBatchRunner(restarted.orm, restarted.service),
+    );
     let elapsed = 0;
     for (const delay of [
       1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000,
@@ -532,11 +552,11 @@ test("missing reference retries with persisted backoff and rejects after restart
       ).toBe("SKIPPED");
       await worker.runOnce(new Date(at.getTime() + elapsed));
       expect(
-        (await restarted.service.get({ id: pending.transactionId })).status,
+        (await restarted.queries.get({ id: pending.transactionId })).status,
       ).toBe(elapsed === 243000 ? "REJECTED" : "PENDING_REFERENCE");
     }
     expect(
-      await restarted.service.get({ id: pending.transactionId }),
+      await restarted.queries.get({ id: pending.transactionId }),
     ).toMatchObject({
       status: "REJECTED",
       failureCode: "REFERENCE_NOT_FOUND",
@@ -601,7 +621,7 @@ test("expiration outbox failure rolls back the last attempt and concurrent retri
     await expect(
       wagering.resolvePendingReference(pending.transactionId, at),
     ).rejects.toThrow("induced expiration outbox failure");
-    expect(await wagering.get({ id: pending.transactionId })).toMatchObject({
+    expect(await queries.get({ id: pending.transactionId })).toMatchObject({
       status: "PENDING_REFERENCE",
       processedAt: null,
     });
@@ -690,14 +710,14 @@ test("last attempt resolves an arrived BET and dependent ROLLBACK rejects an exp
   expect(
     await wagering.resolvePendingReference(orphanResult.transactionId, at),
   ).toBe("REJECTED");
-  expect(await wagering.get({ id: orphanResult.transactionId })).toMatchObject({
+  expect(await queries.get({ id: orphanResult.transactionId })).toMatchObject({
     status: "REJECTED",
     failureCode: "REFERENCE_NOT_FOUND",
   });
   expect(
     await wagering.resolvePendingReference(dependent.transactionId, at),
   ).toBe("REJECTED");
-  expect(await wagering.get({ id: dependent.transactionId })).toMatchObject({
+  expect(await queries.get({ id: dependent.transactionId })).toMatchObject({
     status: "REJECTED",
     failureCode: "REFERENCE_NOT_PROCESSED",
     referenceTransactionId: orphanResult.transactionId,

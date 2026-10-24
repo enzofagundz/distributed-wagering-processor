@@ -1,3 +1,4 @@
+import { WageringInbox } from "../../src/wagering/wagering-inbox";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import type { INestApplication } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
@@ -76,7 +77,12 @@ beforeAll(async () => {
   eventsUrl = (
     await sqs.send(new CreateQueueCommand({ QueueName: `${schema}_events` }))
   ).QueueUrl!;
-  consumer = new WagerConsumer(new WageringService(orm), sqs, queueUrl, dlqUrl);
+  consumer = new WagerConsumer(
+    new WageringService(orm, new WageringInbox()),
+    sqs,
+    queueUrl,
+    dlqUrl,
+  );
   app = await createApplication(orm);
   await app.listen(0, "127.0.0.1");
   base = await app.getUrl();
@@ -226,7 +232,13 @@ test("concurrent redelivery and distinct transport IDs preserve one debit and th
   for (let i = 0; i < 6; i++) await send(message);
   const workers = Array.from(
     { length: 3 },
-    () => new WagerConsumer(new WageringService(orm), sqs, queueUrl, dlqUrl),
+    () =>
+      new WagerConsumer(
+        new WageringService(orm, new WageringInbox()),
+        sqs,
+        queueUrl,
+        dlqUrl,
+      ),
   );
   for (let i = 0; i < 2; i++)
     expect(

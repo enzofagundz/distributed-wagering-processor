@@ -1,12 +1,7 @@
-import { InboxMessage } from "../domain/inbox-message";
+import { WageringInbox, type InboxContext } from "./wagering-inbox";
 import { createHash } from "node:crypto";
-import { Logger } from "@nestjs/common";
 import type { WagerTransactionRecord } from "../persistence/wager-transaction-record";
-import {
-  LockMode,
-  UniqueConstraintViolationException,
-  type FilterQuery,
-} from "@mikro-orm/core";
+import { LockMode, UniqueConstraintViolationException } from "@mikro-orm/core";
 import { MikroORM, type EntityManager } from "@mikro-orm/postgresql";
 import { DomainError, Money, type MoneyProps } from "../domain/money";
 import {
@@ -41,12 +36,6 @@ export interface SubmitTransactionInput {
   referenceExternalTransactionId?: string;
 }
 
-export interface InboxContext {
-  consumerName: string;
-  messageId: string;
-  payloadHash: string;
-}
-
 export interface SubmitTransactionResult {
   transactionId: string;
   status: "PROCESSED" | "REJECTED" | "PENDING_REFERENCE";
@@ -60,15 +49,6 @@ export type PendingReferenceResolution =
   | "REJECTED"
   | "PENDING_REFERENCE"
   | "SKIPPED";
-
-export interface PendingReferenceBatch {
-  scanned: number;
-  processed: number;
-  rejected: number;
-  pending: number;
-  skipped: number;
-  failed: number;
-}
 
 const duplicateConstraints: Readonly<Record<string, true>> = {
   wager_transactions_provider_external_unique: true,
@@ -116,52 +96,10 @@ function isTransient(error: unknown): boolean {
 }
 
 export class WageringService {
-  private readonly logger = new Logger(WageringService.name);
-
-  constructor(private readonly orm: MikroORM) {}
-
-  async get(
-    identity:
-      | { id: string }
-      | { providerId: string; externalTransactionId: string },
-  ) {
-    const record = await this.orm.em
-      .fork()
-      .findOne(wagerTransactionSchema, identity);
-    if (!record) throw new DomainError("TRANSACTION_NOT_FOUND");
-    return {
-      transactionId: record.id,
-      providerId: record.providerId,
-      externalTransactionId: record.externalTransactionId,
-      walletId: record.walletId,
-      playerId: record.playerId,
-      roundId: record.roundId,
-      gameId: record.gameId,
-      kind: record.kind,
-      money: { amount: record.amount, currency: record.currency },
-      status: record.status,
-      ...(record.referenceExternalTransactionId == null
-        ? {}
-        : {
-            referenceExternalTransactionId:
-              record.referenceExternalTransactionId,
-          }),
-      ...(record.referenceTransactionId == null
-        ? {}
-        : { referenceTransactionId: record.referenceTransactionId }),
-      ...(record.observedBalance == null
-        ? {}
-        : {
-            balance: {
-              amount: record.observedBalance,
-              currency: record.currency,
-            },
-          }),
-      ...(record.failureCode ? { failureCode: record.failureCode } : {}),
-      createdAt: record.createdAt,
-      processedAt: record.processedAt,
-    };
-  }
+  constructor(
+    private readonly orm: MikroORM,
+    private readonly inbox: WageringInbox,
+  ) {}
 
   async submit(
     input: SubmitTransactionInput,
@@ -197,7 +135,7 @@ export class WageringService {
       return await this.orm.em
         .fork()
         .transactional<SubmitTransactionResult>(async (em) =>
-          this.withInbox(em, inbox, async () => {
+          this.inbox.run(em, inbox, async () => {
             const existing = await em.findOne(wagerTransactionSchema, {
               idempotencyKey: transaction.idempotencyKey,
             });
@@ -232,7 +170,7 @@ export class WageringService {
             return await this.orm.em
               .fork()
               .transactional((em) =>
-                this.withInbox(em, inbox, async () =>
+                this.inbox.run(em, inbox, async () =>
                   this.replay(existing, payloadHash),
                 ),
               );
@@ -246,66 +184,6 @@ export class WageringService {
       if (isTransient(error)) throw new DomainError("TEMPORARY_UNAVAILABLE");
       throw error;
     }
-  }
-
-  private async withInbox(
-    em: EntityManager,
-    inbox: InboxContext | undefined,
-    action: () => Promise<SubmitTransactionResult>,
-  ): Promise<SubmitTransactionResult> {
-    if (!inbox) return action();
-    const received = InboxMessage.receive({ ...inbox, receivedAt: new Date() });
-    const inserted = await em.execute<{ message_id: string }[]>(
-      `insert into inbox_messages (consumer_name, message_id, payload_hash, received_at)
-       values (?, ?, ?, ?) on conflict (consumer_name, message_id) do nothing returning message_id`,
-      [
-        received.consumerName,
-        received.messageId,
-        received.payloadHash,
-        received.receivedAt,
-      ],
-    );
-    if (inserted.length === 0) {
-      const [existing] = await em.execute<
-        {
-          payload_hash: string;
-          received_at: Date;
-          processed_at: Date | null;
-          result: SubmitTransactionResult | null;
-        }[]
-      >(
-        "select payload_hash, received_at, processed_at, result from inbox_messages where consumer_name = ? and message_id = ?",
-        [inbox.consumerName, inbox.messageId],
-      );
-      if (
-        !existing ||
-        existing.result === null ||
-        existing.processed_at === null
-      )
-        throw new Error("Incomplete persisted inbox result");
-      const persisted = InboxMessage.rehydrate({
-        ...inbox,
-        payloadHash: existing.payload_hash,
-        receivedAt: existing.received_at,
-        processedAt: existing.processed_at,
-      });
-      if (!persisted.matchesPayload(received.payloadHash))
-        throw new DomainError("MESSAGE_ID_CONFLICT");
-      return { ...existing.result, idempotentReplay: true };
-    }
-    const result = await action();
-    received.markProcessed(new Date());
-    await em.execute(
-      `update inbox_messages set processed_at = ?, result = ?::jsonb
-       where consumer_name = ? and message_id = ?`,
-      [
-        received.processedAt,
-        JSON.stringify(result),
-        received.consumerName,
-        received.messageId,
-      ],
-    );
-    return result;
   }
 
   async resolvePendingReference(
@@ -342,58 +220,6 @@ export class WageringService {
       );
       return result.status;
     });
-  }
-
-  async resolvePendingReferences(
-    pageSize = 100,
-    at?: Date,
-  ): Promise<PendingReferenceBatch> {
-    const dueAt = at ?? new Date();
-    const summary: PendingReferenceBatch = {
-      scanned: 0,
-      processed: 0,
-      rejected: 0,
-      pending: 0,
-      skipped: 0,
-      failed: 0,
-    };
-    let cursor: string | undefined;
-    for (;;) {
-      const where: FilterQuery<WagerTransactionRecord> = {
-        status: "PENDING_REFERENCE",
-        referenceNextAttemptAt: { $lte: dueAt },
-        ...(cursor === undefined ? {} : { id: { $gt: cursor } }),
-      };
-      const page = await this.orm.em
-        .fork()
-        .find(wagerTransactionSchema, where, {
-          orderBy: { id: "ASC" },
-          limit: pageSize,
-        });
-      if (page.length === 0) break;
-      cursor = page[page.length - 1]!.id;
-      for (const candidate of page) {
-        summary.scanned++;
-        try {
-          const status = await this.resolvePendingReference(candidate.id, at);
-          if (status === "PROCESSED") summary.processed++;
-          else if (status === "REJECTED") summary.rejected++;
-          else if (status === "PENDING_REFERENCE") summary.pending++;
-          else summary.skipped++;
-        } catch (error) {
-          summary.failed++;
-          this.logger.warn(
-            JSON.stringify({
-              event: "PendingReferenceResolutionFailed",
-              transactionId: candidate.id,
-              message: error instanceof Error ? error.message : String(error),
-            }),
-          );
-        }
-      }
-      if (page.length < pageSize) break;
-    }
-    return summary;
   }
 
   private async settle(

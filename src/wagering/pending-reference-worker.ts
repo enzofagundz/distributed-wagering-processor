@@ -1,8 +1,8 @@
 import { Logger } from "@nestjs/common";
 import type {
   PendingReferenceBatch,
-  WageringService,
-} from "./wagering-service";
+  PendingReferenceBatchRunner,
+} from "./pending-reference-batch-runner";
 
 export interface PendingReferenceWorkerOptions {
   intervalMs?: number;
@@ -24,7 +24,7 @@ export class PendingReferenceWorker {
   private stopped = true;
 
   constructor(
-    private readonly wagering: WageringService,
+    private readonly batch: PendingReferenceBatchRunner,
     options: PendingReferenceWorkerOptions = {},
   ) {
     this.intervalMs = positiveInteger(options.intervalMs, 1000);
@@ -45,7 +45,7 @@ export class PendingReferenceWorker {
   }
 
   runOnce(at?: Date): Promise<PendingReferenceBatch> {
-    return this.wagering.resolvePendingReferences(this.pageSize, at);
+    return this.batch.run(this.pageSize, at);
   }
 
   private schedule(): void {

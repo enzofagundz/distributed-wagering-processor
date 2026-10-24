@@ -1,3 +1,5 @@
+import { WageringInbox } from "../../src/wagering/wagering-inbox";
+import { WageringQueries } from "../../src/wagering/wagering-queries";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { databaseConfig } from "../../src/persistence/config";
@@ -14,6 +16,7 @@ if (!url || !new URL(url).pathname.endsWith("_test"))
   );
 let orm: MikroORM;
 let wagering: WageringService;
+let queries: WageringQueries;
 let wallets: WalletService;
 beforeAll(async () => {
   orm = await MikroORM.init({
@@ -23,7 +26,8 @@ beforeAll(async () => {
     },
   });
   await orm.migrator.up();
-  wagering = new WageringService(orm);
+  wagering = new WageringService(orm, new WageringInbox());
+  queries = new WageringQueries(orm);
   wallets = new WalletService(orm);
 });
 afterAll(async () => {
@@ -70,7 +74,7 @@ test("REFUND returns full BET exactly and replay preserves original balance", as
     balance: { amount: "9007199254740993.01", currency: "BRL" },
     idempotentReplay: false,
   });
-  expect(await wagering.get({ id: result.transactionId })).toMatchObject({
+  expect(await queries.get({ id: result.transactionId })).toMatchObject({
     kind: "REFUND",
     referenceTransactionId: original.result.transactionId,
     referenceExternalTransactionId: original.input.externalTransactionId,
@@ -124,7 +128,7 @@ test("two independent pools concurrently refund one BET only once and audit the 
     },
   });
   try {
-    const other = new WageringService(otherOrm);
+    const other = new WageringService(otherOrm, new WageringInbox());
     const inputs = [refund(original.input), refund(original.input)];
     const lock = orm.em.fork();
     await lock.begin();
@@ -206,7 +210,7 @@ test("missing reference stays pending after BET arrives and conflicts never chan
     status: "PENDING_REFERENCE",
     balance: { amount: "75.00", currency: "BRL" },
   });
-  expect(await wagering.get({ id: pending.transactionId })).toMatchObject({
+  expect(await queries.get({ id: pending.transactionId })).toMatchObject({
     referenceExternalTransactionId: future.externalTransactionId,
     status: "PENDING_REFERENCE",
     processedAt: null,
@@ -293,7 +297,7 @@ for (const mismatch of [
           : "REFERENCE_MISMATCH",
       balance: before.balance.toJSON(),
     });
-    expect(await wagering.get({ id: result.transactionId })).toMatchObject({
+    expect(await queries.get({ id: result.transactionId })).toMatchObject({
       referenceTransactionId: expect.any(String),
       failureCode: result.failureCode,
       status: "REJECTED",
@@ -333,7 +337,7 @@ test("REFUND lookup cannot bind another provider BET", async () => {
     balance: { amount: "75.00", currency: "BRL" },
   });
   expect(
-    (await wagering.get({ id: result.transactionId })).referenceTransactionId,
+    (await queries.get({ id: result.transactionId })).referenceTransactionId,
   ).toBeUndefined();
   expect(await wallets.reconcile(original.input.walletId)).toMatchObject({
     consistent: true,

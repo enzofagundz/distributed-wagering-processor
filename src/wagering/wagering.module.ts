@@ -5,11 +5,20 @@ import { MikroORM } from "@mikro-orm/postgresql";
 import { PersistenceModule } from "../persistence/persistence.module";
 import { WageringController } from "./wagering.controller";
 import { WageringService } from "./wagering-service";
+import { WageringInbox } from "./wagering-inbox";
+import { WageringQueries } from "./wagering-queries";
 import { PendingReferenceWorker } from "./pending-reference-worker";
+import { PendingReferenceBatchRunner } from "./pending-reference-batch-runner";
 
 @Module({
   controllers: [WageringController],
   providers: [
+    WageringInbox,
+    {
+      provide: WageringQueries,
+      useFactory: (orm: MikroORM) => new WageringQueries(orm),
+      inject: [MikroORM],
+    },
     {
       provide: WagerConsumer,
       useFactory: (wagering: WageringService) =>
@@ -29,17 +38,24 @@ import { PendingReferenceWorker } from "./pending-reference-worker";
     },
     {
       provide: WageringService,
-      useFactory: (orm: MikroORM) => new WageringService(orm),
-      inject: [MikroORM],
+      useFactory: (orm: MikroORM, inbox: WageringInbox) =>
+        new WageringService(orm, inbox),
+      inject: [MikroORM, WageringInbox],
+    },
+    {
+      provide: PendingReferenceBatchRunner,
+      useFactory: (orm: MikroORM, wagering: WageringService) =>
+        new PendingReferenceBatchRunner(orm, wagering),
+      inject: [MikroORM, WageringService],
     },
     {
       provide: PendingReferenceWorker,
-      useFactory: (wagering: WageringService) =>
-        new PendingReferenceWorker(wagering, {
+      useFactory: (batch: PendingReferenceBatchRunner) =>
+        new PendingReferenceWorker(batch, {
           intervalMs: Number(process.env.PENDING_REFERENCE_INTERVAL_MS),
           pageSize: Number(process.env.PENDING_REFERENCE_PAGE_SIZE),
         }),
-      inject: [WageringService],
+      inject: [PendingReferenceBatchRunner],
     },
   ],
 })

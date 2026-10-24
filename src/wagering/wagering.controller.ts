@@ -15,11 +15,13 @@ import {
   submitTransactionValidation,
 } from "./submit-transaction.dto";
 import { WageringService } from "./wagering-service";
+import { WageringQueries } from "./wagering-queries";
 
 @Controller()
 export class WageringController {
   constructor(
     @Inject(WageringService) private readonly wagering: WageringService,
+    @Inject(WageringQueries) private readonly queries: WageringQueries,
   ) {}
 
   @Post("wagering/transactions")
@@ -45,7 +47,7 @@ export class WageringController {
   async get(@Param("transactionId") transactionId: string) {
     if (!uuidPattern.test(transactionId))
       throw new DomainError("INVALID_IDENTITY");
-    return this.wagering.get({ id: transactionId.toLowerCase() });
+    return this.queries.get({ id: transactionId.toLowerCase() });
   }
 
   @Get("providers/:providerId/wagering/transactions/:externalTransactionId")
@@ -57,7 +59,7 @@ export class WageringController {
       throw new DomainError("INVALID_PROVIDER");
     if (!isIdentity(externalTransactionId))
       throw new DomainError("INVALID_IDENTITY");
-    return this.wagering.get({ providerId, externalTransactionId });
+    return this.queries.get({ providerId, externalTransactionId });
   }
 }
 

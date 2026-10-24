@@ -1,3 +1,5 @@
+import { WageringInbox } from "../../src/wagering/wagering-inbox";
+import { WageringQueries } from "../../src/wagering/wagering-queries";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { databaseConfig } from "../../src/persistence/config";
@@ -15,6 +17,7 @@ if (!url || !new URL(url).pathname.endsWith("_test"))
   );
 let orm: MikroORM;
 let wagering: WageringService;
+let queries: WageringQueries;
 let wallets: WalletService;
 beforeAll(async () => {
   orm = await MikroORM.init({
@@ -24,7 +27,8 @@ beforeAll(async () => {
     },
   });
   await orm.migrator.up();
-  wagering = new WageringService(orm);
+  wagering = new WageringService(orm, new WageringInbox());
+  queries = new WageringQueries(orm);
   wallets = new WalletService(orm);
 });
 afterAll(async () => {
@@ -107,7 +111,7 @@ for (const kind of ["BET", "WIN", "REFUND"] as const) {
       balance,
       idempotentReplay: false,
     });
-    expect(await wagering.get({ id: result.transactionId })).toMatchObject({
+    expect(await queries.get({ id: result.transactionId })).toMatchObject({
       kind: "ROLLBACK",
       referenceTransactionId: original.result.transactionId,
       referenceExternalTransactionId: original.input.externalTransactionId,
@@ -190,7 +194,7 @@ for (const missing of [true, false]) {
       status: "PENDING_REFERENCE",
       balance: { amount: "75.00", currency: "BRL" },
     });
-    const queried = await wagering.get({ id: result.transactionId });
+    const queried = await queries.get({ id: result.transactionId });
     expect(queried).toMatchObject({
       kind: "ROLLBACK",
       referenceExternalTransactionId: input.referenceExternalTransactionId,
@@ -271,7 +275,7 @@ for (const mismatch of [
       failureCode,
       balance: before.balance.toJSON(),
     });
-    expect(await wagering.get({ id: result.transactionId })).toMatchObject({
+    expect(await queries.get({ id: result.transactionId })).toMatchObject({
       status: "REJECTED",
       failureCode,
       referenceTransactionId: original.result.transactionId,
@@ -306,7 +310,7 @@ test("ROLLBACK reference lookup stays scoped to the provider", async () => {
     balance: { amount: "75.00", currency: "BRL" },
   });
   expect(
-    (await wagering.get({ id: result.transactionId })).referenceTransactionId,
+    (await queries.get({ id: result.transactionId })).referenceTransactionId,
   ).toBeUndefined();
   expect(await ledger(input.walletId)).toHaveLength(2);
   expect(await wallets.reconcile(input.walletId)).toMatchObject({
@@ -338,7 +342,7 @@ for (const kind of ["WIN", "REFUND"] as const) {
       failureCode: "INSUFFICIENT_REVERSAL_FUNDS",
       balance: { amount: "15.00", currency: "BRL" },
     });
-    expect(await wagering.get({ id: result.transactionId })).toMatchObject({
+    expect(await queries.get({ id: result.transactionId })).toMatchObject({
       status: "REJECTED",
       failureCode: "INSUFFICIENT_REVERSAL_FUNDS",
       referenceTransactionId: original.result.transactionId,
@@ -374,7 +378,7 @@ test("two independent pools concurrently ROLLBACK one reference only once and re
     },
   });
   try {
-    const other = new WageringService(otherOrm);
+    const other = new WageringService(otherOrm, new WageringInbox());
     const inputs = [reversal(original.input), reversal(original.input)];
     const lock = orm.em.fork();
     await lock.begin();
@@ -426,7 +430,7 @@ test("two independent pools concurrently ROLLBACK one reference only once and re
       { direction: "DEBIT", money: { amount: "25.00", currency: "BRL" } },
       { direction: "CREDIT", money: { amount: "25.00", currency: "BRL" } },
     ]);
-    expect(await wagering.get({ id: rejected.transactionId })).toMatchObject({
+    expect(await queries.get({ id: rejected.transactionId })).toMatchObject({
       status: "REJECTED",
       failureCode: "REFERENCE_ALREADY_ROLLED_BACK",
       referenceTransactionId: original.result.transactionId,
@@ -461,7 +465,7 @@ for (const first of ["REFUND", "ROLLBACK"] as const) {
         status: "PROCESSED",
         balance: { amount: index === 0 ? "100.00" : "125.00", currency: "BRL" },
       });
-      expect(await wagering.get({ id: result.transactionId })).toMatchObject({
+      expect(await queries.get({ id: result.transactionId })).toMatchObject({
         referenceTransactionId: original.result.transactionId,
         kind: input.kind,
       });
