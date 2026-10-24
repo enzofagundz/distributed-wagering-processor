@@ -103,12 +103,11 @@ export class WagerConsumer {
         (error instanceof DomainError &&
           error.code !== "TEMPORARY_UNAVAILABLE");
       const count = Number(message.Attributes?.ApproximateReceiveCount ?? "1");
-      const code =
-        error instanceof DomainError
-          ? error.code
-          : error instanceof HttpException
-            ? "INVALID_TRANSACTION_PAYLOAD"
-            : "PROCESSING_FAILED";
+      let code: string;
+      if (error instanceof DomainError) code = error.code;
+      else if (error instanceof HttpException)
+        code = "INVALID_TRANSACTION_PAYLOAD";
+      else code = "PROCESSING_FAILED";
       this.logger.warn({
         event: permanent ? "WagerMessageInvalid" : "WagerMessageRetry",
         messageId: context?.messageId ?? message.MessageId,
