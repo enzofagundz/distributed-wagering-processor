@@ -146,6 +146,7 @@ async function receive(QueueUrl = queueUrl) {
       new ReceiveMessageCommand({
         QueueUrl,
         WaitTimeSeconds: 1,
+        MessageAttributeNames: ["All"],
         MessageSystemAttributeNames: ["ApproximateReceiveCount"],
       }),
     )
@@ -726,6 +727,7 @@ test("insufficient funds is terminal, acknowledged and replayed without ledger o
   await consumer.runOnce();
   expect(await receive()).toBeUndefined();
   expect(await inbox(message.messageId)).toEqual(records);
+  expect(await receive(dlqUrl)).toBeUndefined();
   expect(
     await orm.em.execute(
       "select event_type from outbox_messages where aggregate_id = ? and event_type = 'WagerTransactionRejected'",
@@ -735,13 +737,17 @@ test("insufficient funds is terminal, acknowledged and replayed without ledger o
   await reconcile(message.data.walletId, "100.00", 1);
 });
 
-async function expectDlq(body: unknown) {
+async function expectDlq(body: unknown, failureCode?: string) {
   await send(body);
   expect(await consumer.runOnce()).toBe(1);
   const dead = await receive(dlqUrl);
   expect(dead?.Body).toBe(
     typeof body === "string" ? body : JSON.stringify(body),
   );
+  expect(dead?.MessageAttributes?.failureKind?.StringValue).toBe("PERMANENT");
+  expect(dead?.MessageAttributes?.sourceMessageId?.StringValue).toBeTruthy();
+  if (failureCode)
+    expect(dead?.MessageAttributes?.failureCode?.StringValue).toBe(failureCode);
   await sqs.send(
     new DeleteMessageCommand({
       QueueUrl: dlqUrl,
@@ -755,10 +761,13 @@ test("reused message ID with divergent payload is DLQ conflict, including anothe
   await send(message);
   await consumer.runOnce();
   const original = await inbox(message.messageId);
-  await expectDlq({
-    ...message,
-    data: { ...message.data, money: { amount: "1.00", currency: "BRL" } },
-  });
+  await expectDlq(
+    {
+      ...message,
+      data: { ...message.data, money: { amount: "1.00", currency: "BRL" } },
+    },
+    "MESSAGE_ID_CONFLICT",
+  );
   await expectDlq({
     ...message,
     data: {
@@ -1007,6 +1016,12 @@ test("repeated infrastructure failure is bounded and reaches the FIFO DLQ withou
     }
     const dead = await receive(dlqUrl);
     expect(JSON.parse(dead!.Body!)).toEqual(message);
+    expect(dead!.MessageAttributes).toMatchObject({
+      failureCode: { StringValue: "TEMPORARY_UNAVAILABLE" },
+      failureKind: { StringValue: "RETRIES_EXHAUSTED" },
+      receiveCount: { StringValue: "5" },
+      wagerMessageId: { StringValue: message.messageId },
+    });
     await sqs.send(
       new DeleteMessageCommand({
         QueueUrl: dlqUrl,

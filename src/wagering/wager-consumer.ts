@@ -93,18 +93,19 @@ export class WagerConsumer {
         (error instanceof DomainError &&
           error.code !== "TEMPORARY_UNAVAILABLE");
       const count = Number(message.Attributes?.ApproximateReceiveCount ?? "1");
+      const code =
+        error instanceof DomainError
+          ? error.code
+          : error instanceof HttpException
+            ? "INVALID_TRANSACTION_PAYLOAD"
+            : "PROCESSING_FAILED";
       this.logger.warn(
         JSON.stringify({
           event: permanent ? "WagerMessageInvalid" : "WagerMessageRetry",
           messageId: context?.messageId ?? message.MessageId,
           walletId: context?.data.walletId,
           providerId: context?.data.providerId,
-          code:
-            error instanceof DomainError
-              ? error.code
-              : error instanceof HttpException
-                ? "INVALID_TRANSACTION_PAYLOAD"
-                : "PROCESSING_FAILED",
+          code,
           attempt: count,
         }),
       );
@@ -114,6 +115,25 @@ export class WagerConsumer {
             QueueUrl: this.dlqUrl,
             MessageBody: message.Body ?? "",
             MessageGroupId: message.Attributes?.MessageGroupId ?? "invalid",
+            // Causa e origem viajam fora do corpo, que segue idêntico ao original.
+            MessageAttributes: {
+              failureCode: { DataType: "String", StringValue: code },
+              failureKind: {
+                DataType: "String",
+                StringValue: permanent ? "PERMANENT" : "RETRIES_EXHAUSTED",
+              },
+              receiveCount: { DataType: "Number", StringValue: String(count) },
+              sourceMessageId: {
+                DataType: "String",
+                StringValue: message.MessageId ?? "unknown",
+              },
+              ...(context && {
+                wagerMessageId: {
+                  DataType: "String",
+                  StringValue: context.messageId,
+                },
+              }),
+            },
             MessageDeduplicationId: createHash("sha256")
               .update(`${message.MessageId}:${message.Body}`)
               .digest("hex"),
