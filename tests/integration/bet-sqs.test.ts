@@ -1,3 +1,5 @@
+import { PendingReferenceBatchRunner } from "../../src/wagering/pending-reference-batch-runner";
+import { PendingReferenceWorker } from "../../src/wagering/pending-reference-worker";
 import { WageringInbox } from "../../src/wagering/wagering-inbox";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import type { INestApplication } from "@nestjs/common";
@@ -513,6 +515,136 @@ test("SQS WIN uses HTTP reference outcomes for pending, rejected and processed r
   await reconcile(bet.data.walletId, "100.00", 3);
 }, 15000);
 
+for (const kind of ["REFUND", "ROLLBACK"]) {
+  for (const expires of [false, true]) {
+    test(`SQS ${kind} pending ack survives restart and redelivery, then ${expires ? "expires" : "resolves"} once`, async () => {
+      const reference = await envelope();
+      reference.data.kind = kind === "REFUND" ? "BET" : "WIN";
+      const message = {
+        ...reference,
+        messageId: crypto.randomUUID(),
+        data: {
+          ...reference.data,
+          kind,
+          externalTransactionId: crypto.randomUUID(),
+          idempotencyKey: crypto.randomUUID(),
+          referenceExternalTransactionId: reference.data.externalTransactionId,
+        },
+      };
+      await send(message);
+      expect(await consumer.runOnce()).toBe(1);
+      expect(await receive()).toBeUndefined();
+      const original = await inbox(message.messageId);
+      expect(original[0]?.result).toMatchObject({
+        status: "PENDING_REFERENCE",
+        balance: { amount: "100.00", currency: "BRL" },
+      });
+      const transactionId = original[0]!.result.transactionId;
+      await reconcile(message.data.walletId, "100.00", 1);
+      await send(message);
+      expect(await childConsumer().exited).toBe(0);
+      expect(await inbox(message.messageId)).toEqual(original);
+      if (!expires) {
+        await send(reference);
+        expect(await childConsumer().exited).toBe(0);
+      }
+      const restarted = await MikroORM.init({
+        ...databaseConfig(url),
+        schema,
+        driverOptions: { connection: { options: `-c search_path=${schema}` } },
+      });
+      try {
+        const worker = new PendingReferenceWorker(
+          new PendingReferenceBatchRunner(
+            restarted,
+            new WageringService(restarted, new WageringInbox()),
+          ),
+        );
+        for (let attempt = 0; attempt < (expires ? 10 : 1); attempt++) {
+          const summary = await worker.runOnce(
+            new Date(Date.now() + attempt * 61000),
+          );
+          expect(summary.failed).toBe(0);
+          expect(
+            expires && attempt < 9
+              ? summary.pending
+              : expires
+                ? summary.rejected
+                : summary.processed,
+          ).toBe(1);
+        }
+        expect(
+          await worker.runOnce(new Date(Date.now() + 700000)),
+        ).toMatchObject({ scanned: 0 });
+      } finally {
+        await restarted.close();
+      }
+      const query = await fetch(
+        `${base}/wagering/transactions/${transactionId}`,
+      );
+      expect(await query.json()).toMatchObject({
+        kind,
+        status: expires ? "REJECTED" : "PROCESSED",
+        ...(expires ? { failureCode: "REFERENCE_NOT_FOUND" } : {}),
+        balance: { amount: "100.00", currency: "BRL" },
+      });
+      await send(message);
+      expect(await childConsumer().exited).toBe(0);
+      expect(await inbox(message.messageId)).toEqual(original);
+      const duplicate = { ...message, messageId: crypto.randomUUID() };
+      await send(duplicate);
+      await consumer.runOnce();
+      expect((await inbox(duplicate.messageId))[0]!.result).toMatchObject({
+        transactionId,
+        status: expires ? "REJECTED" : "PROCESSED",
+        idempotentReplay: true,
+      });
+      expect(
+        await orm.em.execute(
+          "select event_type from outbox_messages where payload->>'correlationId' = ? order by event_type",
+          [transactionId],
+        ),
+      ).toEqual(
+        expires
+          ? [
+              { event_type: "WagerTransactionPendingReference" },
+              { event_type: "WagerTransactionRejected" },
+            ]
+          : [
+              { event_type: "WagerTransactionPendingReference" },
+              { event_type: "WagerTransactionProcessed" },
+              { event_type: "WalletBalanceChanged" },
+            ],
+      );
+      const publisher = new OutboxPublisher(orm, sqs, eventsUrl);
+      while (await publisher.runOnce()) continue;
+      const received = [];
+      for (;;) {
+        const event = await receive(eventsUrl);
+        if (!event) break;
+        received.push(JSON.parse(event.Body!));
+        await sqs.send(
+          new DeleteMessageCommand({
+            QueueUrl: eventsUrl,
+            ReceiptHandle: event.ReceiptHandle!,
+          }),
+        );
+      }
+      expect(received).toContainEqual(
+        expect.objectContaining({
+          correlationId: transactionId,
+          eventType: expires
+            ? "WagerTransactionRejected"
+            : "WagerTransactionProcessed",
+        }),
+      );
+      expect(await receive()).toBeUndefined();
+      expect(await receive(dlqUrl)).toBeUndefined();
+      await reconcile(message.data.walletId, "100.00", expires ? 1 : 3);
+    }, 30000);
+  }
+}
+
 async function inbox(messageId: string) {
   return orm.em.execute(
     "select payload_hash, result from inbox_messages where consumer_name = 'wager-transactions' and message_id = ?",
@@ -677,17 +809,24 @@ test("invalid envelopes, OPENING, reserved provider and mismatched ownership nev
   await reconcile(message.data.walletId, "100.00", 1);
 }, 15000);
 
-for (const kind of ["BET", "WIN", "LOSS"]) {
+for (const kind of ["BET", "WIN", "LOSS", "REFUND", "ROLLBACK"]) {
   test(`${kind} outbox failure rolls back inbox, wallet, transaction and ledger, and real redelivery succeeds`, async () => {
     const message = await envelope();
     message.data.kind = kind;
+    const data = {
+      ...message.data,
+      ...(["REFUND", "ROLLBACK"].includes(kind)
+        ? { referenceExternalTransactionId: crypto.randomUUID() }
+        : {}),
+    };
+    const requested = { ...message, data };
     await orm.em
       .execute(`create function fail_inbox_outbox() returns trigger language plpgsql as $$ begin
     if new.aggregate_id = '${message.data.walletId}'::uuid then raise exception 'induced temporary failure' using errcode = '40001'; end if; return new; end $$`);
     await orm.em.execute(
       "create trigger fail_inbox_outbox before insert on outbox_messages for each row execute function fail_inbox_outbox()",
     );
-    await send(message);
+    await send(requested);
     try {
       expect(await consumer.runOnce()).toBe(1);
       expect(await inbox(message.messageId)).toEqual([]);
@@ -715,7 +854,7 @@ for (const kind of ["BET", "WIN", "LOSS"]) {
     await reconcile(
       message.data.walletId,
       kind === "BET" ? "75.00" : kind === "WIN" ? "125.00" : "100.00",
-      kind === "LOSS" ? 1 : 2,
+      ["LOSS", "REFUND", "ROLLBACK"].includes(kind) ? 1 : 2,
     );
   }, 10000);
 }
@@ -791,24 +930,46 @@ test("three independent consumer processes converge on a business duplicate with
   }
 }, 15000);
 
-test("SIGKILL after commit before ack recovers via redelivery on a new process without another debit", async () => {
-  const message = await envelope();
-  await send(message);
-  const child = childConsumer(true);
-  try {
-    await waitLine(child, "committed-before-ack");
-    expect(await inbox(message.messageId)).toHaveLength(1);
-    await reconcile(message.data.walletId, "75.00", 2);
-  } finally {
-    child.kill("SIGKILL");
-    await child.exited;
-  }
-  await Bun.sleep(30100);
-  const restarted = childConsumer();
-  expect(await restarted.exited).toBe(0);
-  expect(await receive()).toBeUndefined();
-  await reconcile(message.data.walletId, "75.00", 2);
-}, 40000);
+for (const kind of ["BET", "REFUND", "ROLLBACK"]) {
+  test(`${kind} SIGKILL after commit before ack recovers via redelivery without repeated effects`, async () => {
+    const message = await envelope();
+    const requested = {
+      ...message,
+      data: {
+        ...message.data,
+        kind,
+        ...(kind === "BET"
+          ? {}
+          : { referenceExternalTransactionId: crypto.randomUUID() }),
+      },
+    };
+    await send(requested);
+    const child = childConsumer(true);
+    try {
+      await waitLine(child, "committed-before-ack");
+      expect((await inbox(message.messageId))[0]!.result).toMatchObject({
+        status: kind === "BET" ? "PROCESSED" : "PENDING_REFERENCE",
+      });
+      await reconcile(
+        message.data.walletId,
+        kind === "BET" ? "75.00" : "100.00",
+        kind === "BET" ? 2 : 1,
+      );
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+    await Bun.sleep(30100);
+    const restarted = childConsumer();
+    expect(await restarted.exited).toBe(0);
+    expect(await receive()).toBeUndefined();
+    await reconcile(
+      message.data.walletId,
+      kind === "BET" ? "75.00" : "100.00",
+      kind === "BET" ? 2 : 1,
+    );
+  }, 40000);
+}
 
 test("SIGTERM drains an in-flight message through commit and ack before closing connections", async () => {
   const message = await envelope();

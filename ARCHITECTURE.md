@@ -247,7 +247,7 @@ Status, contador, próximo horário, saldo observado terminal e evento de rejei�
 
 Migration `20261023000600` adiciona `reference_attempts` de 0 a 10 e `reference_next_attempt_at`, finito e obrigatório apenas em `PENDING_REFERENCE`; pendência exige contador menor que 10. Estados terminais ficam sem próximo horário. Pendências anteriores recebem contador zero e horário `created_at`, sem perda de identidade, hash ou saldo do aceite. O índice parcial `(reference_next_attempt_at, id)` atende à busca de pendências vencidas. `down` recusa histórico com `REFERENCE_NOT_FOUND`; sem esse histórico, remove campos/índice e restaura checks anteriores. Exige APIs paradas.
 
-O publisher envia os eventos ao SQS; BET, WIN e LOSS também entram pela fila com inbox, conforme a seção de consumo abaixo. A segurança entre instâncias vem do PostgreSQL, não de scheduler distribuído. Cenários SQL/HTTP não comprovam ack, redelivery ou publicação. Testes focais e setup: [README](README.md#resolver-referência-pendente). Registro de execução do ticket 14: [expiração de referências](docs/verification.md#expiração-de-referências--2026-10-23); resultados devem ser lidos nessa seção, sem extrapolar evidências históricas do ticket 13.
+O publisher envia os eventos ao SQS; todos os kinds externos também entram pela fila com inbox, conforme a seção de consumo abaixo. A segurança entre instâncias vem do PostgreSQL, não de scheduler distribuído. Cenários SQL/HTTP não comprovam ack, redelivery ou publicação. Testes focais e setup: [README](README.md#resolver-referência-pendente). Registro de execução do ticket 14: [expiração de referências](docs/verification.md#expiração-de-referências--2026-10-23); resultados devem ser lidos nessa seção, sem extrapolar evidências históricas do ticket 13.
 
 Referências dos locks mantidas da resolução: [MikroORM 6.6 — pessimistic locking](https://mikro-orm.io/docs/6.6/transactions#pessimistic-locking) e [PostgreSQL 17 — row-level locks](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS). Evidências históricas do ticket 13: [resolução de referências](docs/verification.md#resolução-de-referências--2026-10-23).
 
@@ -258,7 +258,7 @@ O [ADR-0007](docs/adr/0007-inbox-atomica-de-bet.md) registra a decisão do ticke
 
 `main.ts` inicia o consumidor e interrompe novas leituras nos sinais de encerramento. Ack acontece após commit; falha na outbox desfaz também a inbox. A política inicial de retry, DLQ, visibilidade e seus limites está no ADR. Setup e envio manual: [README](README.md#enviar-bet-pelo-sqs). Evidências reais, incluindo três processos e crash na janela commit/ack: [verificação](docs/verification.md#bet-por-sqs--2026-10-23).
 
-O ticket 19 amplia o parser para WIN e LOSS sem alterar a transação SQL. WIN credita e emite Processed/BalanceChanged; LOSS emite somente Processed, sem saldo, versão ou ledger novos. Referências e códigos de falha seguem o HTTP. A [extensão do ADR-0007](docs/adr/0007-inbox-atomica-de-bet.md#extensão-no-ticket-19) registra decisão e alternativa; [evidências](docs/verification.md#resultados-por-sqs--2026-10-24) incluem replay persistente e rollback dos dois resultados. Reversões pela fila continuam no ticket 20.
+O ticket 19 amplia o parser para WIN e LOSS sem alterar a transação SQL. WIN credita e emite Processed/BalanceChanged; LOSS emite somente Processed, sem saldo, versão ou ledger novos. Referências e códigos de falha seguem o HTTP. A [extensão do ADR-0007](docs/adr/0007-inbox-atomica-de-bet.md#extensão-no-ticket-19) registra decisão e alternativa; [evidências](docs/verification.md#resultados-por-sqs--2026-10-24) incluem replay persistente e rollback dos dois resultados. O ticket 20 libera REFUND/ROLLBACK pelo DTO compartilhado; [ADR-0007](docs/adr/0007-inbox-atomica-de-bet.md#extensão-no-ticket-20) registra continuidade após ack e replay pendente.
 
 ## Consultas e paginação
 
@@ -311,7 +311,7 @@ Erros conhecidos retornam `{ "code": "..." }`, exceto a rejeição 422, que reto
 
 ## Ainda não entregue
 
-Reversões por SQS, health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). Resolução de referências, consumo de BET/WIN/LOSS e publicação de outbox têm workers separados. Próximo ticket: 20, REFUND/ROLLBACK pela fila.
+Health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). Resolução de referências, consumo dos kinds externos e publicação de outbox têm workers separados. Próximo ticket: 21, falhas transitórias e DLQ.
 
 API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown atual para novas leituras e espera o consumidor e os workers antes de fechar HTTP e ORM; ainda não há prazo máximo de drenagem.
 

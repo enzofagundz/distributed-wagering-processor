@@ -515,3 +515,27 @@ Duas tentativas anteriores no banco compartilhado expiraram esperando publicaç�
 Nest Boost MCP: handshake, `application_info`, `list_routes` e `module_graph` executados pelo pacote instalado, sem `evaluate`. Confirmou NestJS 11.1.16, oito rotas e WagerConsumer em WageringModule. Revisões Standards e Spec não encontraram bloqueios; Standards sugeriu opcionalmente reunir testes de sucesso, mantidos separados pelas asserções financeiras distintas.
 
 Limites: não houve nova interrupção de dependência nem SIGKILL específico de WIN/LOSS; a suíte completa reexecutou a prova de crash de BET no mesmo consumidor. REFUND/ROLLBACK por SQS, FAILED auditável e prazo máximo de shutdown permanecem nos tickets seguintes.
+
+## Reversões por SQS — 2026-10-24
+
+Ticket 20. A alteração de produção remove somente a lista duplicada de kinds do parser. DTO, domínio, transação SQL, inbox e workers existentes continuam responsáveis pelas regras.
+
+Com PostgreSQL 17.6 e LocalStack 4.11.1 locais, `bun test tests/integration/bet-sqs.test.ts --test-name-pattern 'SQS (REFUND|ROLLBACK) pending|REFUND outbox|ROLLBACK outbox'` passou: seis testes e 134 assertions, sem falhas. Antes da alteração, os dois cenários REFUND falharam por ausência de inbox, pois o parser enviava a mensagem à DLQ.
+
+Os cenários dos dois tipos verificam:
+
+- Aceite pendente com inbox, evento e ack, sem mudança de saldo ou ledger. Novo processo consome reenvio do mesmo envelope sem mudar o recibo original.
+- Referência posterior pela fila e worker com nova conexão resolvem uma vez. REFUND reverte BET; ROLLBACK reverte WIN. Novas varreduras e reenvios preservam os eventos e a reconciliação em 100.00 BRL, com três lançamentos.
+- Referência ausente esgota dez tentativas e termina em REJECTED/REFERENCE_NOT_FOUND, com PendingReference e Rejected publicados no SQS real. Sem lançamento adicional; saldo reconciliado em 100.00 BRL e um lançamento de abertura. Os instantes do worker avançam explicitamente no teste; o teste não espera o backoff completo em relógio real.
+- Falha SQLSTATE 40001 induzida na outbox desfaz inbox, transação e pendência. Redelivery real após visibilidade confirma uma vez.
+- SIGKILL entre commit e ack para REFUND e ROLLBACK pendentes, com espera real de 30 segundos e redelivery em outro processo, preserva o aceite e não cria movimento repetido.
+
+Smoke separado executado com `bun .scratch/ticket20-smoke.ts`, harness temporário em banco e filas exclusivos. Iniciou `src/main.ts`, enviou cada reversão antes da referência, observou pendência, encerrou e reiniciou o processo e enviou BET ou WIN. O worker agendado resolveu sem chamada manual; publisher marcou sete eventos por wallet. Reconciliação dos dois fluxos: saldo armazenado e calculado 100.00 BRL, diferença 0.00, três lançamentos. Recursos temporários foram removidos em finally. Para repetir o fluxo manualmente, use o envelope e comandos do [README](../README.md#enviar-bet-pelo-sqs), com referência enviada após reiniciar a API.
+
+Validação final: `bun test` passou com 281 testes, zero falhas e 2427 assertions em 25 arquivos (214.70s). Incluiu os três cenários SIGKILL de BET/REFUND/ROLLBACK e os prazos reais de retry/DLQ. `bun run lint`, `bun run format`, `bun run format:check` e `bun run typecheck` passaram antes do commit. As revisões Standards e Spec não encontraram problema funcional; uma afirmação ampla demais sobre falhas reais de dependência foi corrigida na cobertura local.
+
+Nest Boost MCP executou handshake e `module_graph`: WagerConsumer, WageringInbox, WageringService e PendingReferenceWorker presentes em WageringModule. Nenhum evaluate ou ferramenta de banco foi usado.
+
+Revisão de texto com humanizer-pt-br e no-ai-slop: registro técnico preservado; menções a "reversões pendentes" foram substituídas pelo comportamento entregue, com links para a evidência. Sem linguagem promocional, fecho genérico ou alteração de resultados históricos.
+
+Limites: sem nova interrupção real de PostgreSQL/SQS, FAILED auditável ou prazo máximo de drenagem; continuam nos tickets seguintes. O smoke exercita resolução agendada; expiração usa a integração com instantes explícitos.
