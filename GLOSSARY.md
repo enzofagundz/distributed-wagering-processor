@@ -86,6 +86,14 @@ Tentativa de criar outra wallet para o mesmo player/moeda, arbitrada pela constr
 
 Reenvio com mesma chave e hash de negócio devolve identidade, status e saldo observado persistidos, com `idempotentReplay: true`, sem novo efeito financeiro ou evento. Payload divergente conflita; outra chave para identidade externa existente também. Algoritmo e escopos: [idempotência de BET](ARCHITECTURE.md#idempotência-de-bet).
 
+## Hash de negócio
+
+SHA-256 hexadecimal minúsculo do JSON compacto dos campos financeiros da transação, em ordem fixa, calculado por `WagerTransaction.create` depois de normalizar wallet, player e dinheiro. `rehydrate` recebe o valor persistido sem recalcular, e `matchesPayload` decide entre replay e conflito. Não é o hash do envelope da inbox.
+
+## Hash do envelope
+
+SHA-256 do envelope completo da mensagem SQS, com chaves ordenadas recursivamente, incluindo `messageId` e `idempotencyKey`. Detecta reutilização divergente do mesmo messageId. Reordenar as chaves do JSON recebido não muda o hash. Fica separado do hash de negócio, que cobre só os campos financeiros.
+
 ## Inbox de BET
 
 Registro em `inbox_messages`, único por consumidor e messageId, que confirma hash do envelope e resultado junto da operação financeira. Entrega repetida retorna o resultado original; reutilização divergente do ID é conflito (ver [ADR-0007](docs/adr/0007-inbox-atomica-de-bet.md)).

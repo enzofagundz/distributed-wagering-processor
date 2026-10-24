@@ -826,3 +826,47 @@ As 92 assertions novas vêm desses testes. Os casos financeiros anteriores conti
 Nest Boost por MCP, com `application_info`, `list_routes` e `module_graph` em processos separados antes e depois: saída idêntica, 13 módulos, 4 controllers, 16 providers e 10 rotas. `evaluate` não foi chamado. A composição não mudou e o preview continua sem ORM.
 
 Limites: o teste de integração novo usa o banco de testes compartilhado, com player próprio. O arquivo roda em cerca de 1,4 s sozinho, e a suíte completa não ficou mais lenta (280,39 s antes, 279,93 s depois). A mudança não toca contrato HTTP, envelope, evento, schema ou migration. A garantia de que um lançamento desbalanceado não nasce vem da validação das fábricas e dos testes de domínio, não de uma varredura exaustiva de entradas.
+
+## Hash e consultas de estado no agregado — 2026-10-24
+
+Ticket 03 de `.scratch/fortalecer-nucleo-financeiro`. `WagerTransaction.create` passou a calcular o `payloadHash` depois de normalizar wallet e player, e o agregado expõe `payloadHash`, `matchesPayload`, `isTerminal`, `affectsBalance` e `requiresReference`. `rehydrate` recebe o hash persistido e não recalcula. O serviço deixou de montar o hash e de transportar o valor entre camadas: a gravação lê `transaction.payloadHash` e o replay compara com `matchesPayload`. A canonicalização não mudou.
+
+Os valores de referência foram registrados antes da mudança, numa base isolada, com o `WageringService` da árvore em `b72256c`. Provider `provider-hash`, wallet `11111111-1111-4111-8111-111111111111`, player `22222222-2222-4222-8222-222222222222`, round `round-hash` e game `fortune-chimp`, exceto onde o caso indica outra wallet e outro player:
+
+- BET de `25.00`: `f7b64edfec8960f47c13572dfbddf5280d6209a99f80ace38b260a2c78114ed6`;
+- WIN de `10.00` com referência à BET: `26d6f836f069365596357e15be69cabd62595376d6c77ec8cdf27ff76556714c`;
+- REFUND de `25.00`: `ca2a138e95a1902f6016c611b2817c696bc3e8b55f2927c468ac2b10ca39bcbd`;
+- ROLLBACK de `25.00`: `984f178f06df3e4e472220e0e80052119df11c62319ce42b887d8e418dd636b7`;
+- LOSS de `5.00`: `efb6eb5199dd95d4f3798f74548fc1c45d0133f3bf30db0dc59c1264070beb95`;
+- BET de `1234567890123456789012345678.00`, wallet `33333333-3333-4333-8333-333333333333` e player `44444444-4444-4444-8444-444444444444`: `a3371e2296d8c816cb5772534f76ec3b9c4ee041fc3f329c51515881399df918`.
+
+Três casos de escaping foram calculados com a expressão de hash removida do serviço, lida de `git show b72256c:src/wagering/wagering-service.ts`: BET de `7.50` com aspas, barra invertida e round acentuado devolve `54b7702853f2404ffb4e4066b445402777387e990b5d8e09f9260b783f77e1a0`; um game `café` composto devolve `fb28fbc34bfb12c9267913f44628a01f6319f9446151c0c9b16b32ea4827f981`; o mesmo game decomposto em `cafe` mais U+0301 devolve `8e9c58f65d687d2e23196a95e37b62567f306a79c8fc4ee328dd2af0565bc331`. O último par prova que não há normalização Unicode.
+
+O hash do envelope da inbox continua separado. Ele cobre a mensagem inteira com chaves ordenadas, incluindo `messageId` e `idempotencyKey`, e detecta reutilização divergente do mesmo ID. O hash de negócio cobre só os campos financeiros. Reordenar as chaves do envelope não muda o hash canônico, então o replay continua replay; o teste de chaves reordenadas em `tests/integration/bet-sqs.test.ts` veio do commit `d2e60cb` e não precisou de alteração.
+
+Consultas de estado no uso atual:
+
+- `isTerminal` substitui o par de comparações de status em `assertPending`, usado por todas as transições, inclusive a expiração de referência;
+- `affectsBalance` decide se há movimento na liquidação e separa LOSS do par de eventos;
+- `requiresReference` substitui a comparação de REFUND/ROLLBACK na validação da referência e na busca por reversão já processada.
+
+O `WagerConsumer` não compara kind nem status do agregado: sua decisão é de transporte, entre ack, retry e DLQ. Não havia comparação inline a substituir ali, e a liquidação é quem usa as consultas no caminho da fila.
+
+`affectsBalance` foi declarada como predicado de tipo para estreitar LOSS até a factory de evento, sem cast. Para os callers, continua sendo um método que devolve booleano.
+
+Verificação executada:
+
+- `bun test tests/domain tests/integration/payload-hash-backfill.test.ts`: 182 testes, 731 assertions, zero falhas;
+- `bun test tests/integration/refund.test.ts tests/integration/rollback.test.ts`: 31 testes, 231 assertions, zero falhas;
+- `bun test tests/integration/bet-http.test.ts tests/integration/win-http.test.ts tests/integration/loss-http.test.ts`: 29 testes, 468 assertions, zero falhas;
+- `bun test tests/integration/pending-reference.test.ts tests/integration/failed-reference.test.ts`: 15 testes, 197 assertions, zero falhas;
+- `bun test tests/integration/bet-sqs.test.ts`: 33 testes, 529 assertions, zero falhas, 219,85 s;
+- `bun test`: 365 testes, 3116 assertions, 36 arquivos, zero falhas, 281,23 s.
+
+O delta sobre a seção anterior é de 33 testes e 98 assertions: 32 testes novos em `tests/domain/wager-transaction.test.ts`, 69 no arquivo, e o teste de backfill em `tests/integration/payload-hash-backfill.test.ts`. O backfill cria schema isolado, sobe as migrations até `20261022000400`, grava uma BET com aspas, barra invertida, acento e emoji sem `payload_hash`, sobe `20261023000100` e compara o valor preenchido com o hash do agregado. Os dois coincidem.
+
+`bun run typecheck`, `bun run lint` e `bun run format:check` passaram sem correção pendente.
+
+Nest Boost por MCP com `application_info`, `list_routes` e `module_graph`, em processos separados antes e depois: 13 módulos, 4 controllers, 16 providers e 10 rotas nas duas pontas. `evaluate` não foi chamado.
+
+Limites: os hashes de referência fixam as entradas testadas, não toda entrada possível. O teste de backfill cobre BET, que é o único kind preenchido pela migration 00100. A suíte usa PostgreSQL 17.6 e LocalStack 4.11.1 reais nos containers preexistentes, mas não reexecutou a imagem da API. Nenhum contrato HTTP ou SQS, schema, migration, evento ou código de falha mudou.
