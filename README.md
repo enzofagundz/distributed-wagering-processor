@@ -310,7 +310,15 @@ bun run test:integration
 bun test
 ```
 
-`bun run lint:fix` aplica correções automáticas do ESLint; `bun run format` formata arquivos com Prettier.
+`bun run lint` executa `biome check` (formatação, lint e organização de imports); `bun run lint:fix` aplica correções seguras com `biome check --write`; `bun run format` formata com escrita e `bun run format:check` apenas verifica. O Biome substituiu ESLint e Prettier em [biome.json](biome.json), com estas decisões:
+
+- O escopo é `src/**` e `tests/**`; `vcs.useIgnoreFile` reaproveita o `.gitignore`.
+- O formatter reproduz os padrões que o projeto usava no Prettier: 2 espaços, 80 colunas, aspas duplas, ponto e vírgula e vírgula final.
+- `suspicious.noExplicitAny` fica em `error`, como no ESLint.
+- `suspicious.noControlCharactersInRegex` fica desligado, como o `no-control-regex` do ESLint, porque o domínio valida entradas rejeitando caracteres de controle.
+- `javascript.parser.unsafeParameterDecoratorsEnabled` habilita os decorators de parâmetro exigidos pelo NestJS.
+- `complexity.noStaticOnlyClass` é desligado em `*.module.ts`, onde os módulos expõem `register` estático.
+- `style.noNonNullAssertion` é desligado apenas em `tests/**`; em `src/**` a regra permanece ativa.
 
 A integração exige PostgreSQL real e banco dedicado terminado em `_test`; os testes falham se esses requisitos não forem atendidos. Os testes aplicam migrations automaticamente. Fixtures de constraints usam rollback; testes HTTP positivos preservam auditoria append-only com identidades novas por execução.
 
