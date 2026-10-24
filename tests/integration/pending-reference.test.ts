@@ -728,3 +728,99 @@ test("last attempt resolves an arrived BET and dependent ROLLBACK rejects an exp
     checkedEntries: 3,
   });
 });
+
+test("pending batch continues after a candidate fails and retries its rolled-back settlement once", async () => {
+  const candidates = [];
+  for (let i = 0; i < 2; i++) {
+    const identity = await wallet();
+    const bet = input(identity, "BET");
+    const refund = input(identity, "REFUND", bet.externalTransactionId);
+    const pending = await wagering.submit(refund);
+    expect((await wagering.submit(bet)).status).toBe("PROCESSED");
+    candidates.push({ identity, refund, transactionId: pending.transactionId });
+  }
+  candidates.sort((a, b) => a.transactionId.localeCompare(b.transactionId));
+  const [failed, successful] = candidates;
+  const name = `fail_batch_${crypto.randomUUID().replaceAll("-", "")}`;
+  const before = await orm.em.execute(
+    "select reference_attempts, reference_next_attempt_at from wager_transactions where id = ?",
+    [failed!.transactionId],
+  );
+  await orm.em
+    .execute(`create function ${name}() returns trigger language plpgsql as $$ begin
+    if new.payload->>'correlationId' = '${failed!.transactionId}' and new.event_type = 'WagerTransactionProcessed' then
+      raise exception 'induced candidate outbox failure';
+    end if; return new; end $$`);
+  await orm.em.execute(
+    `create trigger ${name} before insert on outbox_messages for each row execute function ${name}()`,
+  );
+  const worker = new PendingReferenceWorker(wagering, { pageSize: 1 });
+  const at = new Date(Date.now() + 1000);
+  try {
+    const summary = await worker.runOnce(at);
+    expect(summary.scanned).toBeGreaterThanOrEqual(2);
+    expect(summary.failed).toBe(1);
+    expect(summary.processed).toBeGreaterThanOrEqual(1);
+    expect(await wagering.get({ id: failed!.transactionId })).toMatchObject({
+      status: "PENDING_REFERENCE",
+      processedAt: null,
+    });
+    expect(await wagering.get({ id: successful!.transactionId })).toMatchObject(
+      { status: "PROCESSED", balance: { amount: "100.00", currency: "BRL" } },
+    );
+    expect(
+      await orm.em.execute(
+        "select reference_attempts, reference_next_attempt_at from wager_transactions where id = ?",
+        [failed!.transactionId],
+      ),
+    ).toEqual(before);
+    expect(await events(failed!.transactionId)).toEqual([
+      {
+        event_type: "WagerTransactionPendingReference",
+        kind: "REFUND",
+        failure_code: null,
+      },
+    ]);
+    expect(await wallets.reconcile(failed!.identity.walletId)).toMatchObject({
+      consistent: true,
+      storedBalance: { amount: "75.00", currency: "BRL" },
+      checkedEntries: 2,
+    });
+    expect(
+      await wallets.reconcile(successful!.identity.walletId),
+    ).toMatchObject({
+      consistent: true,
+      storedBalance: { amount: "100.00", currency: "BRL" },
+      checkedEntries: 3,
+    });
+  } finally {
+    await orm.em.execute(`drop trigger ${name} on outbox_messages`);
+    await orm.em.execute(`drop function ${name}()`);
+  }
+  expect((await worker.runOnce(at)).processed).toBeGreaterThanOrEqual(1);
+  expect(await wagering.submit(failed!.refund)).toMatchObject({
+    status: "PROCESSED",
+    idempotentReplay: true,
+    balance: { amount: "100.00", currency: "BRL" },
+  });
+  expect(await events(failed!.transactionId)).toEqual([
+    {
+      event_type: "WagerTransactionPendingReference",
+      kind: "REFUND",
+      failure_code: null,
+    },
+    {
+      event_type: "WagerTransactionProcessed",
+      kind: "REFUND",
+      failure_code: null,
+    },
+    { event_type: "WalletBalanceChanged", kind: null, failure_code: null },
+  ]);
+  for (const candidate of candidates) {
+    expect(await wallets.reconcile(candidate.identity.walletId)).toMatchObject({
+      consistent: true,
+      storedBalance: { amount: "100.00", currency: "BRL" },
+      checkedEntries: 3,
+    });
+  }
+}, 10000);
