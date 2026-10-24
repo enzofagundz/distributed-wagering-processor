@@ -754,20 +754,24 @@ test("pending batch continues after a candidate fails and retries its rolled-bac
   await orm.em.execute(
     `create trigger ${name} before insert on outbox_messages for each row execute function ${name}()`,
   );
-  const worker = new PendingReferenceWorker(wagering, { pageSize: 1 });
+  const worker = new PendingReferenceWorker(
+    new PendingReferenceBatchRunner(orm, wagering),
+    { pageSize: 1 },
+  );
   const at = new Date(Date.now() + 1000);
   try {
     const summary = await worker.runOnce(at);
     expect(summary.scanned).toBeGreaterThanOrEqual(2);
     expect(summary.failed).toBe(1);
     expect(summary.processed).toBeGreaterThanOrEqual(1);
-    expect(await wagering.get({ id: failed!.transactionId })).toMatchObject({
+    expect(await queries.get({ id: failed!.transactionId })).toMatchObject({
       status: "PENDING_REFERENCE",
       processedAt: null,
     });
-    expect(await wagering.get({ id: successful!.transactionId })).toMatchObject(
-      { status: "PROCESSED", balance: { amount: "100.00", currency: "BRL" } },
-    );
+    expect(await queries.get({ id: successful!.transactionId })).toMatchObject({
+      status: "PROCESSED",
+      balance: { amount: "100.00", currency: "BRL" },
+    });
     expect(
       await orm.em.execute(
         "select reference_attempts, reference_next_attempt_at from wager_transactions where id = ?",
