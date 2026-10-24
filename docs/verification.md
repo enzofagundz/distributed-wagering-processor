@@ -638,4 +638,65 @@ Smoke com `PORT=3199 bun run start` no banco de desenvolvimento: abertura de wal
 
 `bun test` completo: 292 testes, zero falhas em 28 arquivos (281.04s). `bun run typecheck`, `bun run lint` e `bun run format` passaram. Nest Boost MCP não rodou: o servidor sobe no clone do Windows, não no notebook onde está o código.
 
-Limites: contadores são por processo e não foram verificados com várias instâncias; `RETRIES_EXHAUSTED` e conflitos por deadlock ou serialização não têm cenário próprio, só o código compartilhado com `55P03`.
+Limites: contadores são por processo e não foram verificados com várias instâncias; `RETRIES_EXHAUSTED` (coberto depois, na seção de autenticação abaixo) e conflitos por deadlock ou serialização não têm cenário próprio, só o código compartilhado com `55P03`.
+
+## Autenticação com Keycloak — 2026-10-24
+
+Ticket 27. Desenho em [arquitetura](../ARCHITECTURE.md#autenticação) e [ADR-0008](adr/0008-autenticacao-com-keycloak.md).
+
+Keycloak 26.4.0 subiu pelo Compose com `--import-realm`. O healthcheck na porta 9000 ficou `healthy`. Um token `client_credentials` de `provider-a`, decodificado, trouxe `iss: http://127.0.0.1:8080/realms/wagering`, `aud: wagering-api` e `providerId: provider-a`.
+
+`bun test tests/integration/auth-http.test.ts`: 4 testes, 32 assertions, zero falhas. A chave RSA e o JWKS nascem no teste. Health responde sem token; wallets, ledger, as duas consultas de transação e `/metrics` respondem 401 `UNAUTHORIZED` sem ele. Também dão 401: assinatura de outra chave, `iss` e `aud` errados, token expirado e `providerId` ausente ou vazio. `providerId` divergente no body ou na rota dá 403 `PROVIDER_IDENTITY_MISMATCH`, e a wallet fica sem BET e com saldo `100.00`. Com o provider certo a BET passa com 201; player de outra wallet continua 400 `PLAYER_WALLET_MISMATCH`.
+
+`bun test tests/integration/keycloak-smoke.test.ts`: 1 teste, 8 assertions, zero falhas, contra o Keycloak real: abertura sem token 401, token de `provider-b` com body de `provider-a` 403, fluxo válido 201 com saldo `90.00`.
+
+O pre-request da coleção Postman foi executado com `bun -e` simulando `pm` e obteve token do Keycloak. A coleção inteira não rodou no Postman.
+
+`metrics.test.ts` ganhou o caso que faltava: um `WageringService` falso lança `TEMPORARY_UNAVAILABLE` em toda entrega na fila FIFO real. As quatro primeiras entregas somam 1 cada em `wager_message_retries_total`; a quinta soma 1 em `wager_dlq_messages_total{reason="RETRIES_EXHAUSTED"}`, `PERMANENT` fica parado, a DLQ recebe `failureKind=RETRIES_EXHAUSTED`, `receiveCount=5`, e a fila de origem fica vazia. 4 testes no arquivo, zero falhas (36.37s).
+
+Nest Boost MCP rodou no notebook por stdio: `list_routes` listou as 10 rotas e `module_graph` mostrou `AuthModule` importado por `AppModule`. O preview não recebe configuração, então não registra o guard.
+
+## Prova final — 2026-10-24
+
+Ticket 28. Tudo abaixo rodou no notebook Fedora com Podman, PostgreSQL 17.6, LocalStack 4.11.1 e Keycloak 26.4.0 em containers.
+
+`bun test` completo: 298 testes, zero falhas, 2682 assertions em 30 arquivos (272.94s). `bun run lint`, `bun run format:check`, `bun run typecheck` e `bun run test:domain` (125 testes) passaram.
+
+Os oito cenários da seção 13, todos dentro dessa execução:
+
+| # | Cenário | Teste | Saldo vs. ledger |
+|---|---|---|---|
+| 1 | 50 BET iguais em paralelo | `wallet-concurrency.test.ts`: 50 envios por HTTP e caso de uso em três processos, um original e 49 replays, um débito | reconciliado |
+| 2 | Duas BET de 80.00 sobre 100.00 | `wallet-concurrency.test.ts` e `bet-http.test.ts`: uma processada, uma rejeitada, saldo 20.00 | reconciliado |
+| 3 | Wallets distintas em paralelo | `wallet-concurrency.test.ts`: duas wallets confirmam enquanto a terceira segue bloqueada | reconciliado |
+| 4 | Três ou mais processos | `wallet-concurrency.test.ts` (três APIs), `bet-sqs.test.ts` (três consumidores) | reconciliado |
+| 5 | Morte depois do commit, antes do ack | `bet-sqs.test.ts`: SIGKILL antes do `DeleteMessage`, redelivery depois de 30 s, sem segundo efeito | reconciliado |
+| 6 | Dois publishers | `outbox.test.ts`: dois processos, SIGKILL depois do envio, recuperação sem duplicar efeito no consumidor | n/a (sem movimento) |
+| 7 | Reversão antes da referência | `pending-reference.test.ts`, `refund.test.ts`, `rollback.test.ts` e reversões por SQS em `bet-sqs.test.ts` | reconciliado |
+| 8 | Reinício | `bet-http.test.ts`, `bet-sqs.test.ts`, `pending-reference.test.ts` reiniciam aplicação, pool ou consumidor | reconciliado |
+
+Smoke do conjunto pelo Compose: `docker compose build app`, `up -d --wait postgres localstack keycloak`, `run --rm app bun run migration:up`, `up -d --wait app` e um script Bun fora do repositório. Todos os 18 checks passaram:
+
+- health live e ready 200 sem token; `/metrics` sem token 401 e com token 200;
+- wallet de `100.00 BRL`; BET HTTP de `30.00` com saldo `70.00`; replay devolve a mesma transação com `idempotentReplay: true`; payload divergente 409; token de `provider-b` 403;
+- REFUND de `20.00` pela fila antes da BET referenciada fica `PENDING_REFERENCE`; a BET chega pela fila e o worker resolve o REFUND;
+- WIN de `50.00` pela fila, enviado duas vezes com o mesmo envelope, credita uma vez;
+- saldo final `120.00`, versão 5, cinco lançamentos, reconciliação com diferença `0.00`; consulta por ID interno mantém o saldo observado `70.00`;
+- 11 eventos da wallet na fila `wagering-events`. No PostgreSQL: `WagerTransactionProcessed` 5, `WalletBalanceChanged` 5, `WagerTransactionPendingReference` 1, todos com `published_at`.
+
+Depois de `docker compose restart app`, readiness voltou a 200 e a reconciliação da mesma wallet deu `120.00` com diferença zero.
+
+Requisitos eliminatórios:
+
+| Falha eliminatória | Evidência |
+|---|---|
+| `number` para dinheiro | `Money` usa centavos `bigint`; `numeric(30,2)` lido como string; `tests/domain/money.test.ts` |
+| Saldo negativo por race | CHECK no schema e cenário 2 |
+| Débito ou crédito duplicado | cenários 1 e 5, replay HTTP e SQS, índices únicos de reversão |
+| Idempotência só em memória | hash e resultado persistidos; replay depois de reinício (cenário 8) |
+| Correto só com uma instância | cenários 4 e 6 |
+| Evento publicado antes do commit | `outbox.test.ts`: publisher não vê outbox sem commit |
+| Ledger não auditável | trigger rejeita UPDATE/DELETE/TRUNCATE; `opening-schema.test.ts` |
+| Mocks no lugar de PostgreSQL e SQS | integração usa containers reais; só o caso novo de `RETRIES_EXHAUSTED` troca o caso de uso, mantendo SQS real |
+
+Lacunas que continuam abertas: o estado `FAILED` não tem fluxo auditável próprio; contadores de métricas são por processo e não foram somados entre instâncias; workers de referência e outbox não têm prazo de drenagem no shutdown; não houve teste de carga (opcional). Double-entry e OpenTelemetry, também opcionais, não foram feitos.
