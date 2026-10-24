@@ -1,9 +1,5 @@
-import { defineConfig } from "@mikro-orm/postgresql";
 import { Migrator } from "@mikro-orm/migrations";
-import { walletSchema } from "./wallet-record";
-import { wagerTransactionSchema } from "./wager-transaction-record";
-import { walletLedgerEntrySchema } from "./wallet-ledger-entry-record";
-import { outboxMessageSchema } from "./outbox-message-record";
+import { defineConfig } from "@mikro-orm/postgresql";
 import { Migration20261022000100 } from "./migrations/Migration20261022000100";
 import { Migration20261022000200 } from "./migrations/Migration20261022000200";
 import { Migration20261022000300 } from "./migrations/Migration20261022000300";
@@ -14,10 +10,12 @@ import { Migration20261023000300 } from "./migrations/Migration20261023000300";
 import { Migration20261023000400 } from "./migrations/Migration20261023000400";
 import { Migration20261023000500 } from "./migrations/Migration20261023000500";
 import { Migration20261023000600 } from "./migrations/Migration20261023000600";
-
 import { Migration20261023000700 } from "./migrations/Migration20261023000700";
-
 import { Migration20261023000800 } from "./migrations/Migration20261023000800";
+import { outboxMessageSchema } from "./outbox-message-record";
+import { wagerTransactionSchema } from "./wager-transaction-record";
+import { walletLedgerEntrySchema } from "./wallet-ledger-entry-record";
+import { walletSchema } from "./wallet-record";
 
 export function databaseConfig(clientUrl = process.env.DATABASE_URL) {
   if (!clientUrl) throw new Error("DATABASE_URL is required");

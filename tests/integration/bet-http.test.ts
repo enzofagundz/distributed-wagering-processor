@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import type { INestApplication } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
+import type { INestApplication } from "@nestjs/common";
 import { createApplication } from "../../src/create-application";
 import { databaseConfig } from "../../src/persistence/config";
 
@@ -250,8 +250,7 @@ test("outbox failure rolls back debit and every audit write; retry can commit on
   const key = crypto.randomUUID();
   const before = await getWallet(identity.walletId);
   const name = `fail_bet_${crypto.randomUUID().replaceAll("-", "")}`;
-  await orm.em
-    .execute(`create function ${name}() returns trigger language plpgsql as $$
+  await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$
     begin
       if new.aggregate_id = '${identity.walletId}'::uuid and new.event_type = 'WalletBalanceChanged'
         then raise exception 'private induced BET failure'; end if;
@@ -495,8 +494,7 @@ test("failed rejection is rolled back; transient and unexpected uniqueness failu
     ["23505", 500, { statusCode: 500, message: "Internal server error" }],
   ] as const) {
     const name = `fail_rejection_${crypto.randomUUID().replaceAll("-", "")}`;
-    await orm.em
-      .execute(`create function ${name}() returns trigger language plpgsql as $$
+    await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$
       begin
         if new.aggregate_id = '${identity.walletId}'::uuid then
           raise exception 'private rejection failure' using errcode = '${sqlState}', constraint = 'unexpected_outbox_unique';

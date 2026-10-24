@@ -1,6 +1,6 @@
-import { Module, type DynamicModule } from "@nestjs/common";
-import { MikroORM } from "@mikro-orm/postgresql";
 import { SQSClient } from "@aws-sdk/client-sqs";
+import { MikroORM } from "@mikro-orm/postgresql";
+import { type DynamicModule, Module } from "@nestjs/common";
 import { PersistenceModule } from "../persistence/persistence.module";
 import { OutboxPublisher } from "./outbox-publisher";
 

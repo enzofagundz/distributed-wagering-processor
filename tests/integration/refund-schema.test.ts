@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { EntityManager, MikroORM } from "@mikro-orm/postgresql";
+import { type EntityManager, MikroORM } from "@mikro-orm/postgresql";
 import { databaseConfig } from "../../src/persistence/config";
 
 const url = process.env.TEST_DATABASE_URL;

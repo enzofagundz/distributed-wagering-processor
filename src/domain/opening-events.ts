@@ -1,5 +1,3 @@
-import type { Wallet } from "./wallet";
-import type { WalletLedgerEntry } from "./wallet-ledger-entry";
 import type { MoneyProps } from "./money";
 import { DomainError } from "./money";
 import type {
@@ -8,6 +6,8 @@ import type {
   WagerKind,
   WagerTransaction,
 } from "./wager-transaction";
+import type { Wallet } from "./wallet";
+import type { WalletLedgerEntry } from "./wallet-ledger-entry";
 
 export abstract class IntegrationEvent<T> {
   abstract readonly eventType: string;

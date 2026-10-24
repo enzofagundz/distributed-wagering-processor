@@ -1,8 +1,6 @@
-import { WageringInbox, type InboxContext } from "./wagering-inbox";
 import { createHash } from "node:crypto";
-import type { WagerTransactionRecord } from "../persistence/wager-transaction-record";
 import { LockMode, UniqueConstraintViolationException } from "@mikro-orm/core";
-import { MikroORM, type EntityManager } from "@mikro-orm/postgresql";
+import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
 import { DomainError, Money, type MoneyProps } from "../domain/money";
 import {
   WagerTransactionPendingReference,
@@ -11,17 +9,19 @@ import {
   WalletBalanceChanged,
 } from "../domain/opening-events";
 import {
-  WagerTransaction,
   type ExternalWagerKind,
   type FailureCode,
+  WagerTransaction,
 } from "../domain/wager-transaction";
 import { Wallet } from "../domain/wallet";
 import { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
 import { outboxMessageSchema } from "../persistence/outbox-message-record";
+import type { WagerTransactionRecord } from "../persistence/wager-transaction-record";
 import { wagerTransactionSchema } from "../persistence/wager-transaction-record";
-import { walletSchema } from "../persistence/wallet-record";
-import type { WalletRecord } from "../persistence/wallet-record";
 import { walletLedgerEntrySchema } from "../persistence/wallet-ledger-entry-record";
+import type { WalletRecord } from "../persistence/wallet-record";
+import { walletSchema } from "../persistence/wallet-record";
+import type { InboxContext, WageringInbox } from "./wagering-inbox";
 
 export interface SubmitTransactionInput {
   providerId: string;

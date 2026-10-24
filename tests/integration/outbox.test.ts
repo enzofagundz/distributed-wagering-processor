@@ -1,16 +1,16 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import type { INestApplication } from "@nestjs/common";
-import { MikroORM } from "@mikro-orm/postgresql";
 import {
   CreateQueueCommand,
-  DeleteQueueCommand,
   DeleteMessageCommand,
+  DeleteQueueCommand,
   ReceiveMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
+import { MikroORM } from "@mikro-orm/postgresql";
+import type { INestApplication } from "@nestjs/common";
 import { createApplication } from "../../src/create-application";
-import { databaseConfig } from "../../src/persistence/config";
 import { OutboxPublisher } from "../../src/outbox/outbox-publisher";
+import { databaseConfig } from "../../src/persistence/config";
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url || !new URL(url).pathname.endsWith("_test"))
@@ -280,8 +280,7 @@ test("failure before financial commit rolls back BET and publishes no event", as
   const identity = await openWallet();
   expect(await publisher.runOnce()).toBe(2);
   await receive(2);
-  await orm.em
-    .execute(`create function fail_bet_outbox() returns trigger language plpgsql as $$
+  await orm.em.execute(`create function fail_bet_outbox() returns trigger language plpgsql as $$
     begin
       if new.aggregate_id = '${identity.walletId}'::uuid then raise exception 'induced failure'; end if;
       return new;

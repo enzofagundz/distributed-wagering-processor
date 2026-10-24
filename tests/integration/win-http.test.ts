@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import type { INestApplication } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
+import type { INestApplication } from "@nestjs/common";
 import { createApplication } from "../../src/create-application";
 import { databaseConfig } from "../../src/persistence/config";
 
@@ -646,8 +646,7 @@ test("outbox failure rolls back WIN credit and all audit writes before a retry c
   const key = crypto.randomUUID();
   const before = await getWallet(identity.walletId);
   const name = `fail_win_${crypto.randomUUID().replaceAll("-", "")}`;
-  await orm.em
-    .execute(`create function ${name}() returns trigger language plpgsql as $$
+  await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$
     begin
       if new.aggregate_id = '${identity.walletId}'::uuid and new.event_type = 'WalletBalanceChanged'
         then raise exception 'private induced WIN failure'; end if;

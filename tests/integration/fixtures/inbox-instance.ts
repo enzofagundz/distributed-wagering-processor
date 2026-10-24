@@ -1,8 +1,8 @@
-import { WageringInbox } from "../../../src/wagering/wagering-inbox";
-import { MikroORM } from "@mikro-orm/postgresql";
 import { SQSClient } from "@aws-sdk/client-sqs";
+import { MikroORM } from "@mikro-orm/postgresql";
 import { databaseConfig } from "../../../src/persistence/config";
 import { WagerConsumer } from "../../../src/wagering/wager-consumer";
+import { WageringInbox } from "../../../src/wagering/wagering-inbox";
 import { WageringService } from "../../../src/wagering/wagering-service";
 
 const url = process.env.DATABASE_URL;

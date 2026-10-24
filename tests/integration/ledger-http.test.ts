@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import type { INestApplication } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
+import type { INestApplication } from "@nestjs/common";
 import { createApplication } from "../../src/create-application";
 import { databaseConfig } from "../../src/persistence/config";
 

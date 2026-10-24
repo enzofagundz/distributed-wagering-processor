@@ -10,9 +10,9 @@ import {
   Query,
 } from "@nestjs/common";
 import { DomainError } from "../domain/money";
-import { OpenWalletDto, openWalletValidation } from "./open-wallet.dto";
-import { LedgerQueryDto, ledgerQueryValidation } from "./ledger-query.dto";
 import { uuidPattern } from "../domain/wallet";
+import { type LedgerQueryDto, ledgerQueryValidation } from "./ledger-query.dto";
+import { type OpenWalletDto, openWalletValidation } from "./open-wallet.dto";
 import { WalletService } from "./wallet-service";
 
 @Controller("wallets")

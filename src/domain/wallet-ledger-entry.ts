@@ -1,4 +1,4 @@
-import { DomainError, Money } from "./money";
+import { DomainError, type Money } from "./money";
 import { uuidPattern } from "./wallet";
 
 export type LedgerDirection = "CREDIT" | "DEBIT";

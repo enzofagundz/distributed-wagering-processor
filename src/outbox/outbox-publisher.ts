@@ -1,6 +1,6 @@
-import { Logger } from "@nestjs/common";
-import type { MikroORM } from "@mikro-orm/postgresql";
 import { SendMessageCommand, type SQSClient } from "@aws-sdk/client-sqs";
+import type { MikroORM } from "@mikro-orm/postgresql";
+import { Logger } from "@nestjs/common";
 
 export class OutboxPublisher {
   private readonly logger = new Logger(OutboxPublisher.name);

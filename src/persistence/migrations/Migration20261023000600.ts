@@ -5,19 +5,16 @@ export class Migration20261023000600 extends Migration {
     this.addSql(`alter table wager_transactions
       add column reference_attempts integer not null default 0,
       add column reference_next_attempt_at timestamptz`);
-    this
-      .addSql(`update wager_transactions set reference_next_attempt_at = created_at
+    this.addSql(`update wager_transactions set reference_next_attempt_at = created_at
       where status = 'PENDING_REFERENCE'`);
     this.replaceChecks(true);
-    this
-      .addSql(`alter table wager_transactions add constraint wager_transactions_reference_retry_shape check (
+    this.addSql(`alter table wager_transactions add constraint wager_transactions_reference_retry_shape check (
       reference_attempts between 0 and 10 and
       ((status = 'PENDING_REFERENCE' and reference_attempts < 10
         and reference_next_attempt_at is not null and isfinite(reference_next_attempt_at))
       or (status <> 'PENDING_REFERENCE' and reference_next_attempt_at is null))
     )`);
-    this
-      .addSql(`create index wager_transactions_reference_due on wager_transactions
+    this.addSql(`create index wager_transactions_reference_due on wager_transactions
       (reference_next_attempt_at, id) where status = 'PENDING_REFERENCE'`);
   }
 

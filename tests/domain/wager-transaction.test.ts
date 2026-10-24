@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { DomainError, Money } from "../../src/domain/money";
 import {
-  WagerTransaction,
   type CreateWagerTransactionProps,
   type WagerReference,
+  WagerTransaction,
 } from "../../src/domain/wager-transaction";
 
 const at = new Date("2026-10-23T12:00:00.000Z");

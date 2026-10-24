@@ -1,5 +1,5 @@
-import { Module, type DynamicModule } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
+import { type DynamicModule, Module } from "@nestjs/common";
 import { databaseConfig } from "./config";
 
 @Module({})

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import type { INestApplication } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
+import type { INestApplication } from "@nestjs/common";
 import { createApplication } from "../../src/create-application";
 import { databaseConfig } from "../../src/persistence/config";
 
@@ -180,8 +180,7 @@ test("LOSS outbox failure rolls back result and allows a single successful retry
   const before = await state(body.walletId);
   const key = crypto.randomUUID();
   const name = `fail_loss_${crypto.randomUUID().replaceAll("-", "")}`;
-  await orm.em
-    .execute(`create function ${name}() returns trigger language plpgsql as $$
+  await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$
     begin
       if new.aggregate_id = '${body.walletId}'::uuid then raise exception 'induced LOSS outbox failure'; end if;
       return new;

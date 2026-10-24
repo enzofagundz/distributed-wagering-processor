@@ -1,14 +1,14 @@
-import { PendingReferenceBatchRunner } from "../../src/wagering/pending-reference-batch-runner";
-import { WageringInbox } from "../../src/wagering/wagering-inbox";
-import { WageringQueries } from "../../src/wagering/wagering-queries";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { databaseConfig } from "../../src/persistence/config";
-import {
-  WageringService,
-  type SubmitTransactionInput,
-} from "../../src/wagering/wagering-service";
+import { PendingReferenceBatchRunner } from "../../src/wagering/pending-reference-batch-runner";
 import { PendingReferenceWorker } from "../../src/wagering/pending-reference-worker";
+import { WageringInbox } from "../../src/wagering/wagering-inbox";
+import { WageringQueries } from "../../src/wagering/wagering-queries";
+import {
+  type SubmitTransactionInput,
+  WageringService,
+} from "../../src/wagering/wagering-service";
 import { WalletService } from "../../src/wallets/wallet-service";
 
 const url = process.env.TEST_DATABASE_URL;
@@ -607,8 +607,7 @@ test("expiration outbox failure rolls back the last attempt and concurrent retri
   }
   const at = new Date(start + 243000);
   const name = `fail_expiration_${crypto.randomUUID().replaceAll("-", "")}`;
-  await orm.em
-    .execute(`create function ${name}() returns trigger language plpgsql as $$
+  await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$
     begin
       if new.payload->>'correlationId' = '${pending.transactionId}' and new.event_type = 'WagerTransactionRejected'
         then raise exception 'induced expiration outbox failure'; end if;
@@ -746,8 +745,7 @@ test("pending batch continues after a candidate fails and retries its rolled-bac
     "select reference_attempts, reference_next_attempt_at from wager_transactions where id = ?",
     [failed!.transactionId],
   );
-  await orm.em
-    .execute(`create function ${name}() returns trigger language plpgsql as $$ begin
+  await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$ begin
     if new.payload->>'correlationId' = '${failed!.transactionId}' and new.event_type = 'WagerTransactionProcessed' then
       raise exception 'induced candidate outbox failure';
     end if; return new; end $$`);

@@ -1,23 +1,23 @@
-import { PendingReferenceBatchRunner } from "../../src/wagering/pending-reference-batch-runner";
-import { PendingReferenceWorker } from "../../src/wagering/pending-reference-worker";
-import { WageringInbox } from "../../src/wagering/wagering-inbox";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import type { INestApplication } from "@nestjs/common";
-import { MikroORM } from "@mikro-orm/postgresql";
 import {
   CreateQueueCommand,
-  DeleteQueueCommand,
   DeleteMessageCommand,
+  DeleteQueueCommand,
   GetQueueAttributesCommand,
-  SendMessageCommand,
   ReceiveMessageCommand,
+  SendMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
+import { MikroORM } from "@mikro-orm/postgresql";
+import type { INestApplication } from "@nestjs/common";
 import { createApplication } from "../../src/create-application";
-import { databaseConfig } from "../../src/persistence/config";
-import { WageringService } from "../../src/wagering/wagering-service";
-import { WagerConsumer } from "../../src/wagering/wager-consumer";
 import { OutboxPublisher } from "../../src/outbox/outbox-publisher";
+import { databaseConfig } from "../../src/persistence/config";
+import { PendingReferenceBatchRunner } from "../../src/wagering/pending-reference-batch-runner";
+import { PendingReferenceWorker } from "../../src/wagering/pending-reference-worker";
+import { WagerConsumer } from "../../src/wagering/wager-consumer";
+import { WageringInbox } from "../../src/wagering/wagering-inbox";
+import { WageringService } from "../../src/wagering/wagering-service";
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url || !new URL(url).pathname.endsWith("_test"))
@@ -617,7 +617,7 @@ for (const kind of ["REFUND", "ROLLBACK"]) {
             ],
       );
       const publisher = new OutboxPublisher(orm, sqs, eventsUrl);
-      while (await publisher.runOnce()) continue;
+      while (await publisher.runOnce());
       const received = [];
       for (;;) {
         const event = await receive(eventsUrl);
@@ -820,8 +820,7 @@ for (const kind of ["BET", "WIN", "LOSS", "REFUND", "ROLLBACK"]) {
         : {}),
     };
     const requested = { ...message, data };
-    await orm.em
-      .execute(`create function fail_inbox_outbox() returns trigger language plpgsql as $$ begin
+    await orm.em.execute(`create function fail_inbox_outbox() returns trigger language plpgsql as $$ begin
     if new.aggregate_id = '${message.data.walletId}'::uuid then raise exception 'induced temporary failure' using errcode = '40001'; end if; return new; end $$`);
     await orm.em.execute(
       "create trigger fail_inbox_outbox before insert on outbox_messages for each row execute function fail_inbox_outbox()",
@@ -991,8 +990,7 @@ test("SIGTERM drains an in-flight message through commit and ack before closing 
 
 test("repeated infrastructure failure is bounded and reaches the FIFO DLQ without a partial debit", async () => {
   const message = await envelope();
-  await orm.em
-    .execute(`create function fail_inbox_retry() returns trigger language plpgsql as $$ begin
+  await orm.em.execute(`create function fail_inbox_retry() returns trigger language plpgsql as $$ begin
     if new.aggregate_id = '${message.data.walletId}'::uuid then raise exception 'induced temporary failure' using errcode = '40001'; end if; return new; end $$`);
   await orm.em.execute(
     "create trigger fail_inbox_retry before insert on outbox_messages for each row execute function fail_inbox_retry()",
@@ -1047,8 +1045,7 @@ for (const stage of ["reservation", "checkpoint"] as const) {
   test(`failure at inbox ${stage} rolls back every write and redelivery commits once`, async () => {
     const message = await envelope();
     const name = `fail_${stage}_${crypto.randomUUID().replaceAll("-", "")}`;
-    await orm.em
-      .execute(`create function ${name}() returns trigger language plpgsql as $$ begin
+    await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$ begin
       if new.message_id = '${message.messageId}' then
         raise exception 'induced inbox ${stage} failure' using errcode = '40001';
       end if; return new; end $$`);
@@ -1122,8 +1119,7 @@ test("uncommitted inbox and financial writes stay invisible and SQS ack waits fo
     "select pg_backend_pid() as pid",
   );
   await gate.execute("select pg_advisory_xact_lock(?::bigint)", [key]);
-  await orm.em
-    .execute(`create function ${name}() returns trigger language plpgsql as $$ begin
+  await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$ begin
     if new.message_id = '${message.messageId}' then perform pg_advisory_xact_lock(${key}::bigint); end if;
     return new; end $$`);
   await orm.em.execute(

@@ -1,9 +1,9 @@
 import {
-  ArgumentsHost,
+  type ArgumentsHost,
   BadRequestException,
   Catch,
-  HttpException,
   type ExceptionFilter,
+  HttpException,
 } from "@nestjs/common";
 import { BaseExceptionFilter } from "@nestjs/core";
 import { DomainError } from "../domain/money";

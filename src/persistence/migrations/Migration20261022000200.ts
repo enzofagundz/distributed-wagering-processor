@@ -45,8 +45,7 @@ export class Migration20261022000200 extends Migration {
     this.addSql(
       "create index wallet_ledger_entries_wallet_id_index on wallet_ledger_entries (wallet_id)",
     );
-    this
-      .addSql(`create function reject_wallet_ledger_mutation() returns trigger language plpgsql as $$
+    this.addSql(`create function reject_wallet_ledger_mutation() returns trigger language plpgsql as $$
       begin
         raise exception 'Wallet ledger entries are immutable' using errcode = '55000';
       end;

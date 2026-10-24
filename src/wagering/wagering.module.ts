@@ -1,14 +1,14 @@
 import { SQSClient } from "@aws-sdk/client-sqs";
-import { WagerConsumer } from "./wager-consumer";
-import { Module, type DynamicModule } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
+import { type DynamicModule, Module } from "@nestjs/common";
 import { PersistenceModule } from "../persistence/persistence.module";
+import { PendingReferenceBatchRunner } from "./pending-reference-batch-runner";
+import { PendingReferenceWorker } from "./pending-reference-worker";
+import { WagerConsumer } from "./wager-consumer";
 import { WageringController } from "./wagering.controller";
-import { WageringService } from "./wagering-service";
 import { WageringInbox } from "./wagering-inbox";
 import { WageringQueries } from "./wagering-queries";
-import { PendingReferenceWorker } from "./pending-reference-worker";
-import { PendingReferenceBatchRunner } from "./pending-reference-batch-runner";
+import { WageringService } from "./wagering-service";
 
 @Module({
   controllers: [WageringController],

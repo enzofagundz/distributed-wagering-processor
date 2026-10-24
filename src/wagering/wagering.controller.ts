@@ -11,11 +11,11 @@ import {
 import { DomainError } from "../domain/money";
 import { uuidPattern } from "../domain/wallet";
 import {
-  SubmitTransactionDto,
+  type SubmitTransactionDto,
   submitTransactionValidation,
 } from "./submit-transaction.dto";
-import { WageringService } from "./wagering-service";
 import { WageringQueries } from "./wagering-queries";
+import { WageringService } from "./wagering-service";
 
 @Controller()
 export class WageringController {

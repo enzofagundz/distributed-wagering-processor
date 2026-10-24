@@ -1,5 +1,5 @@
-import { Module, type DynamicModule } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
+import { type DynamicModule, Module } from "@nestjs/common";
 import { PersistenceModule } from "../persistence/persistence.module";
 import { WalletController, WalletMetricsController } from "./wallet.controller";
 import { WalletService } from "./wallet-service";

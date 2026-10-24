@@ -1,12 +1,12 @@
-import { WageringInbox } from "../../src/wagering/wagering-inbox";
-import { WageringQueries } from "../../src/wagering/wagering-queries";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { databaseConfig } from "../../src/persistence/config";
+import { WageringInbox } from "../../src/wagering/wagering-inbox";
+import { WageringQueries } from "../../src/wagering/wagering-queries";
 import {
-  WageringService,
   type SubmitTransactionInput,
   type SubmitTransactionResult,
+  WageringService,
 } from "../../src/wagering/wagering-service";
 import { WalletService } from "../../src/wallets/wallet-service";
 
@@ -495,8 +495,7 @@ test("outbox failure rolls back all ROLLBACK writes and leaves the reference reu
     [input.walletId],
   );
   const name = `fail_rollback_${crypto.randomUUID().replaceAll("-", "")}`;
-  await orm.em
-    .execute(`create function ${name}() returns trigger language plpgsql as $$
+  await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$
     begin
       if new.aggregate_id = '${input.walletId}'::uuid and new.event_type = 'WalletBalanceChanged'
         then raise exception 'induced ROLLBACK outbox failure'; end if;

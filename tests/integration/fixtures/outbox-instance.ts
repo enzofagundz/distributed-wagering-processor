@@ -1,7 +1,7 @@
-import { MikroORM } from "@mikro-orm/postgresql";
 import { SQSClient } from "@aws-sdk/client-sqs";
-import { databaseConfig } from "../../../src/persistence/config";
+import { MikroORM } from "@mikro-orm/postgresql";
 import { OutboxPublisher } from "../../../src/outbox/outbox-publisher";
+import { databaseConfig } from "../../../src/persistence/config";
 
 const url = process.env.DATABASE_URL;
 const schema = process.env.OUTBOX_TEST_SCHEMA;

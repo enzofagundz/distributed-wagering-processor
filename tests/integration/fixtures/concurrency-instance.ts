@@ -2,8 +2,8 @@ import { MikroORM } from "@mikro-orm/postgresql";
 import { createApplication } from "../../../src/create-application";
 import { databaseConfig } from "../../../src/persistence/config";
 import {
-  WageringService,
   type SubmitTransactionInput,
+  WageringService,
 } from "../../../src/wagering/wagering-service";
 
 const url = process.env.DATABASE_URL;

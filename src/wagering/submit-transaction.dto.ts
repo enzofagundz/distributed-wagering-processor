@@ -11,11 +11,11 @@ import {
   ValidateNested,
   type ValidationError,
 } from "class-validator";
-import { uuidPattern } from "../domain/wallet";
 import {
-  externalWagerKinds,
   type ExternalWagerKind,
+  externalWagerKinds,
 } from "../domain/wager-transaction";
+import { uuidPattern } from "../domain/wallet";
 
 class TransactionMoneyDto {
   @IsDefined({ message: "INVALID_TRANSACTION_PAYLOAD" })

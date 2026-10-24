@@ -1,4 +1,4 @@
-import { MikroORM } from "@mikro-orm/postgresql";
+import type { MikroORM } from "@mikro-orm/postgresql";
 import { DomainError } from "../domain/money";
 import { wagerTransactionSchema } from "../persistence/wager-transaction-record";
 

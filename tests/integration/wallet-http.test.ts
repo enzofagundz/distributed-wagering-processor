@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import type { INestApplication } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
+import type { INestApplication } from "@nestjs/common";
 import { createApplication } from "../../src/create-application";
 import { databaseConfig } from "../../src/persistence/config";
 
@@ -180,8 +180,7 @@ test("positive opening preserves exact balance, audit trail and version on dupli
 test("failure at outbox insertion rolls back wallet, transaction and ledger, allowing retry", async () => {
   const body = input("12.34");
   const name = `fail_opening_${crypto.randomUUID().replaceAll("-", "")}`;
-  await orm.em
-    .execute(`create function ${name}() returns trigger language plpgsql as $$
+  await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$
     begin
       if exists (select 1 from wallets where id = new.aggregate_id and player_id = '${body.playerId}'::uuid)
         then raise exception 'induced opening failure'; end if;
@@ -236,8 +235,7 @@ test("nested HTTP validation rejects extra fields and non-text money without con
 test("unexpected unique failure is generic 500, not wallet conflict, and rolls back opening", async () => {
   const body = input("23.45");
   const name = `fail_unique_${crypto.randomUUID().replaceAll("-", "")}`;
-  await orm.em
-    .execute(`create function ${name}() returns trigger language plpgsql as $$
+  await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$
     begin
       if exists (select 1 from wallets where id = new.aggregate_id and player_id = '${body.playerId}'::uuid)
         then raise exception 'private database detail' using errcode = '23505', constraint = 'unexpected_outbox_unique'; end if;
