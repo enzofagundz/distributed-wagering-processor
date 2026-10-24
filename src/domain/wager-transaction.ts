@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { DomainError, Money } from "./money";
 import { uuidPattern } from "./wallet";
 
@@ -70,11 +71,51 @@ export interface WagerReference {
 }
 
 export interface WagerTransactionState extends CreateWagerTransactionProps {
+  payloadHash: string;
   status: "PENDING" | "PENDING_REFERENCE" | "PROCESSED" | "REJECTED" | "FAILED";
   referenceTransactionId?: string | undefined;
   failureCode?: FailureCode | undefined;
   createdAt: Date;
   processedAt?: Date | undefined;
+}
+
+type PayloadIdentity = Pick<
+  CreateWagerTransactionProps,
+  | "externalTransactionId"
+  | "gameId"
+  | "kind"
+  | "money"
+  | "playerId"
+  | "providerId"
+  | "referenceExternalTransactionId"
+  | "roundId"
+  | "walletId"
+>;
+
+function payloadHashOf(identity: PayloadIdentity): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        externalTransactionId: identity.externalTransactionId,
+        gameId: identity.gameId,
+        kind: identity.kind,
+        money: {
+          amount: identity.money.toString(),
+          currency: identity.money.currency,
+        },
+        playerId: identity.playerId,
+        providerId: identity.providerId,
+        ...(identity.referenceExternalTransactionId === undefined
+          ? {}
+          : {
+              referenceExternalTransactionId:
+                identity.referenceExternalTransactionId,
+            }),
+        roundId: identity.roundId,
+        walletId: identity.walletId,
+      }),
+    )
+    .digest("hex");
 }
 
 function isIdentity(value: unknown): value is string {
@@ -152,25 +193,29 @@ export class WagerTransaction {
     ) {
       throw new DomainError("INVALID_IDENTITY");
     }
-    return new WagerTransaction({
-      id: props.id.toLowerCase(),
+    const identity = {
       providerId: props.providerId,
       externalTransactionId: props.externalTransactionId,
-      idempotencyKey: props.idempotencyKey,
       walletId: props.walletId.toLowerCase(),
       playerId: props.playerId.toLowerCase(),
       roundId: props.roundId,
       gameId: props.gameId,
       kind: props.kind,
       money: props.money,
-      status: "PENDING",
-      createdAt: new Date(),
       ...(props.referenceExternalTransactionId === undefined
         ? {}
         : {
             referenceExternalTransactionId:
               props.referenceExternalTransactionId,
           }),
+    };
+    return new WagerTransaction({
+      ...identity,
+      id: props.id.toLowerCase(),
+      idempotencyKey: props.idempotencyKey,
+      payloadHash: payloadHashOf(identity),
+      status: "PENDING",
+      createdAt: new Date(),
     });
   }
 
@@ -180,6 +225,9 @@ export class WagerTransaction {
 
   get id(): string {
     return this.#state.id;
+  }
+  get payloadHash(): string {
+    return this.#state.payloadHash;
   }
   get providerId(): string {
     return this.#state.providerId;
@@ -229,6 +277,28 @@ export class WagerTransaction {
       : undefined;
   }
 
+  isTerminal(): boolean {
+    return (
+      this.status === "PROCESSED" ||
+      this.status === "REJECTED" ||
+      this.status === "FAILED"
+    );
+  }
+
+  affectsBalance(): this is WagerTransaction & {
+    readonly kind: Exclude<ExternalWagerKind, "LOSS">;
+  } {
+    return this.kind !== "LOSS";
+  }
+
+  requiresReference(): boolean {
+    return this.kind === "REFUND" || this.kind === "ROLLBACK";
+  }
+
+  matchesPayload(hash: string): boolean {
+    return this.#state.payloadHash === hash;
+  }
+
   resolveReference(reference: WagerReference | undefined, at: Date): void {
     this.assertPending(at);
     if (
@@ -258,8 +328,7 @@ export class WagerTransaction {
       reference.playerId !== this.playerId ||
       reference.currency !== this.money.currency ||
       reference.roundId !== this.roundId ||
-      ((this.kind === "REFUND" || this.kind === "ROLLBACK") &&
-        reference.amount !== this.money.toString())
+      (this.requiresReference() && reference.amount !== this.money.toString())
     ) {
       this.reject("REFERENCE_MISMATCH", at);
     } else if (
@@ -380,7 +449,7 @@ export class WagerTransaction {
 
   private assertPending(at: Date): void {
     if (
-      (this.status !== "PENDING" && this.status !== "PENDING_REFERENCE") ||
+      this.isTerminal() ||
       !(at instanceof Date) ||
       !Number.isFinite(at.getTime())
     ) {

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { LockMode, UniqueConstraintViolationException } from "@mikro-orm/core";
 import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
 import { Logger } from "@nestjs/common";
@@ -177,26 +176,6 @@ export class WageringService {
       id: crypto.randomUUID(),
       money,
     });
-    const payloadHash = createHash("sha256")
-      .update(
-        JSON.stringify({
-          externalTransactionId: transaction.externalTransactionId,
-          gameId: transaction.gameId,
-          kind: transaction.kind,
-          money: { amount: money.toString(), currency: money.currency },
-          playerId: transaction.playerId,
-          providerId: transaction.providerId,
-          ...(transaction.referenceExternalTransactionId === undefined
-            ? {}
-            : {
-                referenceExternalTransactionId:
-                  transaction.referenceExternalTransactionId,
-              }),
-          roundId: transaction.roundId,
-          walletId: transaction.walletId,
-        }),
-      )
-      .digest("hex");
     try {
       return await this.orm.em
         .fork()
@@ -205,7 +184,7 @@ export class WageringService {
             const existing = await em.findOne(wagerTransactionSchema, {
               idempotencyKey: transaction.idempotencyKey,
             });
-            if (existing) return this.replay(existing, payloadHash);
+            if (existing) return this.replay(existing, transaction);
             const record = await em.findOne(
               walletSchema,
               { id: transaction.walletId },
@@ -216,7 +195,7 @@ export class WageringService {
               throw new DomainError("PLAYER_WALLET_MISMATCH");
             if (record.currency !== money.currency)
               throw new DomainError("CURRENCY_MISMATCH");
-            return this.settle(em, transaction, record, payloadHash, true);
+            return this.settle(em, transaction, record, true);
           }),
         );
     } catch (error) {
@@ -237,7 +216,7 @@ export class WageringService {
               .fork()
               .transactional((em) =>
                 this.inbox.run(em, inbox, async () =>
-                  this.replay(existing, payloadHash),
+                  this.replay(existing, transaction),
                 ),
               );
         } catch (replayError) {
@@ -271,8 +250,6 @@ export class WageringService {
           { lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE },
         );
         if (!record) return "SKIPPED";
-        if (record.payloadHash == null)
-          throw new Error("Invalid persisted pending transaction");
         const walletRecord = await em.findOne(
           walletSchema,
           { id: record.walletId },
@@ -283,7 +260,6 @@ export class WageringService {
           em,
           this.rehydrateTransaction(record),
           walletRecord,
-          record.payloadHash,
           false,
           at ?? new Date(),
           (record.referenceAttempts ?? 0) + 1,
@@ -344,7 +320,6 @@ export class WageringService {
     em: EntityManager,
     transaction: WagerTransaction,
     walletRecord: WalletRecord,
-    payloadHash: string,
     isNew: boolean,
     at = new Date(),
     referenceAttempts = 0,
@@ -370,7 +345,7 @@ export class WageringService {
       });
       transaction.resolveReference(reference ?? undefined, at);
       if (
-        (transaction.kind === "REFUND" || transaction.kind === "ROLLBACK") &&
+        transaction.requiresReference() &&
         transaction.status === "PENDING" &&
         transaction.referenceTransactionId
       ) {
@@ -402,7 +377,7 @@ export class WageringService {
           at,
         );
       } else {
-        if (transaction.kind !== "LOSS") {
+        if (transaction.affectsBalance()) {
           const identity = {
             transactionId: transaction.id,
             ledgerEntryId: crypto.randomUUID(),
@@ -440,7 +415,7 @@ export class WageringService {
         idempotencyKey: transaction.idempotencyKey,
         roundId: transaction.roundId,
         gameId: transaction.gameId,
-        payloadHash,
+        payloadHash: transaction.payloadHash,
         referenceExternalTransactionId:
           transaction.referenceExternalTransactionId ?? null,
         referenceTransactionId: transaction.referenceTransactionId ?? null,
@@ -525,7 +500,7 @@ export class WageringService {
     isNew: boolean,
   ) {
     if (!isNew && status === "PENDING_REFERENCE") return [];
-    if (movement?.entry && transaction.kind !== "LOSS")
+    if (movement?.entry && transaction.affectsBalance())
       return [
         WagerTransactionProcessed.from(
           movement.wallet,
@@ -549,6 +524,7 @@ export class WageringService {
       record.providerId == null ||
       record.externalTransactionId == null ||
       record.idempotencyKey == null ||
+      record.payloadHash == null ||
       record.roundId == null ||
       record.gameId == null
     )
@@ -564,6 +540,7 @@ export class WageringService {
       gameId: record.gameId,
       kind: record.kind,
       money: Money.from({ amount: record.amount, currency: record.currency }),
+      payloadHash: record.payloadHash,
       ...(record.referenceExternalTransactionId == null
         ? {}
         : {
@@ -586,9 +563,12 @@ export class WageringService {
 
   private replay(
     record: WagerTransactionRecord,
-    payloadHash: string,
+    transaction: WagerTransaction,
   ): SubmitTransactionResult {
-    if (record.payloadHash !== payloadHash)
+    if (
+      record.payloadHash == null ||
+      !transaction.matchesPayload(record.payloadHash)
+    )
       throw new DomainError("IDEMPOTENCY_CONFLICT");
     if (record.kind === "OPENING" || record.observedBalance == null) {
       throw new Error("Invalid persisted wagering result");
