@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { LockMode, UniqueConstraintViolationException } from "@mikro-orm/core";
 import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
+import { Logger } from "@nestjs/common";
 import { DomainError, Money, type MoneyProps } from "../domain/money";
 import {
   WagerTransactionPendingReference,
@@ -96,12 +97,46 @@ function isTransient(error: unknown): boolean {
 }
 
 export class WageringService {
+  private readonly logger = new Logger(WageringService.name);
   constructor(
     private readonly orm: MikroORM,
     private readonly inbox: WageringInbox,
   ) {}
 
   async submit(
+    input: SubmitTransactionInput,
+    inbox?: InboxContext,
+  ): Promise<SubmitTransactionResult> {
+    // Só identificadores e resultado: valores, playerId e chave de idempotência ficam fora do log.
+    const ids = {
+      messageId: inbox?.messageId,
+      walletId: input.walletId,
+      providerId: input.providerId,
+      kind: input.kind,
+    };
+    try {
+      const result = await this.apply(input, inbox);
+      this.logger.log({
+        event: "WagerTransactionSubmitted",
+        correlationId: result.transactionId,
+        transactionId: result.transactionId,
+        ...ids,
+        status: result.status,
+        failureCode: result.failureCode,
+        idempotentReplay: result.idempotentReplay,
+      });
+      return result;
+    } catch (error) {
+      this.logger.warn({
+        event: "WagerTransactionFailed",
+        ...ids,
+        code: error instanceof DomainError ? error.code : "UNEXPECTED",
+      });
+      throw error;
+    }
+  }
+
+  private async apply(
     input: SubmitTransactionInput,
     inbox?: InboxContext,
   ): Promise<SubmitTransactionResult> {
