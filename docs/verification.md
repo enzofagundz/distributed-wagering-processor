@@ -700,3 +700,30 @@ Requisitos eliminatórios:
 | Mocks no lugar de PostgreSQL e SQS | integração usa containers reais; só o caso novo de `RETRIES_EXHAUSTED` troca o caso de uso, mantendo SQS real |
 
 Lacunas que continuam abertas: o estado `FAILED` não tem fluxo auditável próprio; contadores de métricas são por processo e não foram somados entre instâncias; workers de referência e outbox não têm prazo de drenagem no shutdown; não houve teste de carga (opcional). Double-entry e OpenTelemetry, também opcionais, não foram feitos.
+
+## FAILED auditável — 2026-10-24
+
+Ticket 01 fechou o estado terminal para falha permanente de infraestrutura. A verificação usou PostgreSQL e LocalStack reais, sem mock de banco.
+
+`bun test tests/domain/wager-transaction.test.ts tests/integration/failed-reference.test.ts tests/integration/failed-schema.test.ts`: 45 testes, zero falhas, 251 assertions em 8.29 s. `bun run typecheck`, `bun run lint` e `bun run format:check` passaram. `bun test` completo: 315 testes, zero falhas, 2812 assertions em 32 arquivos (307.28 s). Inspeção pelo MCP do Nest Boost (`application_info`, `list_routes`, `module_graph`) devolveu 13 módulos, 4 controllers, 16 providers e 10 rotas; nenhuma rota nova.
+
+Cenários exercitados:
+
+- domínio: `fail()` a partir de `PENDING` e `PENDING_REFERENCE`, recusa a partir de `PROCESSED`, `REJECTED` e `FAILED`, recusa de BET, LOSS, WIN sem referência e código comercial em `fail()`, recusa do código de infraestrutura em `reject()`, `processedAt` e `rehydrate`;
+- resolução permanente: gatilho na outbox induz erro sem SQLSTATE transitório; a linha termina `FAILED` com `PERMANENT_INFRASTRUCTURE_FAILURE`, saldo observado `100.00`, `processedAt` explícito e `referenceNextAttemptAt` nulo; a wallet fica em `75.00`, versão 2, sem lançamento do REFUND e sem evento;
+- consulta e replay: GET por ID e por provider/ID externo devolve 200 com o corpo terminal; o replay devolve 500 com o mesmo resultado e `idempotentReplay: true`;
+- evento: o publisher real do SQS publicou só `WagerTransactionPendingReference` para a transação; depois de `FAILED`, `runOnce` devolveu zero e nenhuma mensagem nova apareceu;
+- nova varredura: `resolvePendingReference` devolve `SKIPPED` e o replay continua `FAILED`;
+- transitório: gatilho com SQLSTATE `40001` mantém `PENDING_REFERENCE`, contador zero e próximo horário inalterado; a tentativa seguinte credita uma vez;
+- marcação falha: gatilho no UPDATE de `FAILED` faz o runner contar erro e a linha continua `PENDING_REFERENCE`; a tentativa seguinte processa;
+- schema: `up/down/up` em schema vazio, `FAILED` com e sem `referenceTransactionId`, recusa sem código, com código comercial, sem `processedAt` ou com `infinity`, restrição a WIN/REFUND/ROLLBACK e `down` recusando histórico.
+
+A marcação precisa de outra transação porque a tentativa que falhou roda em `transactional` e o rollback alcança resultado, saldo, ledger, outbox e contador. Se `FAILED` fosse gravado no mesmo escopo, qualquer erro depois da escrita desfaria também a evidência da falha. A transação nova relê a linha sob lock, reidrata o estado persistido e grava status, código e `processedAt` depois que o rollback já terminou.
+
+`TEMPORARY_UNAVAILABLE` e os SQLSTATE de conexão, serialização (`40001`), deadlock (`40P01`), timeout de lock (`55P03`), shutdown e rede não podem virar `FAILED`. Eles descrevem indisponibilidade temporária e a linha ainda pode resolver na próxima varredura. O teste com `40001` cobre as duas direções: a linha permanece pendente e depois credita uma única vez.
+
+Documentar `FAILED` como inalcançável e removê-lo da matriz foi descartado. Isso deixaria a falha permanente sem auditoria e sem fim definido, dependente do limite de dez tentativas ou de retry eterno. O enunciado pede um terminal auditável, então o gatilho de produção foi implementado.
+
+Depois de replay e nova varredura, o estado continua imutável. `fail()` usa `assertPending` e `rehydrate` não reaplica transição. Replay lê o registro e devolve o resultado original, sem chamar domínio nem reabrir a operação. A varredura filtra `status = 'PENDING_REFERENCE'` e `reference_next_attempt_at <= at`; uma linha `FAILED` não entra na consulta, e a chamada direta devolve `SKIPPED`. O schema reforça o estado terminal com `failure_code` e `processed_at` obrigatórios e `reference_next_attempt_at` nulo.
+
+A prova não cobre BET nem LOSS, que não persistem estado não terminal. Um evento `WagerTransactionFailed` ficou fora do contrato, e o contador é por processo. A falha da própria marcação foi induzida por gatilho de banco, não por queda de conexão. Isso fecha a lacuna de `FAILED` registrada na prova final.

@@ -68,7 +68,7 @@ A mensagem enviada à DLQ mantém o corpo original e leva a causa em atributos S
 
 Saldo insuficiente não vai à DLQ. É rejeição de negócio: grava REJECTED/INSUFFICIENT_FUNDS, inbox e `WagerTransactionRejected` na mesma transação e recebe ack. A DLQ fica para falha técnica ou mensagem que nunca vai processar.
 
-Não criamos status FAILED. As falhas que chegam à DLQ acontecem antes de existir transação (envelope inválido, provider reservado, identidade incompatível), contra uma transação que já tem resultado (conflito de messageId) ou depois de rollback completo (tentativas esgotadas). Em nenhum desses casos há linha de transação para marcar. FAILED de referência continua restrito ao domínio.
+Não criamos status FAILED neste consumidor. As falhas que chegam à DLQ acontecem antes de existir transação (envelope inválido, provider reservado, identidade incompatível), contra uma transação que já tem resultado (conflito de messageId) ou depois de rollback completo (tentativas esgotadas). Em nenhum desses casos há linha de transação para marcar. O estado `FAILED` existe apenas na resolução de referências pendentes, conforme a [arquitetura](../../ARCHITECTURE.md#falha-permanente-de-infraestrutura).
 
 Redrive: consultar antes a transação por provider e ID externo. Se já houver resultado, descartar a mensagem; senão, reenviar o corpo sem alteração à fila de entrada com novo `MessageDeduplicationId`. [Evidências](../verification.md#dlq-do-consumidor--2026-10-24).
 

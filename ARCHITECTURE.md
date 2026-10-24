@@ -110,7 +110,7 @@ O serviço valida player e moeda contra a wallet carregada antes de escrever. Pr
 
 Com saldo suficiente, `Wallet.debit` retorna nova wallet imutável com versão incrementada. SQL confirma BET PROCESSED, saldo observado, um DEBIT, saldo materializado e eventos Processed/BalanceChanged juntos. Sem saldo, confirma BET REJECTED com `INSUFFICIENT_FUNDS` e evento Rejected; saldo, versão e ledger não mudam. Resposta sai após commit. Falha ao gravar qualquer evento desfaz também escritas anteriores. A publicação ocorre no worker separado, após commit.
 
-`WagerTransaction.create` nasce PENDING; `markProcessed` e `reject` levam a estados terminais, que recusam novas transições. `rehydrate` recompõe estado sem repetir regras. BET e LOSS persistem somente estados terminais; WIN, REFUND e ROLLBACK também podem persistir PENDING_REFERENCE, conforme seções abaixo. Código de falha existe apenas na rejeição.
+`WagerTransaction.create` nasce PENDING; `markProcessed`, `reject` e `fail` levam a estados terminais, que recusam novas transições. `rehydrate` recompõe estado sem repetir regras. BET e LOSS persistem somente estados terminais; WIN, REFUND e ROLLBACK também podem persistir PENDING_REFERENCE e FAILED, conforme seções abaixo. `reject` aceita somente códigos comerciais; `fail` grava `PERMANENT_INFRASTRUCTURE_FAILURE` e é o único caminho para `FAILED`.
 
 Migration 004 mantém uma OPENING por wallet por índice único parcial. Unicidades de `(provider_id, external_transaction_id)` e `idempotency_key` impedem segundo efeito financeiro. O saldo observado fica persistido. FKs compostas, checks de não-negatividade e trigger append-only permanecem ativos. `down` da migration 004 recusa execução com BET persistida, antes de remover colunas ou constraints.
 
@@ -237,19 +237,35 @@ A resolução sempre consulta e valida a referência antes de verificar esgotame
 | Referência `PROCESSED` compatível, inclusive na tentativa 10 | Aplica regras financeiras existentes | Resultado, saldo/versão quando houver movimento, ledger e eventos juntos |
 | Referência incompatível | `REJECTED`, `REFERENCE_MISMATCH` | Resultado e evento `Rejected`, sem ledger |
 | Referência compatível `REJECTED` ou `FAILED` | `REJECTED`, `REFERENCE_NOT_PROCESSED` | Resultado e evento `Rejected`, sem ledger |
+| Erro transitório na tentativa | Continua `PENDING_REFERENCE` | Nenhuma; a tentativa volta a ser elegível |
+| Erro permanente na tentativa | `FAILED`, `PERMANENT_INFRASTRUCTURE_FAILURE` | Status, código, `processedAt` e próximo horário nulo; sem saldo, versão, ledger ou evento |
 | Ainda não vencida, bloqueada ou já terminal | `SKIPPED` | Nenhuma |
 
-Uma referência existente que nunca sai de estado não terminal também esgota as dez tentativas. `FAILED` já é reconhecido pelo domínio como terminal sem processamento; o schema atual ainda não persiste esse estado. A cobertura desse ramo é de domínio, não evidência de um fluxo SQL de `FAILED`. Uma referência incompatível continua `REFERENCE_MISMATCH`, mesmo se também estiver rejeitada.
+Uma referência existente que nunca sai de estado não terminal também esgota as dez tentativas. Uma referência incompatível continua `REFERENCE_MISMATCH`, mesmo se também estiver rejeitada.
 
-Replay e GET durante a pendência preservam o saldo observado no aceite e não disparam resolução nem consomem tentativas. No término, `observedBalance` passa a registrar o saldo da wallet sob lock naquele instante, depois do movimento se houver. GET retorna 200; replay retorna 201 no sucesso ou 422 na rejeição, com status, código e saldo terminal persistidos, mesmo depois de novas operações ou reinício.
+### Falha permanente de infraestrutura
+
+`FAILED` cobre o caso em que a própria resolução não consegue terminar por falha permanente de infraestrutura, e não por uma regra de negócio. A transição `fail(code, at)` parte de `PENDING` ou `PENDING_REFERENCE`, grava `PERMANENT_INFRASTRUCTURE_FAILURE` e `processedAt`, e é terminal. `reject()` continua restrito aos códigos comerciais. Só `WIN`, `REFUND` e `ROLLBACK` com `referenceExternalTransactionId` podem terminar em `FAILED`, porque são os únicos kinds que persistem estado não terminal. BET e LOSS não têm esse caminho; ampliar isso exige mudar domínio e schema juntos.
+
+A classificação reutiliza a lista de códigos transitórios de `submit`: SQLSTATE de conexão, serialização, deadlock, timeout de lock e rede. Esses erros continuam propagando para o runner, e a linha permanece `PENDING_REFERENCE`, elegível para a próxima tentativa. Qualquer outro erro é permanente para este fluxo, incluindo `WALLET_NOT_FOUND`, `INVALID_TRANSACTION_STATE`, violação de constraint e erro de integridade persistida. Um erro transitório que virasse `FAILED` encerraria uma operação que ainda pode ser concluída.
+
+A marcação usa uma transação separada. A tentativa que falhou já sofreu rollback inteiro: resultado, saldo, ledger, outbox e contador voltaram ao estado anterior. Reabrir a linha, reidratar, chamar `fail()` e gravar status, código e `processedAt` numa transação nova é o que torna a falha auditável apesar do rollback. `referenceNextAttemptAt` fica nulo, então a varredura não pega mais a linha. O `observedBalance` persistido no aceite é preservado; não vem da wallet atual, que pode estar justamente indisponível. Nenhum lançamento, mudança de saldo, versão ou evento é gravado. Se a própria marcação falhar, nada é confirmado: a linha continua `PENDING_REFERENCE`, o runner conta erro e uma nova varredura pode tentar de novo. Isso evita `FAILED` falso.
+
+Consulta por ID e por provider/ID externo devolve 200 com `FAILED`, `failureCode`, saldo observado e `processedAt`. O replay devolve 500 com o mesmo corpo terminal, porque é falha permanente de infraestrutura, e não aceite pendente nem rejeição de negócio. Nenhuma submissão nova nasce `FAILED`; o estado só aparece pela resolução. Uma referência `FAILED` consultada por outro WIN, REFUND ou ROLLBACK recebe `REFERENCE_NOT_PROCESSED`.
+
+Migration `20261023000900` inclui `FAILED` no check de status, exige código e `processedAt` no shape terminal e aceita `FAILED` com ou sem `referenceTransactionId`. O `down` recusa quando existe histórico `FAILED`. O gauge `wager_transactions{status}` passa a mostrar essa série, o contador `wager_failed_transactions_total` expõe a marcação por processo e o log `PendingReferenceFailed` leva `correlationId`, `transactionId`, `failureCode` e `errorType`. O contrato de eventos não muda. `FAILED` não publica nada, porque a outbox pode ser justamente a dependência que falhou. Um evento `WagerTransactionFailed` fica como extensão futura.
+
+Alternativa descartada: declarar `FAILED` inalcançável, retirá-lo da matriz e manter só a rejeição de negócio. Isso não atende ao requisito de estado terminal auditável para falha permanente e deixaria a linha em retry até o limite de dez tentativas. Outra alternativa era marcar `FAILED` na mesma transação da tentativa, que seria desfeita pelo rollback.
+
+Replay e GET durante a pendência preservam o saldo observado no aceite e não disparam resolução nem consomem tentativas. No término, `observedBalance` passa a registrar o saldo da wallet sob lock naquele instante, depois do movimento se houver. GET retorna 200; replay retorna 201 no sucesso, 422 na rejeição ou 500 em `FAILED`, com status, código e saldo terminal persistidos, mesmo depois de novas operações ou reinício.
 
 `REFERENCE_NOT_FOUND` é definitivo, inclusive quando significa referência ainda não terminal ao esgotar o limite. O provedor deve corrigir a referência e usar nova identidade externa e chave para uma nova operação; nova chave com a identidade antiga continua conflito. Replay nunca reabre nem credita a transação encerrada se a referência chegar depois.
 
-Status, contador, próximo horário, saldo observado terminal e evento de rejeição confirmam no mesmo commit. Encerramento não altera saldo, versão ou ledger. Falha SQL, inclusive na outbox da décima tentativa, desfaz todas essas escritas e não consome a tentativa. Reinício retoma contador e próximo horário persistidos; depois do commit, estados terminais deixam a varredura e não repetem efeito ou evento. Publicação da outbox não faz parte do worker.
+Status, contador, próximo horário, saldo observado terminal e evento de rejeição confirmam no mesmo commit. Encerramento não altera saldo, versão ou ledger. Falha transitória desfaz todas essas escritas e não consome a tentativa. Falha permanente também desfaz a tentativa, e a transação de marcação separada grava `FAILED` sem mover dinheiro. Reinício retoma contador e próximo horário persistidos; depois do commit, estados terminais deixam a varredura e não repetem efeito ou evento. Publicação da outbox não faz parte do worker.
 
 Migration `20261023000600` adiciona `reference_attempts` de 0 a 10 e `reference_next_attempt_at`, finito e obrigatório apenas em `PENDING_REFERENCE`; pendência exige contador menor que 10. Estados terminais ficam sem próximo horário. Pendências anteriores recebem contador zero e horário `created_at`, sem perda de identidade, hash ou saldo do aceite. O índice parcial `(reference_next_attempt_at, id)` atende à busca de pendências vencidas. `down` recusa histórico com `REFERENCE_NOT_FOUND`; sem esse histórico, remove campos/índice e restaura checks anteriores. Exige APIs paradas.
 
-O publisher envia os eventos ao SQS; todos os kinds externos também entram pela fila com inbox, conforme a seção de consumo abaixo. A segurança entre instâncias vem do PostgreSQL, não de scheduler distribuído. Cenários SQL/HTTP não comprovam ack, redelivery ou publicação. Testes focais e setup: [README](README.md#resolver-referência-pendente). Registro de execução do ticket 14: [expiração de referências](docs/verification.md#expiração-de-referências--2026-10-23); resultados devem ser lidos nessa seção, sem extrapolar evidências históricas do ticket 13.
+O publisher envia os eventos ao SQS; todos os kinds externos também entram pela fila com inbox, conforme a seção de consumo abaixo. `FAILED` não gera evento e é lido por consulta, replay, log e métrica. A segurança entre instâncias vem do PostgreSQL, não de scheduler distribuído. Cenários SQL/HTTP não comprovam ack, redelivery ou publicação. Testes focais e setup: [README](README.md#resolver-referência-pendente). Registro de execução do ticket 14: [expiração de referências](docs/verification.md#expiração-de-referências--2026-10-23); resultados devem ser lidos nessa seção, sem extrapolar evidências históricas do ticket 13.
 
 Referências dos locks mantidas da resolução: [MikroORM 6.6 — pessimistic locking](https://mikro-orm.io/docs/6.6/transactions#pessimistic-locking) e [PostgreSQL 17 — row-level locks](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS). Evidências históricas do ticket 13: [resolução de referências](docs/verification.md#resolução-de-referências--2026-10-23).
 
@@ -274,7 +290,7 @@ Ambas as rotas GET usam `WageringQueries.get`: um EntityManager novo faz um SELE
 
 A projeção explícita preserva identidade, valor/moeda, status, datas e `failureCode` quando presente. Saldo vem de `observedBalance`, não da wallet atual; chave de idempotência e hash não são expostos. UUID aceita maiúsculas e é normalizado; identificadores externos preservam caixa e regras da submissão: até 200 caracteres, sem controles ou espaços nas extremidades, provider `internal` reservado. Identidade ausente retorna `TRANSACTION_NOT_FOUND`; inválida falha antes de consultar.
 
-Consulta de rejeição retorna 200 com resultado persistido; 422 pertence à tentativa de processamento. Não há `idempotentReplay` em leitura. OPENING é acessível por ID interno, com metadados externos nulos e sem `balance` quando não há saldo observado persistido. Não são inventados dados de provedor ou saldo histórico.
+Consulta de rejeição ou de `FAILED` retorna 200 com resultado persistido; 422 e 500 pertencem à tentativa de processamento. Não há `idempotentReplay` em leitura. OPENING é acessível por ID interno, com metadados externos nulos e sem `balance` quando não há saldo observado persistido. Não são inventados dados de provedor ou saldo histórico.
 
 Alternativa descartada: reconstruir resultado pelo ledger, que não contém lançamentos de rejeições. Ler diretamente a transação também preserva o saldo original após outras apostas e reinício, sem cache local. A leitura vê somente registros confirmados; um 404 não prova que uma submissão concorrente nunca fará commit.
 
@@ -305,7 +321,7 @@ Referência consultada via Context7: [PostgreSQL 17 — READ COMMITTED](https://
 | 422 | BET/WIN/REFUND/ROLLBACK persistida REJECTED com failureCode, transactionId e saldo observado; `INSUFFICIENT_FUNDS` para BET, `REFERENCE_MISMATCH`, `REFERENCE_NOT_PROCESSED` ou `REFERENCE_NOT_FOUND` para referências, `REFERENCE_ALREADY_REFUNDED` para REFUND, `REFERENCE_ALREADY_ROLLED_BACK` ou `INSUFFICIENT_REVERSAL_FUNDS` para ROLLBACK; replay mantém resultado |
 | 202 | WIN/REFUND/ROLLBACK PENDING_REFERENCE persistida, sem movimento; replay também retorna 202 |
 | 503 | Transações externas: `TEMPORARY_UNAVAILABLE` para códigos conhecidos de conexão, shutdown, serialização, deadlock ou timeout/indisponibilidade de lock; sem retry automático |
-| 500 | Falha inesperada: resposta genérica do NestJS, sem SQL/credenciais |
+| 500 | Falha inesperada: resposta genérica do NestJS, sem SQL/credenciais. Replay de transação `FAILED` devolve 500 com o resultado terminal (`transactionId`, `status`, `failureCode`, saldo observado e `idempotentReplay`); GET continua 200 |
 
 Erros conhecidos retornam `{ "code": "..." }`, exceto a rejeição 422, que retorna o resultado financeiro auditado. Transação externa processada retorna 201, inclusive no replay. DTO rejeita campos extras, estruturas inválidas e dinheiro não textual, sem conversão implícita; falha estrutural precede formato. JSON malformado na submissão recebe `INVALID_TRANSACTION_PAYLOAD`. Falhas inesperadas não viram 400/409. WIN/REFUND/ROLLBACK com referência indisponível retorna 202 persistido; BET e LOSS são síncronas e nunca retornam 202. Kind desconhecido retorna 400. Após 503 ou perda da resposta, reenviar mesma chave/payload permite descobrir commit já ocorrido; não trocar chave. Erros 400 corrigem contrato; 409 exige resolver identidade/payload; 422 é resultado terminal, não retry para tentar obter outro saldo.
 
@@ -342,13 +358,15 @@ O `correlationId` é o `transactionId`. Esse id já é o `correlationId` dos eve
 
 Nenhum log leva valor, saldo, `playerId`, chave de idempotência, corpo da mensagem ou texto de exceção. Exceções viram `code` ou `errorType` (nome da classe), porque mensagens de driver podem trazer SQL, host ou parâmetros. O worker de referências passou a seguir essa regra; antes registrava `error.message`.
 
+`WageringService.resolvePendingReference` registra `PendingReferenceFailed` com `correlationId`, `transactionId`, `failureCode` e `errorType` só depois de confirmar `FAILED`. Falha transitória não gera log de terminal; o runner segue contabilizando o erro em `failed`, como nas demais falhas por candidato.
+
 ## Métricas
 
 `GET /metrics` responde no formato texto do Prometheus (`text/plain; version=0.0.4`). `MetricsModule` é global e exporta um único `Metrics` por aplicação. Os módulos de wallets, wagering e outbox recebem essa instância pelas factories. Quem instancia as classes direto, como os testes, ganha um registro próprio.
 
 | Série | Tipo | Unidade e semântica | Onde incrementa |
 |---|---|---|---|
-| `wager_transactions{status}` | gauge | transações persistidas por `PROCESSED`, `REJECTED` ou `PENDING_REFERENCE`, OPENING incluída | `count` no PostgreSQL a cada scrape |
+| `wager_transactions{status}` | gauge | transações persistidas por `PROCESSED`, `REJECTED`, `PENDING_REFERENCE` ou `FAILED`, OPENING incluída | `count` no PostgreSQL a cada scrape |
 | `wager_duplicates_total{outcome}` | counter | `replay`: chave ou `messageId` repetidos com mesmo payload; `conflict`: `IDEMPOTENCY_CONFLICT` ou `MESSAGE_ID_CONFLICT` | `WageringService.submit` |
 | `wager_lock_conflicts_total` | counter | submissões abortadas com `55P03` (lock_timeout), `40P01` (deadlock) ou `40001` (serialização) | catch de `WageringService.apply`, antes de virar `TEMPORARY_UNAVAILABLE` |
 | `wager_message_retries_total` | counter | mensagens SQS devolvidas à fila com backoff de visibilidade | `WagerConsumer` |
@@ -359,6 +377,7 @@ Nenhum log leva valor, saldo, `playerId`, chave de idempotência, corpo da mensa
 | `outbox_lag_seconds` | gauge | segundos desde o `occurred_at` do pendente mais antigo; 0 sem pendência | PostgreSQL a cada scrape |
 | `wager_processing_duration_seconds` | histogram | duração de `submit` em segundos, HTTP e SQS, sucesso e falha; buckets de 5 ms a 5 s | `WageringService.submit` |
 | `wallet_reconciliation_divergences_total` | counter | reconciliações divergentes | `WalletService.reconcile` |
+| `wager_failed_transactions_total{failureCode}` | counter | transações marcadas `FAILED` por falha permanente; label fixo `PERMANENT_INFRASTRUCTURE_FAILURE` | `WageringService.resolvePendingReference`, depois da marcação confirmada |
 
 Os gauges saem do banco porque status e outbox são estado compartilhado: qualquer instância devolve o mesmo valor, e um reinício não zera nada. Os contadores e o histograma ficam em memória, por processo. Zeram no reinício e precisam ser somados entre instâncias pelo coletor, com `rate()`/`increase()` tratando o reset. Persistir contadores custaria uma escrita a mais por operação sem ganho para o diagnóstico; o valor financeiro continua no ledger e na reconciliação, não na métrica.
 
