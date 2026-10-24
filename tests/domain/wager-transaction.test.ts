@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { DomainError, Money } from "../../src/domain/money";
 import {
   type CreateWagerTransactionProps,
+  type ExternalWagerKind,
+  externalWagerKinds,
   type WagerReference,
   WagerTransaction,
 } from "../../src/domain/wager-transaction";
@@ -40,6 +42,46 @@ function reference(
     kind: "BET",
     status: "PROCESSED",
     ...overrides,
+  };
+}
+
+function hashed(
+  overrides: Partial<CreateWagerTransactionProps> = {},
+): CreateWagerTransactionProps {
+  return {
+    id: "55555555-5555-4555-8555-555555555555",
+    providerId: "provider-hash",
+    externalTransactionId: "bet-hash-1",
+    idempotencyKey: "provider-hash:bet-hash-1",
+    walletId: "11111111-1111-4111-8111-111111111111",
+    playerId: "22222222-2222-4222-8222-222222222222",
+    roundId: "round-hash",
+    gameId: "fortune-chimp",
+    kind: "BET",
+    money: Money.from({ amount: "25.00", currency: "BRL" }),
+    ...overrides,
+  };
+}
+
+const referenceRequired: Readonly<Record<ExternalWagerKind, boolean>> = {
+  BET: false,
+  WIN: false,
+  LOSS: false,
+  REFUND: true,
+  ROLLBACK: true,
+};
+
+function kindProps(
+  kind: ExternalWagerKind,
+): Partial<CreateWagerTransactionProps> {
+  const externalTransactionId = `${kind.toLowerCase()}-hash`;
+  return {
+    kind,
+    externalTransactionId,
+    idempotencyKey: `provider-hash:${externalTransactionId}`,
+    ...(referenceRequired[kind]
+      ? { referenceExternalTransactionId: "bet-hash-1" }
+      : {}),
   };
 }
 
@@ -306,6 +348,7 @@ test("reject refuses the infrastructure code while accepting commercial codes", 
 test("rehydrated FAILED refuses every transition without replaying fail", () => {
   const transaction = WagerTransaction.rehydrate({
     ...props({ referenceExternalTransactionId: "bet-external" }),
+    payloadHash: "a".repeat(64),
     status: "FAILED",
     failureCode: "PERMANENT_INFRASTRUCTURE_FAILURE",
     processedAt: at,
@@ -346,4 +389,194 @@ test("fail refuses commercial codes without leaving PENDING", () => {
   expect(transaction.status).toBe("PENDING");
   expect(transaction.failureCode).toBeUndefined();
   expect(transaction.processedAt).toBeUndefined();
+});
+
+const payloadHashCases: readonly {
+  name: string;
+  overrides: Partial<CreateWagerTransactionProps>;
+  payloadHash: string;
+}[] = [
+  {
+    name: "BET",
+    overrides: {},
+    payloadHash:
+      "f7b64edfec8960f47c13572dfbddf5280d6209a99f80ace38b260a2c78114ed6",
+  },
+  {
+    name: "WIN with reference",
+    overrides: {
+      externalTransactionId: "win-hash-1",
+      idempotencyKey: "provider-hash:win-hash-1",
+      kind: "WIN",
+      money: Money.from({ amount: "10.00", currency: "BRL" }),
+      referenceExternalTransactionId: "bet-hash-1",
+    },
+    payloadHash:
+      "26d6f836f069365596357e15be69cabd62595376d6c77ec8cdf27ff76556714c",
+  },
+  {
+    name: "REFUND",
+    overrides: {
+      externalTransactionId: "refund-hash-1",
+      idempotencyKey: "provider-hash:refund-hash-1",
+      kind: "REFUND",
+      referenceExternalTransactionId: "bet-hash-1",
+    },
+    payloadHash:
+      "ca2a138e95a1902f6016c611b2817c696bc3e8b55f2927c468ac2b10ca39bcbd",
+  },
+  {
+    name: "ROLLBACK",
+    overrides: {
+      externalTransactionId: "rollback-hash-1",
+      idempotencyKey: "provider-hash:rollback-hash-1",
+      kind: "ROLLBACK",
+      referenceExternalTransactionId: "bet-hash-1",
+    },
+    payloadHash:
+      "984f178f06df3e4e472220e0e80052119df11c62319ce42b887d8e418dd636b7",
+  },
+  {
+    name: "LOSS",
+    overrides: {
+      externalTransactionId: "loss-hash-1",
+      idempotencyKey: "provider-hash:loss-hash-1",
+      kind: "LOSS",
+      money: Money.from({ amount: "5.00", currency: "BRL" }),
+    },
+    payloadHash:
+      "efb6eb5199dd95d4f3798f74548fc1c45d0133f3bf30db0dc59c1264070beb95",
+  },
+  {
+    name: "BET with a 28-digit amount",
+    overrides: {
+      externalTransactionId: "bet-hash-28",
+      idempotencyKey: "provider-hash:bet-hash-28",
+      walletId: "33333333-3333-4333-8333-333333333333",
+      playerId: "44444444-4444-4444-8444-444444444444",
+      money: Money.from({
+        amount: "1234567890123456789012345678.00",
+        currency: "BRL",
+      }),
+    },
+    payloadHash:
+      "a3371e2296d8c816cb5772534f76ec3b9c4ee041fc3f329c51515881399df918",
+  },
+  {
+    name: "BET with quotes, backslash and accented round",
+    overrides: {
+      externalTransactionId: 'bet-esp"1',
+      idempotencyKey: 'provider-hash:bet-esp"1',
+      gameId: 'quote"slash\\tab',
+      roundId: "round-ção",
+      walletId: "22222222-2222-4222-8222-222222222222",
+      playerId: "11111111-1111-4111-8111-111111111111",
+      money: Money.from({ amount: "7.50", currency: "BRL" }),
+    },
+    payloadHash:
+      "54b7702853f2404ffb4e4066b445402777387e990b5d8e09f9260b783f77e1a0",
+  },
+  {
+    name: "BET with composed unicode",
+    overrides: {
+      externalTransactionId: "bet-unicode",
+      idempotencyKey: "provider-hash:bet-unicode",
+      gameId: "café",
+      walletId: "22222222-2222-4222-8222-222222222222",
+      playerId: "11111111-1111-4111-8111-111111111111",
+      money: Money.from({ amount: "7.50", currency: "BRL" }),
+    },
+    payloadHash:
+      "fb28fbc34bfb12c9267913f44628a01f6319f9446151c0c9b16b32ea4827f981",
+  },
+  {
+    name: "BET with decomposed unicode",
+    overrides: {
+      externalTransactionId: "bet-unicode",
+      idempotencyKey: "provider-hash:bet-unicode",
+      gameId: "cafe\u0301",
+      walletId: "22222222-2222-4222-8222-222222222222",
+      playerId: "11111111-1111-4111-8111-111111111111",
+      money: Money.from({ amount: "7.50", currency: "BRL" }),
+    },
+    payloadHash:
+      "8e9c58f65d687d2e23196a95e37b62567f306a79c8fc4ee328dd2af0565bc331",
+  },
+];
+
+for (const { name, overrides, payloadHash } of payloadHashCases) {
+  test(`payload hash keeps the pre-refactor bytes for ${name}`, () => {
+    const transaction = WagerTransaction.create(hashed(overrides));
+    expect(transaction.payloadHash).toBe(payloadHash);
+    expect(transaction.matchesPayload(payloadHash)).toBe(true);
+    expect(transaction.matchesPayload("0".repeat(64))).toBe(false);
+  });
+}
+
+test("payload hash uses UUIDs after normalization", () => {
+  const walletId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const playerId = "ffffffff-0000-4000-8000-111111111111";
+  const lower = WagerTransaction.create(hashed({ walletId, playerId }));
+  const upper = WagerTransaction.create(
+    hashed({
+      walletId: walletId.toUpperCase(),
+      playerId: playerId.toUpperCase(),
+    }),
+  );
+  expect(upper.payloadHash).toBe(lower.payloadHash);
+});
+
+test("rehydrate keeps the persisted hash instead of recomputing it", () => {
+  const created = WagerTransaction.create(hashed());
+  const persisted = "b".repeat(64);
+  const transaction = WagerTransaction.rehydrate({
+    ...hashed(),
+    payloadHash: persisted,
+    status: "PROCESSED",
+    createdAt: at,
+    processedAt: at,
+  });
+  expect(transaction.payloadHash).toBe(persisted);
+  expect(transaction.matchesPayload(persisted)).toBe(true);
+  expect(transaction.matchesPayload(created.payloadHash)).toBe(false);
+});
+
+for (const kind of externalWagerKinds) {
+  test(`${kind} answers the state queries from its kind`, () => {
+    const transaction = WagerTransaction.create(hashed(kindProps(kind)));
+    expect(transaction.affectsBalance()).toBe(kind !== "LOSS");
+    expect(transaction.requiresReference()).toBe(referenceRequired[kind]);
+    expect(transaction.isTerminal()).toBe(false);
+  });
+
+  for (const terminal of ["PROCESSED", "REJECTED", "FAILED"] as const) {
+    test(`${kind} ${terminal} is terminal`, () => {
+      const transaction = WagerTransaction.rehydrate({
+        ...hashed(kindProps(kind)),
+        payloadHash: "a".repeat(64),
+        status: terminal,
+        createdAt: at,
+        processedAt: at,
+      });
+      expect(transaction.isTerminal()).toBe(true);
+      expect(transaction.affectsBalance()).toBe(kind !== "LOSS");
+      expect(transaction.requiresReference()).toBe(referenceRequired[kind]);
+    });
+  }
+}
+
+test("PENDING_REFERENCE is not terminal", () => {
+  for (const kind of ["WIN", "REFUND", "ROLLBACK"] as const) {
+    const transaction = WagerTransaction.create(
+      hashed({
+        ...kindProps(kind),
+        ...(kind === "WIN"
+          ? { referenceExternalTransactionId: "bet-hash-1" }
+          : {}),
+      }),
+    );
+    transaction.resolveReference(undefined, at);
+    expect(transaction.status).toBe("PENDING_REFERENCE");
+    expect(transaction.isTerminal()).toBe(false);
+  }
 });
