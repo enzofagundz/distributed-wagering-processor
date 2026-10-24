@@ -563,3 +563,22 @@ Smoke com `bun run start` e as filas do Compose, script temporário `.scratch/sm
 Redrive: o teste de falha 40001 repetida agora remove o trigger, reenvia o corpo da DLQ à fila de entrada e consome. A BET confirma uma vez (75.00 BRL, dois lançamentos, inbox PROCESSED). Um segundo redrive do mesmo corpo vira replay pela inbox, sem novo débito e sem voltar à DLQ. `bun test tests/integration/bet-sqs.test.ts -t "repeated infrastructure"` passou: 1 teste, 29 assertions (42.85s).
 
 Nest Boost MCP, iniciado no notebook com `bun run nest-boost mcp`: `module_graph` mostrou WagerConsumer, WageringService e WageringInbox em WageringModule; `list_routes` confirmou `GET /providers/:providerId/wagering/transactions/:externalTransactionId`, rota usada antes do redrive. O servidor configurado no clone Windows falhou ao importar `src/app.module.ts` (caminho `c:` não aceito pelo loader ESM).
+
+## Shutdown do consumidor — 2026-10-24
+
+Ticket 23. `WagerConsumer.stop()` ganhou prazo (`WAGER_SHUTDOWN_DRAIN_MS`, padrão 20000). Ao vencer, para o heartbeat e devolve a mensagem sem ack com visibilidade 0. `main.ts` encerra o processo depois do `close()` e força código 1 dez segundos após o prazo.
+
+Testes novos ou alterados:
+
+- "SIGTERM past the drain deadline releases the uncommitted ack and a restart replays without a second debit": processo filho pausado entre commit e ack, prazo de 500 ms. Saiu com 0 em menos de 5 s; o consumidor do teste recebeu a mensagem de imediato, sem esperar os 30 s de visibilidade, e a inbox fez replay. Saldo 75.00 BRL, dois lançamentos. Na primeira versão esse teste falhou: o receipt handle era limpo antes do ack e a devolução nunca acontecia. Corrigido antes do commit.
+- SIGTERM com drenagem dentro do prazo e os três SIGKILL entre commit e ack (BET, REFUND, ROLLBACK) continuam passando.
+- `Money.from` rejeita mais de 28 dígitos inteiros, limite das colunas `numeric(30,2)`, e aceita o maior valor armazenável. Antes, esse valor chegava ao PostgreSQL como erro 22003 e o consumidor o tratava como falha temporária.
+
+Smokes com `bun run start` e filas do Compose (`.scratch/smoke/ticket23.ts`, `.scratch/smoke/lock.ts`):
+
+- BET de 4.00 enviada e SIGTERM 0,3 s depois: saída 0 em 865 ms. Após reiniciar, a transação estava PROCESSED, saldo 6.00 BRL, reconciliação com diferença 0.00 e dois lançamentos.
+- Wallet bloqueada por `select ... for update` em outra conexão, BET enviada e SIGTERM com prazo de 2 s: a transação ficou presa e o processo saiu com código 1 em 12041 ms, pela saída forçada. Depois de liberar o lock e reiniciar, a mesma BET foi processada uma vez: PROCESSED, 6.00 BRL, dois lançamentos. O evento `WagerShutdownDeadline` não apareceu no stdout porque o bootstrap usa `logger: false` (ticket 25).
+
+`bun test` completo: 285 testes, 2529 assertions, zero falhas em 25 arquivos (273.34s). `bun run typecheck`, `bun run lint` e `bun run format` passaram. Nest Boost MCP, rodando no notebook, confirmou WagerConsumer em WageringModule após a mudança no construtor.
+
+Limites: workers de referência e outbox não têm prazo próprio de drenagem; ficam cobertos só pela saída forçada.

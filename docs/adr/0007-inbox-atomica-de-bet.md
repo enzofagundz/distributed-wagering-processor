@@ -71,3 +71,13 @@ Saldo insuficiente não vai à DLQ. É rejeição de negócio: grava REJECTED/IN
 Não criamos status FAILED. As falhas que chegam à DLQ acontecem antes de existir transação (envelope inválido, provider reservado, identidade incompatível), contra uma transação que já tem resultado (conflito de messageId) ou depois de rollback completo (tentativas esgotadas). Em nenhum desses casos há linha de transação para marcar. FAILED de referência continua restrito ao domínio.
 
 Redrive: consultar antes a transação por provider e ID externo. Se já houver resultado, descartar a mensagem; senão, reenviar o corpo sem alteração à fila de entrada com novo `MessageDeduplicationId`. [Evidências](../verification.md#dlq-do-consumidor--2026-10-24).
+
+## Extensão no ticket 23
+
+O shutdown passou a ter prazo. `stop()` interrompe novas leituras e espera a mensagem em andamento por até `WAGER_SHUTDOWN_DRAIN_MS` (padrão 20000 ms). Se ela terminar a tempo, o comportamento é o de antes: commit, ack e só então fecha ORM e cliente SQS.
+
+Se o prazo vencer antes do ack, o consumidor para a renovação de visibilidade, devolve a mensagem com `VisibilityTimeout = 0` e registra `WagerShutdownDeadline`. O processo segue fechando. Há dois casos. Commit já feito: outra instância recebe a mensagem e a inbox devolve o resultado original, sem novo débito. Transação ainda aberta: fechar a conexão faz o PostgreSQL desfazer tudo, e a reentrega processa do zero. Nenhum dos dois depende de memória local. O publisher só lê o que foi commitado.
+
+Por que devolver em vez de só esperar a visibilidade expirar: sem a devolução, a mensagem fica parada até 30 s depois do último heartbeat. Com ela, a próxima instância pega na hora. A chamada é best-effort; se falhar, vale a expiração normal.
+
+`orm.close()` espera conexões ativas, então uma transação travada seguraria o processo depois da devolução. Por isso `main.ts` força a saída com código 1 dez segundos após o prazo do consumidor; o PostgreSQL desfaz a transação aberta quando a conexão cai. Limite: workers de referência e outbox continuam esperando sem prazo próprio, cobertos só por essa saída forçada. Morte forçada (SIGKILL) continua coberta pela visibilidade, como no ticket 18. [Evidências](../verification.md#shutdown-do-consumidor--2026-10-24).
