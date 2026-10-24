@@ -569,3 +569,173 @@ test("inbox constraints reject incomplete results and destructive down refuses d
     await orm.em.execute("select message_id from inbox_messages"),
   ).not.toHaveLength(0);
 });
+
+for (const stage of ["reservation", "checkpoint"] as const) {
+  test(`failure at inbox ${stage} rolls back every write and redelivery commits once`, async () => {
+    const message = await envelope();
+    const name = `fail_${stage}_${crypto.randomUUID().replaceAll("-", "")}`;
+    await orm.em
+      .execute(`create function ${name}() returns trigger language plpgsql as $$ begin
+      if new.message_id = '${message.messageId}' then
+        raise exception 'induced inbox ${stage} failure' using errcode = '40001';
+      end if; return new; end $$`);
+    await orm.em.execute(
+      `create trigger ${name} ${stage === "reservation" ? "after insert" : "before update"} on inbox_messages for each row execute function ${name}()`,
+    );
+    await send(message);
+    try {
+      expect(await consumer.runOnce()).toBe(1);
+      expect(await inbox(message.messageId)).toEqual([]);
+      expect(
+        await orm.em.execute(
+          "select id from wager_transactions where idempotency_key = ?",
+          [message.data.idempotencyKey],
+        ),
+      ).toEqual([]);
+      expect(
+        await orm.em.execute(
+          "select id from outbox_messages where aggregate_id = ?",
+          [message.data.walletId],
+        ),
+      ).toHaveLength(2);
+      await reconcile(message.data.walletId, "100.00", 1);
+    } finally {
+      await orm.em.execute(`drop trigger ${name} on inbox_messages`);
+      await orm.em.execute(`drop function ${name}()`);
+    }
+    await Bun.sleep(2100);
+    expect(await consumer.runOnce()).toBe(1);
+    expect(await inbox(message.messageId)).toHaveLength(1);
+    expect(await receive()).toBeUndefined();
+    await reconcile(message.data.walletId, "75.00", 2);
+    const { idempotencyKey, ...body } = message.data;
+    const replay = await fetch(`${base}/wagering/transactions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+      },
+      body: JSON.stringify(body),
+    });
+    expect(replay.status).toBe(201);
+    expect(await replay.json()).toMatchObject({
+      status: "PROCESSED",
+      idempotentReplay: true,
+      balance: { amount: "75.00", currency: "BRL" },
+    });
+    expect(
+      await orm.em.execute(
+        "select id from outbox_messages where aggregate_id = ?",
+        [message.data.walletId],
+      ),
+    ).toHaveLength(4);
+  }, 10000);
+}
+
+test("uncommitted inbox and financial writes stay invisible and SQS ack waits for commit", async () => {
+  const message = await envelope();
+  const key = BigInt(
+    `0x${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`,
+  ).toString();
+  const name = `pause_checkpoint_${crypto.randomUUID().replaceAll("-", "")}`;
+  const observer = await MikroORM.init({
+    ...databaseConfig(url),
+    schema,
+    driverOptions: { connection: { options: `-c search_path=${schema}` } },
+  });
+  const gate = observer.em.fork();
+  await gate.begin();
+  const [blocker] = await gate.execute<{ pid: number }[]>(
+    "select pg_backend_pid() as pid",
+  );
+  await gate.execute("select pg_advisory_xact_lock(?::bigint)", [key]);
+  await orm.em
+    .execute(`create function ${name}() returns trigger language plpgsql as $$ begin
+    if new.message_id = '${message.messageId}' then perform pg_advisory_xact_lock(${key}::bigint); end if;
+    return new; end $$`);
+  await orm.em.execute(
+    `create trigger ${name} before update on inbox_messages for each row execute function ${name}()`,
+  );
+  let completed = false;
+  let processing: Promise<number> | undefined;
+  try {
+    await send(message);
+    processing = consumer.runOnce().finally(() => {
+      completed = true;
+    });
+    const deadline = Date.now() + 5000;
+    let blocked = false;
+    while (!blocked && Date.now() < deadline) {
+      const rows = await observer.em.execute(
+        "select pid from pg_stat_activity where ? = any(pg_blocking_pids(pid)) and query like '%update inbox_messages%'",
+        [blocker!.pid],
+      );
+      blocked = rows.length === 1;
+    }
+    expect(blocked).toBe(true);
+    expect(completed).toBe(false);
+    expect(
+      await observer.em.execute(
+        "select message_id from inbox_messages where message_id = ?",
+        [message.messageId],
+      ),
+    ).toEqual([]);
+    expect(
+      await observer.em.execute(
+        "select id from wager_transactions where idempotency_key = ?",
+        [message.data.idempotencyKey],
+      ),
+    ).toEqual([]);
+    expect(
+      await observer.em.execute(
+        "select id from outbox_messages where aggregate_id = ?",
+        [message.data.walletId],
+      ),
+    ).toHaveLength(2);
+    const query = await fetch(
+      `${base}/providers/${message.data.providerId}/wagering/transactions/${message.data.externalTransactionId}`,
+    );
+    expect(query.status).toBe(404);
+    await reconcile(message.data.walletId, "100.00", 1);
+    const inFlight = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: queueUrl,
+        AttributeNames: [
+          "ApproximateNumberOfMessages",
+          "ApproximateNumberOfMessagesNotVisible",
+        ],
+      }),
+    );
+    expect(inFlight.Attributes).toMatchObject({
+      ApproximateNumberOfMessages: "0",
+      ApproximateNumberOfMessagesNotVisible: "1",
+    });
+  } finally {
+    await gate.rollback();
+    try {
+      if (processing) expect(await processing).toBe(1);
+    } finally {
+      await orm.em.execute(`drop trigger ${name} on inbox_messages`);
+      await orm.em.execute(`drop function ${name}()`);
+      await observer.close();
+    }
+  }
+  expect(completed).toBe(true);
+  expect(await inbox(message.messageId)).toHaveLength(1);
+  expect(await receive()).toBeUndefined();
+  const query = await fetch(
+    `${base}/providers/${message.data.providerId}/wagering/transactions/${message.data.externalTransactionId}`,
+  );
+  expect(query.status).toBe(200);
+  expect(await query.json()).toMatchObject({
+    status: "PROCESSED",
+    balance: { amount: "75.00", currency: "BRL" },
+  });
+  expect(
+    await orm.em.execute(
+      "select id from outbox_messages where aggregate_id = ?",
+      [message.data.walletId],
+    ),
+  ).toHaveLength(4);
+  await reconcile(message.data.walletId, "75.00", 2);
+}, 15000);
