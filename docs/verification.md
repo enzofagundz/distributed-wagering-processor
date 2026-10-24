@@ -499,3 +499,19 @@ Relação entre garantias preservadas e os testes executados em cada rodada:
 | Saldo materializado igual ao reconstruído pelo ledger | reconciliações nas provas financeiras/concorrentes e `reconciliation-http` |
 
 Limites: dez rodadas e o controle negativo fornecem evidência reproduzível dos cenários definidos, sem provar ausência de toda falha possível. As falhas transacionais usam triggers; não simulam todas as partições de rede nem interrupção aleatória de dependências. A verificação desta entrega não reconstruiu a imagem da API. Execução HTTP real, criação da aplicação e composição dos providers foram exercitadas pela suíte; o preview do Nest Boost foi uma verificação complementar. Não houve mudança de rotas, contratos, regras financeiras, hashes, eventos, política de tentativas, dependências ou migrations.
+
+## Resultados por SQS — 2026-10-24
+
+Ticket 19 amplia o parser para BET, WIN e LOSS, mantendo REFUND/ROLLBACK bloqueados. AWS SDK SQS v3 consultado via Context7; versão instalada 3.1156.0. O teste de WIN falhou antes da alteração porque não havia inbox confirmada; passou após liberar o kind. Testes focais de LOSS, conflitos, referências WIN e rollback/redelivery também passaram com PostgreSQL 17.6 e LocalStack 4.11.1 reais.
+
+Comandos finais executados no host, com o `.env` local: `bun run format`, `bun run lint`, `bun run typecheck` e `bun test`. Resultado da suíte completa: 273 testes em 25 arquivos, zero falhas, 118,43 segundos. Os cenários SQS usam schema e filas exclusivos; o arquivo `bet-sqs.test.ts` continua reunindo a cobertura do consumidor compartilhado.
+
+Os testes novos verificam WIN creditado uma vez, publicação de evento de saldo, consultas por identidade interna/externa, replay de transporte e negócio em consumidor reiniciado e saldo original após nova aposta. LOSS mantém saldo, versão e `updated_at`, não cria ledger e emite somente Processed. Ambos rejeitam payload inválido e conflitos sem efeitos financeiros novos. Falha SQL induzida na outbox desfaz inbox e resultado; redelivery real confirma uma vez. WIN com referência segue pendência, resolução e rejeição do HTTP.
+
+Smoke separado executado por harness temporário com `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/ticket19_smoke_test bun .ticket19-smoke.ts`. O harness iniciou `bun run start` em `127.0.0.1:3129`, usando banco exclusivo no PostgreSQL de testes e três filas temporárias no LocalStack. Criou wallet de `100.00 BRL`, enviou WIN de `50.00` e LOSS de `50.00`, repetiu envelopes e verificou replay HTTP 201. As duas consultas de transação retornaram 200. Saldo final e reconstruído: `150.00 BRL`, versão 2, dois lançamentos e diferença `0.00`; cinco eventos publicados, sendo apenas Processed para LOSS. Wallet: `69e6b91a-ae6a-4339-90bf-f2e34a0e8729`.
+
+Duas tentativas anteriores no banco compartilhado expiraram esperando publicação; não contam como smoke aprovado. No banco exclusivo, a primeira tentativa chegou à verificação final e revelou aspas ausentes no SQL do harness; a execução corrigida passou. O harness foi removido, suas filas excluídas e seu processo encerrado. O banco `ticket19_smoke_test` foi preservado para inspeção. Para reproduzir as operações sem o harness, use os comandos de [envio SQS](../README.md#enviar-bet-pelo-sqs).
+
+Nest Boost MCP: handshake, `application_info`, `list_routes` e `module_graph` executados pelo pacote instalado, sem `evaluate`. Confirmou NestJS 11.1.16, oito rotas e WagerConsumer em WageringModule. Revisões Standards e Spec não encontraram bloqueios; Standards sugeriu opcionalmente reunir testes de sucesso, mantidos separados pelas asserções financeiras distintas.
+
+Limites: não houve nova interrupção de dependência nem SIGKILL específico de WIN/LOSS; a suíte completa reexecutou a prova de crash de BET no mesmo consumidor. REFUND/ROLLBACK por SQS, FAILED auditável e prazo máximo de shutdown permanecem nos tickets seguintes.

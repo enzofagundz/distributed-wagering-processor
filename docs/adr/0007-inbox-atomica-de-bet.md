@@ -10,7 +10,7 @@ O SQS pode entregar a mesma mensagem depois de um commit cujo ack não chegou ao
 
 ## Decisão
 
-`WagerConsumer`, registrado em `WageringModule`, recebe somente BET de `wager-transactions.fifo`. O parser exige o envelope `WagerTransactionRequested`, identidade não vazia de até 200 caracteres, data UTC no formato `YYYY-MM-DDTHH:mm:ss.sssZ`, `data.idempotencyKey` e DTO financeiro compartilhado com HTTP. Campos extras e dinheiro numérico são inválidos. `WagerTransaction.create` continua validando provider, identidade, valor positivo e kind; `internal` e OPENING são proibidos. Identidade de domínio não autentica remetente: o broker local continua sendo um canal confiável sem IdP.
+`WagerConsumer`, registrado em `WageringModule`, recebe BET, WIN e LOSS de `wager-transactions.fifo`. O parser exige o envelope `WagerTransactionRequested`, identidade não vazia de até 200 caracteres, data UTC no formato `YYYY-MM-DDTHH:mm:ss.sssZ`, `data.idempotencyKey` e DTO financeiro compartilhado com HTTP. Campos extras e dinheiro numérico são inválidos. `WagerTransaction.create` continua validando provider, identidade, valor positivo e kind; `internal` e OPENING são proibidos. Identidade de domínio não autentica remetente: o broker local continua sendo um canal confiável sem IdP.
 
 O consumidor chama `WageringService.submit`, o mesmo caso de uso HTTP, com contexto opcional de inbox. A transação SQL reserva `(consumer_name = 'wager-transactions', message_id)` por `INSERT ON CONFLICT DO NOTHING RETURNING`. Esse comando espera a resolução de uma reserva concorrente da mesma identidade; se o concorrente abortar, a nova tentativa pode reservar. Não há lock global nem chamada ao SQS dentro dessa transação. Escritas financeiras mantêm os registros MikroORM existentes; SQL parametrizado da inbox controla a reserva concorrente e o checkpoint associado ao commit.
 
@@ -32,6 +32,12 @@ A inbox ocupa espaço por identidade de mensagem, inclusive quando a operação 
 
 A alternativa de confirmar inbox separadamente deixaria uma janela com deduplicação sem débito, ou débito sem deduplicação. Usar apenas a chave de negócio impediria débito duplicado, mas não detectaria reutilização divergente de messageId. Usar apenas FIFO deixaria a garantia limitada ao broker.
 
-WIN/LOSS e reversões SQS, interrupção real de dependência, FAILED auditável, prazo limitado de shutdown e métricas globais continuam nos tickets 19–27. A classe de domínio InboxMessage é independente de NestJS e ORM; a modelagem equivalente de OutboxMessage continua pendente na cobertura.
+Reversões SQS, interrupção real de dependência, FAILED auditável, prazo limitado de shutdown e métricas globais continuam nos tickets 20–27. A classe de domínio InboxMessage é independente de NestJS e ORM; a modelagem equivalente de OutboxMessage continua pendente na cobertura.
 
 Documentação consultada via Context7: [AWS SDK v3 — comandos SQS](https://github.com/aws/aws-sdk-js-v3/tree/main/clients/client-sqs), exercitados com 3.1156.0; [MikroORM — transações](https://mikro-orm.io/docs/6.6/transactions), exercitadas com 6.6.8. Resultados e limites: [verificação](../verification.md#bet-por-sqs--2026-10-23).
+
+## Extensão no ticket 19
+
+O parser libera WIN e LOSS no mesmo consumidor. Contratos, validação, taxonomia de falhas e processamento continuam em `submitTransactionValidation` e `WageringService.submit`. Não há migration nem segundo caminho financeiro. WIN confirma crédito, CREDIT e eventos Processed/BalanceChanged; LOSS confirma resultado e Processed sem alterar saldo, versão, data da wallet ou ledger. Referência opcional de WIN mantém pendência, resolução agendada e rejeições do HTTP. Pendência e rejeição de negócio recebem ack após commit; payload inválido e conflito continuam na DLQ.
+
+Inbox e idempotência de negócio preservam o resultado original em reenvios, inclusive após outra operação e reinício do consumidor. A alternativa de tratar os resultados diretamente no consumer duplicaria as regras financeiras e sua coordenação transacional. REFUND e ROLLBACK continuam bloqueados nessa entrada até o ticket 20. [Evidências do ticket 19](../verification.md#resultados-por-sqs--2026-10-24).

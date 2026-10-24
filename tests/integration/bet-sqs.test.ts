@@ -220,6 +220,299 @@ test("real SQS BET commits inbox and financial result, publishes event and repla
   await reconcile(message.data.walletId, "75.00", 2);
 });
 
+test("real SQS WIN credits once, publishes events and preserves replay across consumer restart", async () => {
+  const message = await envelope("50.00");
+  message.data.kind = "WIN";
+  await send(message);
+  expect(await consumer.runOnce()).toBe(1);
+  const original = await inbox(message.messageId);
+  expect(original).toEqual([
+    expect.objectContaining({
+      result: expect.objectContaining({
+        status: "PROCESSED",
+        balance: { amount: "150.00", currency: "BRL" },
+      }),
+    }),
+  ]);
+  const transactionId = original[0]!.result.transactionId;
+  for (const path of [
+    `/wagering/transactions/${transactionId}`,
+    `/providers/${message.data.providerId}/wagering/transactions/${message.data.externalTransactionId}`,
+  ]) {
+    const response = await fetch(`${base}${path}`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      kind: "WIN",
+      status: "PROCESSED",
+      balance: { amount: "150.00", currency: "BRL" },
+    });
+  }
+  const events = await orm.em.execute(
+    "select event_type from outbox_messages where payload->>'correlationId' = ? order by event_type",
+    [transactionId],
+  );
+  expect(events).toEqual([
+    { event_type: "WagerTransactionProcessed" },
+    { event_type: "WalletBalanceChanged" },
+  ]);
+  const publisher = new OutboxPublisher(orm, sqs, eventsUrl);
+  await publisher.runOnce();
+  const published = await sqs.send(
+    new ReceiveMessageCommand({
+      QueueUrl: eventsUrl,
+      MaxNumberOfMessages: 10,
+      WaitTimeSeconds: 1,
+    }),
+  );
+  expect(
+    published.Messages?.map((event) => JSON.parse(event.Body!)),
+  ).toContainEqual(
+    expect.objectContaining({
+      correlationId: transactionId,
+      eventType: "WalletBalanceChanged",
+    }),
+  );
+  const bet = {
+    ...message,
+    messageId: crypto.randomUUID(),
+    data: {
+      ...message.data,
+      kind: "BET",
+      externalTransactionId: crypto.randomUUID(),
+      idempotencyKey: crypto.randomUUID(),
+      money: { amount: "10.00", currency: "BRL" },
+    },
+  };
+  await send(bet);
+  await consumer.runOnce();
+  await send(message);
+  expect(await childConsumer().exited).toBe(0);
+  expect(await inbox(message.messageId)).toEqual(original);
+  const duplicate = { ...message, messageId: crypto.randomUUID() };
+  await send(duplicate);
+  await consumer.runOnce();
+  expect((await inbox(duplicate.messageId))[0]!.result).toMatchObject({
+    transactionId,
+    balance: { amount: "150.00", currency: "BRL" },
+    idempotentReplay: true,
+  });
+  const { idempotencyKey, ...body } = message.data;
+  const replay = await fetch(`${base}/wagering/transactions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": idempotencyKey,
+    },
+    body: JSON.stringify(body),
+  });
+  expect(await replay.json()).toMatchObject({
+    transactionId,
+    balance: { amount: "150.00", currency: "BRL" },
+    idempotentReplay: true,
+  });
+  expect(
+    await orm.em.execute(
+      "select event_type from outbox_messages where payload->>'correlationId' = ? order by event_type",
+      [transactionId],
+    ),
+  ).toEqual(events);
+  expect(await receive()).toBeUndefined();
+  await reconcile(message.data.walletId, "140.00", 3);
+}, 15000);
+
+test("real SQS LOSS preserves wallet and ledger, emits only processed and replays after restart", async () => {
+  const message = await envelope();
+  message.data.kind = "LOSS";
+  const state = () =>
+    orm.em.execute(
+      "select balance::text, version, updated_at from wallets where id = ?",
+      [message.data.walletId],
+    );
+  const before = await state();
+  await send(message);
+  expect(await consumer.runOnce()).toBe(1);
+  const original = await inbox(message.messageId);
+  expect(original).toEqual([
+    expect.objectContaining({
+      result: expect.objectContaining({
+        status: "PROCESSED",
+        balance: { amount: "100.00", currency: "BRL" },
+      }),
+    }),
+  ]);
+  const transactionId = original[0]!.result.transactionId;
+  expect(await state()).toEqual(before);
+  expect(
+    await orm.em.execute(
+      "select id from wallet_ledger_entries where transaction_id = ?",
+      [transactionId],
+    ),
+  ).toEqual([]);
+  const events = () =>
+    orm.em.execute(
+      "select event_type from outbox_messages where payload->>'correlationId' = ?",
+      [transactionId],
+    );
+  expect(await events()).toEqual([{ event_type: "WagerTransactionProcessed" }]);
+  for (const path of [
+    `/wagering/transactions/${transactionId}`,
+    `/providers/${message.data.providerId}/wagering/transactions/${message.data.externalTransactionId}`,
+  ]) {
+    const response = await fetch(`${base}${path}`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      kind: "LOSS",
+      status: "PROCESSED",
+      balance: { amount: "100.00", currency: "BRL" },
+    });
+  }
+  await send({
+    ...message,
+    messageId: crypto.randomUUID(),
+    data: {
+      ...message.data,
+      kind: "BET",
+      idempotencyKey: crypto.randomUUID(),
+      externalTransactionId: crypto.randomUUID(),
+    },
+  });
+  await consumer.runOnce();
+  await send(message);
+  expect(await childConsumer().exited).toBe(0);
+  expect(await inbox(message.messageId)).toEqual(original);
+  const duplicate = { ...message, messageId: crypto.randomUUID() };
+  await send(duplicate);
+  await consumer.runOnce();
+  expect((await inbox(duplicate.messageId))[0]!.result).toMatchObject({
+    transactionId,
+    balance: { amount: "100.00", currency: "BRL" },
+    idempotentReplay: true,
+  });
+  const { idempotencyKey, ...body } = message.data;
+  const replay = await fetch(`${base}/wagering/transactions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": idempotencyKey,
+    },
+    body: JSON.stringify(body),
+  });
+  expect(await replay.json()).toMatchObject({
+    transactionId,
+    balance: { amount: "100.00", currency: "BRL" },
+    idempotentReplay: true,
+  });
+  expect(await events()).toEqual([{ event_type: "WagerTransactionProcessed" }]);
+  expect(await receive()).toBeUndefined();
+  await reconcile(message.data.walletId, "75.00", 2);
+}, 15000);
+
+for (const kind of ["WIN", "LOSS"]) {
+  test(`SQS ${kind} rejects invalid payloads and divergent replay without new effects`, async () => {
+    const message = await envelope();
+    message.data.kind = kind;
+    for (const change of [
+      { money: { amount: "0.00", currency: "BRL" } },
+      { money: { amount: 25, currency: "BRL" } },
+      { money: { amount: "25.00", currency: "USD" } },
+      { playerId: crypto.randomUUID() },
+      ...(kind === "LOSS" ? [{ referenceExternalTransactionId: "bet" }] : []),
+    ])
+      await expectDlq({ ...message, data: { ...message.data, ...change } });
+    expect(await inbox(message.messageId)).toEqual([]);
+    await reconcile(message.data.walletId, "100.00", 1);
+    await send(message);
+    await consumer.runOnce();
+    const original = await inbox(message.messageId);
+    for (const messageId of [message.messageId, crypto.randomUUID()]) {
+      await expectDlq({
+        ...message,
+        messageId,
+        data: { ...message.data, money: { amount: "26.00", currency: "BRL" } },
+      });
+    }
+    expect(await inbox(message.messageId)).toEqual(original);
+    await reconcile(
+      message.data.walletId,
+      kind === "WIN" ? "125.00" : "100.00",
+      kind === "WIN" ? 2 : 1,
+    );
+  }, 15000);
+}
+
+test("SQS WIN uses HTTP reference outcomes for pending, rejected and processed results", async () => {
+  const bet = await envelope();
+  const win = {
+    ...bet,
+    messageId: crypto.randomUUID(),
+    data: {
+      ...bet.data,
+      kind: "WIN",
+      idempotencyKey: crypto.randomUUID(),
+      externalTransactionId: crypto.randomUUID(),
+      referenceExternalTransactionId: bet.data.externalTransactionId,
+    },
+  };
+  await send(win);
+  await consumer.runOnce();
+  expect((await inbox(win.messageId))[0]!.result).toMatchObject({
+    status: "PENDING_REFERENCE",
+    balance: { amount: "100.00", currency: "BRL" },
+  });
+  await send(bet);
+  await consumer.runOnce();
+  await send(win);
+  await consumer.runOnce();
+  expect((await inbox(win.messageId))[0]!.result).toMatchObject({
+    status: "PENDING_REFERENCE",
+  });
+  const service = new WageringService(orm, new WageringInbox());
+  const transactionId = (await inbox(win.messageId))[0]!.result.transactionId;
+  expect(await service.resolvePendingReference(transactionId)).toBe(
+    "PROCESSED",
+  );
+  const query = await fetch(`${base}/wagering/transactions/${transactionId}`);
+  expect(await query.json()).toMatchObject({
+    kind: "WIN",
+    status: "PROCESSED",
+    balance: { amount: "100.00", currency: "BRL" },
+  });
+  const rejected = {
+    ...win,
+    messageId: crypto.randomUUID(),
+    data: {
+      ...win.data,
+      idempotencyKey: crypto.randomUUID(),
+      externalTransactionId: crypto.randomUUID(),
+      roundId: "another-round",
+    },
+  };
+  await send(rejected);
+  await consumer.runOnce();
+  expect((await inbox(rejected.messageId))[0]!.result).toMatchObject({
+    status: "REJECTED",
+    failureCode: "REFERENCE_MISMATCH",
+  });
+  const { idempotencyKey, ...body } = rejected.data;
+  const replay = await fetch(`${base}/wagering/transactions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": idempotencyKey,
+    },
+    body: JSON.stringify(body),
+  });
+  expect(replay.status).toBe(422);
+  expect(await replay.json()).toMatchObject({
+    status: "REJECTED",
+    failureCode: "REFERENCE_MISMATCH",
+    idempotentReplay: true,
+  });
+  expect(await receive(dlqUrl)).toBeUndefined();
+  expect(await receive()).toBeUndefined();
+  await reconcile(bet.data.walletId, "100.00", 3);
+}, 15000);
+
 async function inbox(messageId: string) {
   return orm.em.execute(
     "select payload_hash, result from inbox_messages where consumer_name = 'wager-transactions' and message_id = ?",
@@ -362,7 +655,7 @@ test("invalid envelopes, OPENING, reserved provider and mismatched ownership nev
     { ...message, occurredAt: "2026-02-30T00:00:00.000Z" },
     { ...message, extra: true },
     { ...message, data: { ...message.data, idempotencyKey: "" } },
-    ...["OPENING", "WIN", "unknown"].map((kind) => ({
+    ...["OPENING", "REFUND", "ROLLBACK", "unknown"].map((kind) => ({
       ...message,
       data: { ...message.data, kind },
     })),
@@ -384,41 +677,48 @@ test("invalid envelopes, OPENING, reserved provider and mismatched ownership nev
   await reconcile(message.data.walletId, "100.00", 1);
 }, 15000);
 
-test("outbox failure rolls back inbox, wallet, transaction and ledger, and real redelivery succeeds", async () => {
-  const message = await envelope();
-  await orm.em
-    .execute(`create function fail_inbox_outbox() returns trigger language plpgsql as $$ begin
+for (const kind of ["BET", "WIN", "LOSS"]) {
+  test(`${kind} outbox failure rolls back inbox, wallet, transaction and ledger, and real redelivery succeeds`, async () => {
+    const message = await envelope();
+    message.data.kind = kind;
+    await orm.em
+      .execute(`create function fail_inbox_outbox() returns trigger language plpgsql as $$ begin
     if new.aggregate_id = '${message.data.walletId}'::uuid then raise exception 'induced temporary failure' using errcode = '40001'; end if; return new; end $$`);
-  await orm.em.execute(
-    "create trigger fail_inbox_outbox before insert on outbox_messages for each row execute function fail_inbox_outbox()",
-  );
-  await send(message);
-  try {
+    await orm.em.execute(
+      "create trigger fail_inbox_outbox before insert on outbox_messages for each row execute function fail_inbox_outbox()",
+    );
+    await send(message);
+    try {
+      expect(await consumer.runOnce()).toBe(1);
+      expect(await inbox(message.messageId)).toEqual([]);
+      expect(
+        await orm.em.execute(
+          "select id from wager_transactions where idempotency_key = ?",
+          [message.data.idempotencyKey],
+        ),
+      ).toEqual([]);
+      expect(
+        await orm.em.execute(
+          "select id from outbox_messages where aggregate_id = ? and event_type = 'WalletBalanceChanged'",
+          [message.data.walletId],
+        ),
+      ).toHaveLength(1);
+      await reconcile(message.data.walletId, "100.00", 1);
+    } finally {
+      await orm.em.execute("drop trigger fail_inbox_outbox on outbox_messages");
+      await orm.em.execute("drop function fail_inbox_outbox()");
+    }
+    await Bun.sleep(2100);
     expect(await consumer.runOnce()).toBe(1);
-    expect(await inbox(message.messageId)).toEqual([]);
-    expect(
-      await orm.em.execute(
-        "select id from wager_transactions where idempotency_key = ?",
-        [message.data.idempotencyKey],
-      ),
-    ).toEqual([]);
-    expect(
-      await orm.em.execute(
-        "select id from outbox_messages where aggregate_id = ? and event_type = 'WalletBalanceChanged'",
-        [message.data.walletId],
-      ),
-    ).toHaveLength(1);
-    await reconcile(message.data.walletId, "100.00", 1);
-  } finally {
-    await orm.em.execute("drop trigger fail_inbox_outbox on outbox_messages");
-    await orm.em.execute("drop function fail_inbox_outbox()");
-  }
-  await Bun.sleep(2100);
-  expect(await consumer.runOnce()).toBe(1);
-  expect(await inbox(message.messageId)).toHaveLength(1);
-  expect(await receive()).toBeUndefined();
-  await reconcile(message.data.walletId, "75.00", 2);
-}, 10000);
+    expect(await inbox(message.messageId)).toHaveLength(1);
+    expect(await receive()).toBeUndefined();
+    await reconcile(
+      message.data.walletId,
+      kind === "BET" ? "75.00" : kind === "WIN" ? "125.00" : "100.00",
+      kind === "LOSS" ? 1 : 2,
+    );
+  }, 10000);
+}
 
 function childConsumer(pauseAck = false, start = false) {
   return Bun.spawn(["bun", "tests/integration/fixtures/inbox-instance.ts"], {

@@ -4,7 +4,7 @@ Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECH
 
 A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET, WIN, LOSS, REFUND e ROLLBACK por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva e operações financeiras persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL. LOSS confirma resultado e evento sem movimentar saldo. Um worker agendado resolve WIN, REFUND e ROLLBACK que chegaram antes da referência.
 
-O publisher envia eventos confirmados da outbox ao SQS no LocalStack. BET também entra por SQS, com inbox persistente e ack após commit. Autenticação e health estão pendentes. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+O publisher envia eventos confirmados da outbox ao SQS no LocalStack. BET, WIN e LOSS também entram por SQS, com inbox persistente e ack após commit. Autenticação e health estão pendentes. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
@@ -132,7 +132,15 @@ curl -X POST http://127.0.0.1:3000/wallets/WALLET_ID/reconciliation
 
 A consulta pode retornar 404 enquanto o consumidor ainda não confirmou o processamento. Para forçar outra entrega ao testar, troque somente `--message-deduplication-id`; manter esse valor pode fazer o broker suprimir o envio. A inbox compara o envelope canônico: outra ordem de chaves é equivalente, mas mudar conteúdo com o mesmo `messageId` gera `MESSAGE_ID_CONFLICT` e DLQ. Outro `messageId` com a mesma chave/payload de negócio registra replay, sem novo débito. Saldo insuficiente produz rejeição persistida, evento e ack, sem DLQ.
 
-Payload inválido, provider reservado e conflitos seguem para a DLQ. Falhas transitórias ou inesperadas tentam novamente com visibilidade de 2, 4, 8 e 16 segundos; na quinta falha seguem para a DLQ. O envio para a DLQ precisa ser aceito antes da exclusão na origem. A [decisão da inbox](docs/adr/0007-inbox-atomica-de-bet.md) detalha hash, concorrência e janela de ack. WIN/LOSS e reversões por SQS ficam para os tickets seguintes.
+Payload inválido, provider reservado e conflitos seguem para a DLQ. Falhas transitórias ou inesperadas tentam novamente com visibilidade de 2, 4, 8 e 16 segundos; na quinta falha seguem para a DLQ. O envio para a DLQ precisa ser aceito antes da exclusão na origem. A [decisão da inbox](docs/adr/0007-inbox-atomica-de-bet.md) detalha hash, concorrência e janela de ack. REFUND e ROLLBACK por SQS ficam para o ticket 20.
+
+Para enviar WIN ou LOSS, use o mesmo envelope e comando acima com `kind: "WIN"` ou `kind: "LOSS"`, novos `messageId`, `externalTransactionId`, `idempotencyKey` e deduplication ID. WIN aceita referência opcional à BET e credita o prêmio; LOSS exige valor positivo, não aceita referência e registra somente o resultado. LOSS mantém saldo e versão, sem ledger ou evento de saldo. Consulte cada resultado pelas mesmas rotas HTTP e reconcilie a wallet. Reenvio idêntico não repete efeitos; outra identidade de transporte com a mesma chave de negócio também é replay.
+
+Para executar apenas os resultados SQS:
+
+```sh
+bun test tests/integration/bet-sqs.test.ts --test-name-pattern 'WIN|LOSS'
+```
 
 Smoke e integração reproduzíveis, com PostgreSQL e LocalStack reais:
 

@@ -48,7 +48,8 @@ export async function parseWagerMessage(body: string | undefined): Promise<{
   const data = (await submitTransactionValidation.transform(bodyData, {
     type: "body",
   })) as Omit<SubmitTransactionInput, "idempotencyKey">;
-  if (data.kind !== "BET") throw new DomainError("INVALID_TRANSACTION_KIND");
+  if (!["BET", "WIN", "LOSS"].includes(data.kind))
+    throw new DomainError("INVALID_TRANSACTION_KIND");
   return {
     messageId: value.messageId,
     payloadHash: createHash("sha256")
