@@ -15,6 +15,8 @@ O publisher envia eventos confirmados da outbox ao SQS no LocalStack. BET també
 
 Wallets ficam em `src/wallets/`; submissão de BET, WIN, LOSS, REFUND e ROLLBACK, em `src/wagering/`. Cada funcionalidade tem controller, DTO, serviço e módulo. `src/app.module.ts` compõe módulos e registra filtro global compartilhado; `src/create-application.ts` recebe o ORM inicializado pelo chamador. Domínio e mapeamentos permanecem separados. Justificativa e injeção de dependências: [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) e [composição na arquitetura](ARCHITECTURE.md#composição-e-injeção).
 
+Em wagering, `WageringService` coordena submissão e liquidação; `WageringQueries` consulta transações; `WageringInbox` deduplica mensagens na mesma transação financeira; `PendingReferenceBatchRunner` percorre pendências e o worker agenda suas execuções.
+
 ## Executar
 
 Requisitos: Docker com Compose v2+. Para desenvolvimento/testes no host: Bun 1.3.14. Portas locais: HTTP 3000, PostgreSQL 55432, banco descartável de testes 55433 e LocalStack 4566.

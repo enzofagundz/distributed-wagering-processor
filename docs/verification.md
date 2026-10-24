@@ -429,3 +429,73 @@ Limites: o consumidor aceita apenas BET. Não foi interrompida uma dependência 
 Na revisão de padrões, a primeira versão deixou a inbox sem classe de domínio. A correção adicionou InboxMessage com factory, rehydrate, comparação de hash e transição única; dois testes de domínio passaram. A revisão Spec não apontou lacunas do ticket. A primeira suíte completa encontrou um teste da outbox que revertia implicitamente a migration mais recente; a nova migration de inbox revelou essa dependência. O teste passou a declarar `to: Migration20261023000700`, preservando sua intenção de reverter o schema de retry.
 
 Verificação final após as correções: `bun run format`, `bun run lint` e `bun run typecheck` passaram. `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test` passou com 262 testes, zero falhas, 2120 assertions em 25 arquivos, em 99,89 segundos. Inclui os 12 testes de integração BET SQS e os dois testes de domínio InboxMessage. Revisões independentes de Standards e Spec terminaram sem achados pendentes após a correção da modelagem.
+
+## Separação de responsabilidades de wagering — 2026-10-24
+
+Spec local `refatorar-wagering-service`, tickets 01–03. Base `438903f`; extrações em `8ca8dce`, testes em `608c892` e integração em `951ab0c3183077188066e24b3781e7b8e9a29d27`. A verificação abaixo usa esse código integrado; as alterações posteriores desta entrega são de documentação.
+
+Bun 1.3.14, Node.js 22.23.4, NestJS 11.1.16, MikroORM 6.6.8 e AWS SDK SQS 3.1156.0. PostgreSQL 17.6-alpine e LocalStack 4.11.1 em containers Podman locais preexistentes e saudáveis. `TEST_DATABASE_URL` apontou para `wagering_test` em `127.0.0.1:55433`; SQS em `127.0.0.1:4566`. Testes usam identidades próprias; os testes de inbox e outbox criam schemas e filas exclusivos e os removem ao terminar. Não houve limpeza de histórico financeiro compartilhado nem alteração permanente de schema.
+
+Antes de editar, `bun run typecheck` passou. A primeira tentativa de `bun test` no sandbox não acessou PostgreSQL (`ECONNREFUSED`); a execução com acesso aos containers passou com 262 testes, 2120 assertions, zero falhas em 25 arquivos, em 97.35s. Essa falha de acesso não foi tratada como baseline verde nem como regressão do código.
+
+`WageringQueries` passou a consultar e projetar respostas; `WageringInbox` recebeu reserva, replay de transporte e checkpoint com EntityManager transacional explícito; `PendingReferenceBatchRunner` recebeu varredura e contabilização, enquanto o worker manteve agendamento. `WageringService` preservou submissão, resolução individual e liquidação. Uma comparação dos arquivos confirmou `settle`, `rehydrateTransaction` e `replay` idênticos ao baseline, assim como o corpo da consulta extraída. Os testes mantiveram suas assertions anteriores; a construção dos colaboradores e os consumidores de consulta foram atualizados.
+
+Verificações por extração, executadas com PostgreSQL e LocalStack reais:
+
+| Etapa | Comando | Resultado |
+|---|---|---|
+| Consulta | `bun test tests/integration/transaction-query-http.test.ts tests/integration/refund.test.ts tests/integration/rollback.test.ts tests/integration/pending-reference.test.ts` | 45 testes, 418 assertions, zero falhas, 3.52s |
+| Inbox | `bun test tests/integration/bet-sqs.test.ts tests/integration/bet-http.test.ts` | 22 testes, 282 assertions, zero falhas, 80.18s |
+| Varredura | `bun test tests/integration/pending-reference.test.ts tests/integration/transaction-query-http.test.ts` | 14 testes, 187 assertions, zero falhas, 2.25s |
+| Novos casos após integração | `bun test tests/integration/bet-sqs.test.ts tests/integration/pending-reference.test.ts --test-name-pattern 'failure at inbox\|uncommitted inbox\|pending batch continues'` | 4 testes, 59 assertions, zero falhas |
+
+Quatro testes acrescentaram as lacunas da prova transacional:
+
+- Trigger `AFTER INSERT` na inbox lança SQLSTATE `40001`: nenhuma reserva ou escrita financeira sobrevive; redelivery confirma uma vez.
+- Trigger `BEFORE UPDATE` do checkpoint lança `40001` após as escritas financeiras e da outbox: wallet, transação, ledger, inbox e novos eventos sofrem rollback juntos; redelivery e replay HTTP não duplicam movimentos nem eventos.
+- O checkpoint aguarda um advisory lock mantido por outra conexão. O teste observa `pg_blocking_pids` antes de verificar a invisibilidade: a conexão independente não vê inbox, transação nem novos eventos; HTTP retorna 404 e reconciliação conserva o saldo anterior; SQS mantém a mensagem in-flight e a execução não terminou. Liberado o lock, o resultado fica visível e o ack remove a mensagem. O bloqueio observado no PostgreSQL sincroniza a prova, sem depender apenas de sleep.
+- Lote com página de um candidato recebe falha induzida na outbox do primeiro candidato: o seguinte confirma em outra página. O candidato que falhou conserva estado, tentativas, próximo horário e saldo; retry posterior resolve uma vez e reconcilia com o ledger.
+
+Controle negativo temporário moveu somente a reserva da inbox para um fork autocommit. O teste de falha no checkpoint encontrou uma inbox órfã com `result: null`, em vez de nenhuma linha: falhou na assertion de rollback, com 0 testes aprovados, 1 falha e 3 assertions em 1.205s. O código foi restaurado byte a byte em `finally`; nenhum diff de produção do controle permaneceu. Após restaurar, os quatro testes novos passaram com 59 assertions em 10.06s. O controle usou o schema descartável da suíte.
+
+No código integrado, `bun run typecheck`, `bun run lint` e `bun run format:check` passaram. `bun test` foi executado dez vezes consecutivas, sem alteração de código entre rodadas; cada execução incluiu a suíte inteira, cobrindo também os grupos críticos exigidos pela spec. O shell temporário interromperia a sequência na primeira falha. Comando de execução da sequência: `rtk proxy bash /tmp/verify-wagering-refactor.sh`; ele chamou `bun test` em cada rodada e guardou stdout/stderr em `/tmp/wagering-verification/round-N.log`, com o commit testado em `commit.txt`.
+
+Para reproduzir as dez rodadas, com PostgreSQL e LocalStack preparados conforme o README, execute o loop abaixo. O Bash encerra a sequência com erro na primeira falha, sem depender do script temporário:
+
+```sh
+TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test \
+  bash -c 'for round in {1..10}; do bun test || exit 1; done'
+```
+
+Preview do Nest Boost exercitado em processo novo por `rtk proxy bun .scratch/ticket16-boost.ts`: handshake MCP, listagem das ferramentas, `application_info` e `module_graph`; cliente encerrado ao final. O grafo mostrou oito módulos, três controllers, doze providers e oito rotas; `WageringModule` incluiu `WageringInbox`, `WageringQueries`, `WagerConsumer`, `WageringService`, `PendingReferenceBatchRunner` e `PendingReferenceWorker`. A primeira tentativa no sandbox teve a conexão fechada; a repetição com acesso ao ambiente local passou. Nenhum `evaluate` ou ferramenta de banco foi chamado. O resultado confirma a composição de preview; a execução bem-sucedida não usou uma URL de banco deliberadamente inalcançável e não comprova isolamento dessa dependência.
+
+| Rodada | Testes aprovados | Falhas | Assertions | Arquivos | Duração |
+|---|---:|---:|---:|---:|---|
+| 1 | 266 | 0 | 2179 | 25 | 110.07s |
+| 2 | 266 | 0 | 2179 | 25 | 103.74s |
+| 3 | 266 | 0 | 2179 | 25 | 103.08s |
+| 4 | 266 | 0 | 2179 | 25 | 103.96s |
+| 5 | 266 | 0 | 2179 | 25 | 103.96s |
+| 6 | 266 | 0 | 2179 | 25 | 103.97s |
+| 7 | 266 | 0 | 2179 | 25 | 103.98s |
+| 8 | 266 | 0 | 2179 | 25 | 103.97s |
+| 9 | 266 | 0 | 2179 | 25 | 103.94s |
+| 10 | 266 | 0 | 2179 | 25 | 103.97s |
+
+As dez rodadas somaram 2660 execuções de testes aprovadas e 21790 assertions, com zero falhas. Cada rodada criou suas próprias identidades e recursos descartáveis; os prazos reais de visibilidade e retry do broker foram preservados.
+
+Relação entre garantias preservadas e os testes executados em cada rodada:
+
+| Garantia | Evidência na suíte |
+|---|---|
+| Contratos HTTP, consultas por ambas as identidades e operações BET/WIN/LOSS/REFUND/ROLLBACK | `bet-http`, `win-http`, `loss-http`, `refund`, `rollback` e `transaction-query-http` |
+| Dinheiro exato, moeda, estados terminais, constraints e ledger append-only | testes de domínio e testes de schema, incluindo `opening-schema`, `refund-schema` e `rollback-schema` |
+| Atomicidade e recuperação após falha antes do commit | `bet-http`, `bet-sqs` e `pending-reference`, com triggers reais e conferência de saldo/ledger/inbox/outbox |
+| Replay original, payload divergente e identidades de negócio/transporte concorrentes | `bet-http`, `bet-sqs` e `wallet-concurrency` |
+| 50 duplicatas, disputa pelo saldo, wallets distintas e pelo menos três processos independentes | `wallet-concurrency`; três consumidores também são exercitados em `bet-sqs` |
+| Referências fora de ordem, resolutores concorrentes, backoff, expiração e continuidade do lote | `pending-reference` |
+| Queda após commit antes do ack, redelivery, shutdown e retry/DLQ | `bet-sqs`, com SIGKILL/SIGTERM e SQS real |
+| Publishers concorrentes e recuperação após envio aceito pelo broker | `outbox`, com processos independentes e SIGKILL |
+| Saldo materializado igual ao reconstruído pelo ledger | reconciliações nas provas financeiras/concorrentes e `reconciliation-http` |
+
+Limites: dez rodadas e o controle negativo fornecem evidência reproduzível dos cenários definidos, sem provar ausência de toda falha possível. As falhas transacionais usam triggers; não simulam todas as partições de rede nem interrupção aleatória de dependências. A verificação desta entrega não reconstruiu a imagem da API. Execução HTTP real, criação da aplicação e composição dos providers foram exercitadas pela suíte; o preview do Nest Boost foi uma verificação complementar. Não houve mudança de rotas, contratos, regras financeiras, hashes, eventos, política de tentativas, dependências ou migrations.

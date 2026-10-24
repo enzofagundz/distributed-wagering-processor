@@ -8,12 +8,15 @@ Este documento descreve a implementação atual. Os requisitos estão no [enunci
 |---|---|---|
 | Bootstrap | `src/main.ts` | Inicializa ORM/HTTP; fecha aplicação e pool em sinais ou falha de startup |
 | Criação da aplicação | `src/create-application.ts` | Recebe ORM do chamador e cria aplicação Nest |
-| Composição | `src/app.module.ts`, `src/{wallets,wagering,outbox}/*.module.ts` | Módulo raiz compõe funcionalidades; cada módulo registra controller e serviço |
+| Composição | `src/app.module.ts`, `src/{wallets,wagering,outbox}/*.module.ts` | Módulo raiz compõe funcionalidades; módulos declaram providers e controllers aplicáveis |
 | Transporte | `src/wallets/wallet.controller.ts`, `src/wallets/*dto.ts` | Wallets, reconciliação e métrica Prometheus; validação estrutural |
 | Erros compartilhados | `src/shared/domain-error.filter.ts` | Tradução global de erros conhecidos, registrada uma vez pelo módulo raiz |
 | Caso de uso e leitura | `src/wallets/wallet-service.ts` | Abertura atômica, reidratação, ledger keyset e reconciliação em snapshot único |
-| Submissão de BET/WIN/LOSS/REFUND/ROLLBACK | `src/wagering/` | Contrato HTTP, lock da wallet, operações, referências e persistência atômica |
-| Consumo de BET SQS | `src/wagering/wager-consumer.ts`, `wager-message.ts` | Envelope, inbox atômica, ack após commit, retry e DLQ |
+| Submissão e liquidação | `src/wagering/wagering-service.ts` | Transação SQL, lock da wallet, operações, resolução individual de referências e replay financeiro |
+| Consulta de transações | `src/wagering/wagering-queries.ts` | Busca por ID interno ou identidade externa e projeção da resposta |
+| Inbox | `src/wagering/wagering-inbox.ts` | Reserva, replay de transporte e checkpoint no EntityManager transacional recebido |
+| Referências pendentes | `src/wagering/pending-reference-batch-runner.ts`, `pending-reference-worker.ts` | Varredura paginada, contabilização por candidato e agendamento |
+| Consumo de BET SQS | `src/wagering/wager-consumer.ts`, `wager-message.ts` | Envelope, chamada ao caso de uso com contexto de inbox, ack após commit, retry e DLQ |
 | Domínio | `src/domain/` | Money, Wallet, WagerTransaction, WalletLedgerEntry, InboxMessage e eventos; sem NestJS/ORM |
 | Persistência | `src/persistence/persistence.module.ts`, `*record.ts`, `config.ts` | Provider MikroORM exportado explicitamente, EntitySchema e configuração |
 | Schema | `src/persistence/migrations/` | Constraints, FKs, trigger append-only e índices versionados |
@@ -24,6 +27,8 @@ Este documento descreve a implementação atual. Os requisitos estão no [enunci
 `createApplication(orm)` monta `AppModule.register(orm)`, que importa `WalletsModule.register(orm)`, `WageringModule.register(orm)` e `OutboxModule.register(orm)`. Os módulos importam `PersistenceModule.register(orm)`, que exporta o token `MikroORM`; factories explícitas injetam a mesma instância fornecida pelo chamador. Não há provider global, conexão adicional por funcionalidade, configuração mutável compartilhada ou Repository intermediário. Providers de um módulo pai não ficam automaticamente visíveis nos filhos.
 
 Controller recebe HTTP e delega; DTO valida estrutura; serviço coordena domínio e persistência. `Money`, `Wallet` e `WalletLedgerEntry` mantêm invariantes fora do NestJS, e `EntitySchema` continua separado do domínio. Para quem vem de Laravel: controller e service têm papéis semelhantes, mas módulo Nest declara a composição e a visibilidade de dependências; `WalletService` pode acessar ORM diretamente, sem transformar objetos de domínio em models Eloquent. Esse layout é convenção adotada, não obrigação de diretórios do framework.
+
+`WageringModule` registra consulta, inbox e varredura como providers separados. `WageringService` continua coordenando submissão, resolução individual e liquidação compartilhada. Ele abre a transação SQL e passa o mesmo EntityManager a `WageringInbox.run`; a inbox não recebe ORM, não cria fork, não abre transação e não confirma escritas por conta própria. Wallet, transação financeira, ledger, inbox quando aplicável e outbox continuam no mesmo commit. A recuperação de uma corrida de unicidade primeiro aborta a tentativa inteira e depois confirma replay e inbox juntos em nova transação. Consulta e varredura têm seus próprios forks de leitura; cada candidato do lote delega a resolução transacional ao serviço. Essa separação mantém as decisões dos ADRs 0006 e 0007, sem Repository pass-through ou transação distribuída.
 
 Chamador continua dono do ORM: execução inicializa em `main.ts`, testes fornecem seus próprios bancos, e `app.close()` não fecha o pool emprestado. Startup com falha ou SIGINT/SIGTERM fecha HTTP antes do pool; ambos os sinais compartilham o mesmo encerramento para não fechar duas vezes. Falhas de criação Nest são propagadas ao chamador, sem saída forçada antes da limpeza. Migrations continuam explícitas.
 
@@ -207,7 +212,7 @@ Alternativas descartadas: unicidade de todas as tentativas impediria correção 
 
 Decisão D-016, tickets 13 e 14 (§6.3, §7.1 e §13): `WageringService.settle` concentra a aplicação financeira usada por `submit` e pela resolução. A resolução reidrata o registro `PENDING_REFERENCE` em vez de criar outra transação e reutiliza validação da referência, exclusão de reversões duplicadas e persistência financeira.
 
-`PendingReferenceWorker` inicia em `src/main.ts` e para em `SIGTERM`/`SIGINT` antes de fechar o ORM. Cada execução lista apenas pendências com `reference_next_attempt_at <= at`, por `id`, em páginas de `PENDING_REFERENCE_PAGE_SIZE`. `PENDING_REFERENCE_INTERVAL_MS` controla a varredura, não substitui o backoff por operação. Não há rota HTTP para dispará-la. `resolvePendingReference`, `resolvePendingReferences` e `worker.runOnce` aceitam `Date` opcional; testes fornecem tempo explícito, sem sleeps para simular o backoff.
+`PendingReferenceWorker` inicia em `src/main.ts` e para em `SIGTERM`/`SIGINT` antes de fechar o ORM. Seu `runOnce` chama `PendingReferenceBatchRunner.run`, que lista apenas pendências com `reference_next_attempt_at <= at`, por `id`, em páginas de `PENDING_REFERENCE_PAGE_SIZE`. O runner chama `WageringService.resolvePendingReference` por candidato e contabiliza processados, rejeitados, pendentes, pulados e falhas; uma falha não interrompe os candidatos ou páginas seguintes. `PENDING_REFERENCE_INTERVAL_MS` controla o agendamento, não substitui o backoff por operação. Não há rota HTTP para disparar a varredura. A resolução individual, `batch.run` e `worker.runOnce` aceitam `Date` opcional; testes fornecem tempo explícito, sem sleeps para simular o backoff.
 
 O corte de elegibilidade é fixo durante a varredura. Em produção, cada tentativa captura seu instante após obter o lock da wallet; espera por lock ou páginas anteriores não antecipa `processedAt` nem o próximo retry. Uma data explícita fixa também esse instante nos testes.
 
@@ -249,7 +254,7 @@ Referências dos locks mantidas da resolução: [MikroORM 6.6 — pessimistic lo
 
 ## Consumo de BET pelo SQS
 
-O [ADR-0007](docs/adr/0007-inbox-atomica-de-bet.md) registra a decisão do ticket 18: o consumidor valida o envelope, reutiliza o DTO HTTP e chama `WageringService.submit` com contexto de inbox. A reserva única por `(consumerName, messageId)` e seu resultado compartilham a transação financeira. Replay usa o resultado original; conteúdo divergente para o mesmo ID gera `MESSAGE_ID_CONFLICT` e DLQ. Duplicata de negócio com outro ID confirma uma nova inbox sem segundo débito.
+O [ADR-0007](docs/adr/0007-inbox-atomica-de-bet.md) registra a decisão do ticket 18: o consumidor valida o envelope, reutiliza o DTO HTTP e chama `WageringService.submit` com contexto de inbox. `WageringService` delega reserva, replay de transporte e checkpoint a `WageringInbox.run`, passando o EntityManager da transação financeira. A reserva única por `(consumerName, messageId)` e seu resultado compartilham essa transação; o colaborador não possui conexão ou commit independentes. Replay usa o resultado original; conteúdo divergente para o mesmo ID gera `MESSAGE_ID_CONFLICT` e DLQ. Duplicata de negócio com outro ID confirma uma nova inbox sem segundo débito.
 
 `main.ts` inicia o consumidor e interrompe novas leituras nos sinais de encerramento. Ack acontece após commit; falha na outbox desfaz também a inbox. A política inicial de retry, DLQ, visibilidade e seus limites está no ADR. Setup e envio manual: [README](README.md#enviar-bet-pelo-sqs). Evidências reais, incluindo três processos e crash na janela commit/ack: [verificação](docs/verification.md#bet-por-sqs--2026-10-23).
 
@@ -261,7 +266,7 @@ Keyset evita deslocamento de linhas existentes, sem manter um snapshot entre con
 
 ### Consulta de transação
 
-Ambas as rotas GET usam `WageringService.get`: um EntityManager novo faz um SELECT por ID interno ou pelo par completo `(providerId, externalTransactionId)`. O índice único existente atende à identidade externa. Nenhum lock financeiro, flush, processamento ou evento é necessário; nenhuma migration foi adicionada.
+Ambas as rotas GET usam `WageringQueries.get`: um EntityManager novo faz um SELECT por ID interno ou pelo par completo `(providerId, externalTransactionId)`. O índice único existente atende à identidade externa. Nenhum lock financeiro, flush, processamento ou evento é necessário; nenhuma migration foi adicionada.
 
 A projeção explícita preserva identidade, valor/moeda, status, datas e `failureCode` quando presente. Saldo vem de `observedBalance`, não da wallet atual; chave de idempotência e hash não são expostos. UUID aceita maiúsculas e é normalizado; identificadores externos preservam caixa e regras da submissão: até 200 caracteres, sem controles ou espaços nas extremidades, provider `internal` reservado. Identidade ausente retorna `TRANSACTION_NOT_FOUND`; inválida falha antes de consultar.
 
