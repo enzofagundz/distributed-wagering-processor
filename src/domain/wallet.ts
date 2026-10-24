@@ -1,4 +1,6 @@
-import { DomainError, type Money } from "./money";
+import { DomainError, Money } from "./money";
+import { WalletLedgerEntry } from "./wallet-ledger-entry";
+import { WalletMovement, type WalletMovementIdentity } from "./wallet-movement";
 
 export const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -24,17 +26,24 @@ export class Wallet {
     Object.freeze(this);
   }
 
-  static open(props: {
-    id: string;
-    playerId: string;
-    initialBalance: Money;
-  }): Wallet {
-    if (!uuidPattern.test(props.id) || !uuidPattern.test(props.playerId))
+  static open(
+    props: {
+      id: string;
+      playerId: string;
+      initialBalance: Money;
+    } & WalletMovementIdentity,
+  ): WalletMovement {
+    if (
+      !uuidPattern.test(props.id) ||
+      !uuidPattern.test(props.playerId) ||
+      !uuidPattern.test(props.transactionId) ||
+      !uuidPattern.test(props.ledgerEntryId)
+    )
       throw new DomainError("INVALID_IDENTITY");
     if (props.initialBalance.isNegative())
       throw new DomainError("INITIAL_BALANCE_NEGATIVE");
     const now = new Date();
-    return new Wallet({
+    const wallet = new Wallet({
       id: props.id,
       playerId: props.playerId,
       balance: props.initialBalance,
@@ -42,6 +51,21 @@ export class Wallet {
       createdAt: now,
       updatedAt: now,
     });
+    return WalletMovement.of(
+      wallet,
+      wallet.balance.isPositive()
+        ? WalletLedgerEntry.create({
+            id: props.ledgerEntryId,
+            walletId: wallet.id,
+            transactionId: props.transactionId,
+            direction: "CREDIT",
+            money: wallet.balance,
+            balanceBefore: Money.zero(wallet.currency),
+            balanceAfter: wallet.balance,
+            createdAt: now,
+          })
+        : null,
+    );
   }
 
   static rehydrate(state: WalletState): Wallet {
@@ -70,33 +94,68 @@ export class Wallet {
     return new Date(this.state.updatedAt);
   }
 
-  debit(money: Money, at: Date): Wallet {
+  debit(
+    money: Money,
+    at: Date,
+    identity: WalletMovementIdentity,
+  ): WalletMovement {
     if (!money.isPositive()) throw new DomainError("INVALID_AMOUNT");
     if (money.currency !== this.currency)
       throw new DomainError("CURRENCY_MISMATCH");
     if (this.balance.isLessThan(money))
       throw new DomainError("INSUFFICIENT_FUNDS");
-    return new Wallet({
+    const balance = this.balance.subtract(money);
+    const wallet = new Wallet({
       ...this.state,
-      balance: this.balance.subtract(money),
+      balance,
       version: this.version + 1,
       updatedAt: at,
     });
+    return WalletMovement.of(
+      wallet,
+      WalletLedgerEntry.create({
+        id: identity.ledgerEntryId,
+        walletId: wallet.id,
+        transactionId: identity.transactionId,
+        direction: "DEBIT",
+        money,
+        balanceBefore: this.balance,
+        balanceAfter: balance,
+        createdAt: at,
+      }),
+    );
   }
 
-  credit(money: Money, at: Date): Wallet {
+  credit(
+    money: Money,
+    at: Date,
+    identity: WalletMovementIdentity,
+  ): WalletMovement {
     if (!money.isPositive()) throw new DomainError("INVALID_AMOUNT");
     if (money.currency !== this.currency)
       throw new DomainError("CURRENCY_MISMATCH");
     const balance = this.balance.add(money);
     if (balance.toString().indexOf(".") > 28)
       throw new DomainError("INVALID_AMOUNT");
-    return new Wallet({
+    const wallet = new Wallet({
       ...this.state,
       balance,
       version: this.version + 1,
       updatedAt: at,
     });
+    return WalletMovement.of(
+      wallet,
+      WalletLedgerEntry.create({
+        id: identity.ledgerEntryId,
+        walletId: wallet.id,
+        transactionId: identity.transactionId,
+        direction: "CREDIT",
+        money,
+        balanceBefore: this.balance,
+        balanceAfter: balance,
+        createdAt: at,
+      }),
+    );
   }
 
   toJSON() {

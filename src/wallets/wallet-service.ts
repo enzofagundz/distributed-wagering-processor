@@ -8,7 +8,6 @@ import {
 } from "../domain/opening-events";
 import { OutboxMessage } from "../domain/outbox-message";
 import { uuidPattern, Wallet } from "../domain/wallet";
-import { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
 import { Metrics } from "../metrics/metrics";
 import {
   outboxMessageSchema,
@@ -64,23 +63,15 @@ export class WalletService {
   ) {}
 
   async open(playerId: string, initialBalance: MoneyProps): Promise<Wallet> {
-    const wallet = Wallet.open({
+    const movement = Wallet.open({
       id: crypto.randomUUID(),
       playerId,
       initialBalance: Money.from(initialBalance),
+      transactionId: crypto.randomUUID(),
+      ledgerEntryId: crypto.randomUUID(),
     });
-    const entry = wallet.balance.isPositive()
-      ? WalletLedgerEntry.create({
-          id: crypto.randomUUID(),
-          walletId: wallet.id,
-          transactionId: crypto.randomUUID(),
-          direction: "CREDIT",
-          money: wallet.balance,
-          balanceBefore: Money.zero(wallet.currency),
-          balanceAfter: wallet.balance,
-          createdAt: wallet.createdAt,
-        })
-      : undefined;
+    const wallet = movement.wallet;
+    const entry = movement.entry;
     try {
       await this.orm.em.fork().transactional(async (em) => {
         const record = em.create(walletSchema, {

@@ -16,7 +16,7 @@ import {
   WagerTransaction,
 } from "../domain/wager-transaction";
 import { Wallet } from "../domain/wallet";
-import { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
+import type { WalletMovement } from "../domain/wallet-movement";
 import { Metrics } from "../metrics/metrics";
 import {
   outboxMessageSchema,
@@ -392,7 +392,7 @@ export class WageringService {
     }
     if (transaction.status === "PENDING_REFERENCE" && referenceAttempts >= 10)
       transaction.reject("REFERENCE_NOT_FOUND", at);
-    let resultingWallet = wallet;
+    let movement: WalletMovement | null = null;
     if (transaction.status === "PENDING") {
       if (direction === "DEBIT" && wallet.balance.isLessThan(money)) {
         transaction.reject(
@@ -403,10 +403,14 @@ export class WageringService {
         );
       } else {
         if (transaction.kind !== "LOSS") {
-          resultingWallet =
+          const identity = {
+            transactionId: transaction.id,
+            ledgerEntryId: crypto.randomUUID(),
+          };
+          movement =
             direction === "DEBIT"
-              ? wallet.debit(money, at)
-              : wallet.credit(money, at);
+              ? wallet.debit(money, at, identity)
+              : wallet.credit(money, at, identity);
         }
         transaction.markProcessed(at);
       }
@@ -418,19 +422,8 @@ export class WageringService {
       status !== "PENDING_REFERENCE"
     )
       throw new DomainError("INVALID_TRANSACTION_STATE");
-    const entry =
-      status === "PROCESSED" && transaction.kind !== "LOSS"
-        ? WalletLedgerEntry.create({
-            id: crypto.randomUUID(),
-            walletId: wallet.id,
-            transactionId: transaction.id,
-            direction,
-            money,
-            balanceBefore: wallet.balance,
-            balanceAfter: resultingWallet.balance,
-            createdAt: at,
-          })
-        : undefined;
+    const resultingWallet = movement?.wallet ?? wallet;
+    const entry = movement?.entry ?? undefined;
     if (entry)
       em.assign(walletRecord, {
         balance: resultingWallet.balance.toString(),
@@ -488,19 +481,18 @@ export class WageringService {
         walletId: entry.walletId,
         transactionId: entry.transactionId,
         direction: entry.direction,
-        amount: money.toString(),
-        currency: money.currency,
+        amount: entry.money.toString(),
+        currency: entry.money.currency,
         balanceBefore: entry.balanceBefore.toString(),
         balanceAfter: entry.balanceAfter.toString(),
-        createdAt: at,
+        createdAt: entry.createdAt,
       });
       await em.persist(ledgerEntry).flush();
     }
     const events = this.settlementEvents(
       transaction,
       wallet,
-      resultingWallet,
-      entry,
+      movement,
       status,
       isNew,
     );
@@ -528,20 +520,19 @@ export class WageringService {
   private settlementEvents(
     transaction: WagerTransaction,
     wallet: Wallet,
-    resultingWallet: Wallet,
-    entry: WalletLedgerEntry | undefined,
+    movement: WalletMovement | null,
     status: "PROCESSED" | "REJECTED" | "PENDING_REFERENCE",
     isNew: boolean,
   ) {
     if (!isNew && status === "PENDING_REFERENCE") return [];
-    if (entry && transaction.kind !== "LOSS")
+    if (movement?.entry && transaction.kind !== "LOSS")
       return [
         WagerTransactionProcessed.from(
-          resultingWallet,
-          entry,
+          movement.wallet,
+          movement.entry,
           transaction.kind,
         ),
-        WalletBalanceChanged.from(resultingWallet, entry),
+        WalletBalanceChanged.from(movement.wallet, movement.entry),
       ];
     if (status === "PROCESSED")
       return [WagerTransactionProcessed.fromLoss(wallet, transaction)];
