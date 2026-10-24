@@ -7,6 +7,7 @@ import {
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { Public } from "../auth/auth.module";
+import { MIGRATIONS_TABLE, migrationList } from "../persistence/config";
 
 type Status = "up" | "down";
 
@@ -18,10 +19,15 @@ export class HealthChecks {
     private readonly timeoutMs: number,
   ) {}
 
-  async check(): Promise<{ postgres: Status; sqs: Status }> {
-    const [postgres, sqs] = await Promise.all([
+  async check(): Promise<{
+    postgres: Status;
+    migrations: Status;
+    sqs: Status;
+  }> {
+    const [postgres, migrations, sqs] = await Promise.all([
       // A query abandonada pelo timeout segue no pool; o prazo só limita a resposta.
       this.probe(() => this.orm.em.getConnection().execute("select 1")),
+      this.probe(() => this.requireAppliedMigrations()),
       this.probe((signal) =>
         Promise.all(
           this.queueUrls.map((QueueUrl) =>
@@ -36,11 +42,21 @@ export class HealthChecks {
         ),
       ),
     ]);
-    return { postgres, sqs };
+    return { postgres, migrations, sqs };
   }
 
   onModuleDestroy(): void {
     this.sqs.destroy();
+  }
+
+  // Ler a tabela do migrator evita depender do Migrator, que criaria banco e tabela.
+  private async requireAppliedMigrations(): Promise<void> {
+    const rows = (await this.orm.em
+      .getConnection()
+      .execute(`select name from ${MIGRATIONS_TABLE}`)) as { name: string }[];
+    const applied = new Set(rows.map((row) => row.name));
+    if (migrationList.some((migration) => !applied.has(migration.name)))
+      throw new Error("pending migrations");
   }
 
   private async probe(
@@ -74,7 +90,10 @@ export class HealthController {
   @HttpCode(200)
   async ready() {
     const checks = await this.checks.check();
-    const ready = checks.postgres === "up" && checks.sqs === "up";
+    const ready =
+      checks.postgres === "up" &&
+      checks.migrations === "up" &&
+      checks.sqs === "up";
     if (!ready)
       throw new ServiceUnavailableException({ status: "not_ready", checks });
     return { status: "ready", checks };

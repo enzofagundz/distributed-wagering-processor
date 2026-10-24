@@ -18,6 +18,25 @@ import { wagerTransactionSchema } from "./wager-transaction-record";
 import { walletLedgerEntrySchema } from "./wallet-ledger-entry-record";
 import { walletSchema } from "./wallet-record";
 
+// Nome padrão do MikroORM; readiness lê a mesma tabela que o migrator escreve.
+export const MIGRATIONS_TABLE = "mikro_orm_migrations";
+
+export const migrationList = [
+  Migration20261022000100,
+  Migration20261022000200,
+  Migration20261022000300,
+  Migration20261022000400,
+  Migration20261023000100,
+  Migration20261023000200,
+  Migration20261023000300,
+  Migration20261023000400,
+  Migration20261023000500,
+  Migration20261023000600,
+  Migration20261023000700,
+  Migration20261023000800,
+  Migration20261023000900,
+];
+
 export function databaseConfig(clientUrl = process.env.DATABASE_URL) {
   if (!clientUrl) throw new Error("DATABASE_URL is required");
   return defineConfig({
@@ -30,21 +49,7 @@ export function databaseConfig(clientUrl = process.env.DATABASE_URL) {
     ],
     extensions: [Migrator],
     migrations: {
-      migrationsList: [
-        Migration20261022000100,
-        Migration20261022000200,
-        Migration20261022000300,
-        Migration20261022000400,
-        Migration20261023000100,
-        Migration20261023000200,
-        Migration20261023000300,
-        Migration20261023000400,
-        Migration20261023000500,
-        Migration20261023000600,
-        Migration20261023000700,
-        Migration20261023000800,
-        Migration20261023000900,
-      ],
+      migrationsList: migrationList,
       snapshot: false,
     },
     pool: { min: 0, max: 10 },
