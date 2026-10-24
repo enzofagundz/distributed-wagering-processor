@@ -2,7 +2,7 @@
 
 ## Status
 
-Aceita, parcialmente adotada. Migra D-002: persistência e concorrência da abertura entregues; ticket 05 adotou também [lock pessimista por wallet para BET](../../ARCHITECTURE.md#processamento-de-bet). Idempotência completa, inbox e publicação da outbox continuam pendentes. As seções abaixo registram o escopo original da abertura; comportamento atual fica na arquitetura.
+Aceita e adotada. Migra D-002: persistência e concorrência da abertura entregues; ticket 05 adotou também [lock pessimista por wallet para BET](../../ARCHITECTURE.md#processamento-de-bet). Idempotência, inbox e publicação da outbox foram entregues nos tickets 06–17 e 18–20; `FAILED` e a outbox de domínio fecharam nos tickets 01 e 02 de `fechar-lacunas-obrigatorias`. As seções abaixo registram o escopo original da abertura; comportamento atual fica na arquitetura.
 
 ## Contexto
 

@@ -397,13 +397,19 @@ Evidências: [verificação](docs/verification.md#métricas--2026-10-24).
 
 [DECISIONS](DECISIONS.md) relaciona as decisões aos requisitos. As decisões D-001 a D-005 estão registradas nos ADRs 0001 a 0005, com os mesmos status e limites. O [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) registra a organização modular adotada. Os ADRs reúnem justificativas, alternativas e consequências.
 
-## Ainda não entregue
+## Limitações e lacunas
 
-Resolução de referências, consumo dos kinds externos e publicação de outbox têm workers separados. Pendências em [PROGRESS](PROGRESS.md).
+`FAILED` e a outbox de domínio saíram da lista de pendências: o estado terminal está em [Falha permanente de infraestrutura](#falha-permanente-de-infraestrutura) e a classe em [Publicação da outbox](#publicação-da-outbox). O que continua aberto é limite conhecido, não requisito obrigatório escondido.
 
-Shutdown para novas leituras e espera o consumidor e os workers antes de fechar HTTP e ORM. A espera pelo consumidor tem prazo (`WAGER_SHUTDOWN_DRAIN_MS`, padrão 20 s); workers e outbox ainda não têm.
+- `FAILED` só nasce na resolução de referência pendente, e apenas para WIN, REFUND e ROLLBACK com `referenceExternalTransactionId`. BET e LOSS não têm caminho para o estado. `FAILED` não publica evento: a observação vem de GET, replay, log `PendingReferenceFailed` e contador `wager_failed_transactions_total`. Um evento `WagerTransactionFailed` fica como extensão futura.
+- A classificação de falha permanente é uma lista de exceções. SQLSTATE de conexão, serialização, deadlock, lock timeout e rede continuam transitórios; qualquer outro erro vira `FAILED`. Um erro transitório desconhecido que não esteja nessa lista encerraria a operação, então ampliar o fluxo exige revisar a lista junto.
+- Contadores e histograma de métricas vivem no processo; gauges de status e outbox vêm do PostgreSQL. Somar contadores entre instâncias é trabalho do coletor, com `rate()`/`increase()` tratando o reset. Não há agregação global implementada.
+- O consumidor SQS tem prazo de drenagem (`WAGER_SHUTDOWN_DRAIN_MS`). Os workers de referência e outbox esperam a execução em andamento terminar, sem prazo próprio; uma execução travada atrasa o encerramento até a saída forçada.
+- A prova de três processos é de BET: 50 duplicatas, disputa por saldo e wallets independentes. Os demais kinds usam o mesmo lock por wallet e foram exercitados com pools independentes, não em três processos simultâneos.
+- Separação entre usuário de migrations e usuário da aplicação continua necessária antes de exposição real; o schema impede escrita indevida, não substitui privilégio mínimo. O trigger append-only também não contém um administrador capaz de removê-lo.
+- Double-entry, OpenTelemetry e teste de carga (R-047 a R-049) são opcionais e ficam fora do critério de conclusão. O mesmo vale para agregação global de métricas, drenagem própria dos workers e prova multiprocesso de todos os kinds.
 
-Setup, migrations e riscos de reversão: [README](README.md). Resultados executados e limites das provas: [evidências](docs/verification.md).
+Setup, migrations e riscos de reversão: [README](README.md). Resultados executados e limites das provas: [evidências](docs/verification.md#reconciliação-e-verificação-final--2026-10-24).
 
 ## Referências consultadas
 

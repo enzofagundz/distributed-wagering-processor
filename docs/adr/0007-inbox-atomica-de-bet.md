@@ -32,7 +32,7 @@ A inbox ocupa espaço por identidade de mensagem, inclusive quando a operação 
 
 A alternativa de confirmar inbox separadamente deixaria uma janela com deduplicação sem débito, ou débito sem deduplicação. Usar apenas a chave de negócio impediria débito duplicado, mas não detectaria reutilização divergente de messageId. Usar apenas FIFO deixaria a garantia limitada ao broker.
 
-Interrupção real de dependência, FAILED auditável, prazo limitado de shutdown e métricas globais continuam nos tickets 21–27. A classe de domínio InboxMessage é independente de NestJS e ORM; a modelagem equivalente de OutboxMessage continua pendente na cobertura.
+Interrupção real de dependência, FAILED auditável e prazo limitado de shutdown chegaram nos tickets 21–27. A classe de domínio InboxMessage é independente de NestJS e ORM; a modelagem equivalente de OutboxMessage foi entregue no ticket 02 de `fechar-lacunas-obrigatorias`.
 
 Documentação consultada via Context7: [AWS SDK v3 — comandos SQS](https://github.com/aws/aws-sdk-js-v3/tree/main/clients/client-sqs), exercitados com 3.1156.0; [MikroORM — transações](https://mikro-orm.io/docs/6.6/transactions), exercitadas com 6.6.8. Resultados e limites: [verificação](../verification.md#bet-por-sqs--2026-10-23).
 
