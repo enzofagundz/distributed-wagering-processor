@@ -785,6 +785,57 @@ test("reused message ID with divergent payload is DLQ conflict, including anothe
   await reconcile(message.data.walletId, "75.00", 2);
 });
 
+test("reordered envelope keys replay without new effect and divergent payload still conflicts", async () => {
+  const message = await envelope();
+  const reorder = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(reorder);
+    if (value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value)
+          .reverse()
+          .map(([key, item]) => [key, reorder(item)]),
+      );
+    return value;
+  };
+  const reordered = reorder(message) as typeof message;
+  expect(JSON.stringify(reordered)).not.toBe(JSON.stringify(message));
+  expect(JSON.stringify(reordered.data)).not.toBe(JSON.stringify(message.data));
+  const snapshot = async () => ({
+    inbox: await inbox(message.messageId),
+    wallet: await orm.em.execute(
+      "select balance::text, version from wallets where id = ?",
+      [message.data.walletId],
+    ),
+    ledger: await orm.em.execute(
+      "select count(*)::int as entries from wallet_ledger_entries where wallet_id = ?",
+      [message.data.walletId],
+    ),
+    outbox: await orm.em.execute(
+      "select count(*)::int as events from outbox_messages",
+    ),
+  });
+  await send(message);
+  expect(await consumer.runOnce()).toBe(1);
+  const original = await snapshot();
+  await send(reordered);
+  expect(await consumer.runOnce()).toBe(1);
+  expect(await receive()).toBeUndefined();
+  expect(await receive(dlqUrl)).toBeUndefined();
+  expect(await snapshot()).toEqual(original);
+  await expectDlq(
+    {
+      ...reordered,
+      data: {
+        ...reordered.data,
+        money: { amount: "1.00", currency: "BRL" },
+      },
+    },
+    "MESSAGE_ID_CONFLICT",
+  );
+  expect(await snapshot()).toEqual(original);
+  await reconcile(message.data.walletId, "75.00", 2);
+}, 15000);
+
 test("invalid envelopes, OPENING, reserved provider and mismatched ownership never write inbox or money", async () => {
   const message = await envelope();
   for (const invalid of [
