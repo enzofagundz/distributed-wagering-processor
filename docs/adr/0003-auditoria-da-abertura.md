@@ -2,7 +2,7 @@
 
 ## Status
 
-Aceita e adotada. Migra D-003.
+Aceita e adotada. Migra D-003. O publisher e a política de retry foram entregues nos tickets 15–17; a decisão abaixo registra o escopo da abertura naquela data.
 
 ## Contexto
 

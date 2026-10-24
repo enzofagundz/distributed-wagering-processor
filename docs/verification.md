@@ -701,6 +701,8 @@ Requisitos eliminatórios:
 
 Lacunas que continuam abertas: o estado `FAILED` não tem fluxo auditável próprio; contadores de métricas são por processo e não foram somados entre instâncias; workers de referência e outbox não têm prazo de drenagem no shutdown; não houve teste de carga (opcional). Double-entry e OpenTelemetry, também opcionais, não foram feitos.
 
+Esse parágrafo registra o estado naquela data. O ticket 01 fechou o `FAILED` auditável e o ticket 03 reconciliou cobertura e documentos; estado final em [verificação final](#reconciliação-e-verificação-final--2026-10-24).
+
 ## FAILED auditável — 2026-10-24
 
 Ticket 01 fechou o estado terminal para falha permanente de infraestrutura. A verificação usou PostgreSQL e LocalStack reais, sem mock de banco.
@@ -749,3 +751,21 @@ A consulta de claim lê `occurred_at`, `next_attempt_at`, `published_at` e `cloc
 A recuperação depois de queda continua igual porque a marcação é persistida só depois de `SendMessage` retornar, dentro da transação que detém o lock da linha. Um processo morto antes desse commit não deixa agenda em memória nem escrita parcial: a linha volta com `attempts` e `next_attempt_at` anteriores, o próximo publisher a reivindica e o SQS recebe o mesmo `eventId`. O `SKIP LOCKED` e o lock transacional seguem no SQL, fora da classe de domínio.
 
 Nada mudou no envelope, na tabela ou na migration `20261023000700`, então o down continua preservando registros e apagando apenas contagem e agenda. O jitter continua ausente, e a defesa contra relógio do host adiantado em relação ao banco não existe: o instante base é sempre o do PostgreSQL.
+
+## Reconciliação e verificação final — 2026-10-24
+
+Ticket 03. A ordem foi suíte completa com PostgreSQL 17.6, LocalStack 4.11.1 e Keycloak 26.4.0 reais; depois typecheck, lint e format; por fim o smoke do `FAILED` com publicação real na outbox.
+
+`bun test`: 320 testes, zero falhas, 2911 assertions em 33 arquivos (310,98 s). `bun run typecheck`, `bun run lint` e `bun run format:check` passaram, sem correção pendente. A inspeção pelo MCP do Nest Boost (`application_info`, `list_routes`, `module_graph`) devolveu 13 módulos, 4 controllers, 16 providers e 10 rotas. Nenhuma rota, mapping ou migration mudou nesta entrega.
+
+Smoke final: script Bun local, fora do repositório (`.scratch/ticket03-smoke.ts`, não versionado), com banco novo no PostgreSQL do Compose, filas novas no LocalStack e API iniciada por `src/main.ts` com fila FIFO de entrada, DLQ, fila standard de saída e token real do Keycloak (client `provider-a`). Fluxo observado:
+
+- abertura de `100.00 BRL` publicou `WagerTransactionProcessed` e `WalletBalanceChanged` na fila real;
+- REFUND de `25.00` antes da BET ficou `PENDING_REFERENCE` com saldo observado `100.00` e publicou `WagerTransactionPendingReference`;
+- gatilho no PostgreSQL fez o insert de `WagerTransactionProcessed` falhar sem SQLSTATE transitório; a BET referenciada entrou pela fila e a resolução terminou `FAILED`, com `PERMANENT_INFRASTRUCTURE_FAILURE` e `processedAt`;
+- GET por ID interno e por provider/ID externo devolveu 200 com o mesmo corpo; o replay devolveu 500 com `idempotentReplay: true`;
+- wallet ficou em `75.00`, versão 2, com dois lançamentos; não houve CREDIT do REFUND; a reconciliação devolveu `consistent: true`, diferença `0.00` e dois lançamentos;
+- outbox: só `WagerTransactionPendingReference` para a transação, já publicada; nenhum evento do REFUND processado; `reference_next_attempt_at` nulo;
+- `wager_failed_transactions_total{failureCode="PERMANENT_INFRASTRUCTURE_FAILURE"}` ficou em 1; uma nova varredura manteve `FAILED`.
+
+Limites: o smoke cria e remove o próprio banco e as próprias filas; a falha permanente foi induzida por gatilho, não por queda real de serviço; worker e publisher rodaram no processo da API. Isso não mede throughput, não soma contadores entre instâncias e não amplia a prova multiprocesso para além de BET.
