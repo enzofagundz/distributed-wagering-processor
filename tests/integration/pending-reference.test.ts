@@ -610,7 +610,7 @@ test("expiration outbox failure rolls back the last attempt and concurrent retri
   await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$
     begin
       if new.payload->>'correlationId' = '${pending.transactionId}' and new.event_type = 'WagerTransactionRejected'
-        then raise exception 'induced expiration outbox failure'; end if;
+        then raise exception 'induced expiration outbox failure' using errcode = '40001'; end if;
       return new;
     end $$`);
   await orm.em.execute(
@@ -747,7 +747,7 @@ test("pending batch continues after a candidate fails and retries its rolled-bac
   );
   await orm.em.execute(`create function ${name}() returns trigger language plpgsql as $$ begin
     if new.payload->>'correlationId' = '${failed!.transactionId}' and new.event_type = 'WagerTransactionProcessed' then
-      raise exception 'induced candidate outbox failure';
+      raise exception 'induced candidate outbox failure' using errcode = '40001';
     end if; return new; end $$`);
   await orm.em.execute(
     `create trigger ${name} before insert on outbox_messages for each row execute function ${name}()`,
@@ -761,6 +761,7 @@ test("pending batch continues after a candidate fails and retries its rolled-bac
     const summary = await worker.runOnce(at);
     expect(summary.scanned).toBeGreaterThanOrEqual(2);
     expect(summary.failed).toBe(1);
+    expect(summary.terminalFailures).toBe(0);
     expect(summary.processed).toBeGreaterThanOrEqual(1);
     expect(await queries.get({ id: failed!.transactionId })).toMatchObject({
       status: "PENDING_REFERENCE",

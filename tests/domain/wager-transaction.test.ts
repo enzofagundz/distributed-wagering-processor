@@ -215,3 +215,135 @@ test("LOSS processes once and rejects every transition from its terminal state",
     expect(transaction.processedAt).toEqual(at);
   }
 });
+
+test("fail from PENDING marks a referenced WIN FAILED with the infrastructure code", () => {
+  const transaction = WagerTransaction.create(
+    props({ referenceExternalTransactionId: "bet-external" }),
+  );
+  transaction.fail("PERMANENT_INFRASTRUCTURE_FAILURE", at);
+  expect(transaction.status).toBe("FAILED");
+  expect(transaction.failureCode).toBe("PERMANENT_INFRASTRUCTURE_FAILURE");
+  expect(transaction.processedAt).toEqual(at);
+  expect(transaction.referenceExternalTransactionId).toBe("bet-external");
+  expect(transaction.referenceTransactionId).toBeUndefined();
+});
+
+test("fail from PENDING_REFERENCE keeps the binding and records audit metadata", () => {
+  const transaction = WagerTransaction.create(
+    props({ referenceExternalTransactionId: "later-bet" }),
+  );
+  transaction.resolveReference(undefined, at);
+  expect(transaction.status).toBe("PENDING_REFERENCE");
+  const failedAt = new Date(at.getTime() + 1000);
+  transaction.fail("PERMANENT_INFRASTRUCTURE_FAILURE", failedAt);
+  expect(transaction.status).toBe("FAILED");
+  expect(transaction.failureCode).toBe("PERMANENT_INFRASTRUCTURE_FAILURE");
+  expect(transaction.processedAt).toEqual(failedAt);
+  expect(transaction.referenceExternalTransactionId).toBe("later-bet");
+});
+
+for (const terminal of ["PROCESSED", "REJECTED", "FAILED"] as const) {
+  test(`terminal ${terminal} refuses fail and keeps its audit metadata`, () => {
+    const transaction = WagerTransaction.create(
+      props(
+        terminal === "PROCESSED"
+          ? {}
+          : { referenceExternalTransactionId: "bet-external" },
+      ),
+    );
+    if (terminal === "PROCESSED") transaction.markProcessed(at);
+    else if (terminal === "REJECTED")
+      transaction.reject("REFERENCE_MISMATCH", at);
+    else transaction.fail("PERMANENT_INFRASTRUCTURE_FAILURE", at);
+    const failureCode = transaction.failureCode;
+    expect(() =>
+      transaction.fail(
+        "PERMANENT_INFRASTRUCTURE_FAILURE",
+        new Date(at.getTime() + 1000),
+      ),
+    ).toThrow(new DomainError("INVALID_TRANSACTION_STATE"));
+    expect(transaction.status).toBe(terminal);
+    expect(transaction.failureCode).toBe(failureCode);
+    expect(transaction.processedAt).toEqual(at);
+  });
+}
+
+test("fail rejects BET, LOSS, WIN without reference and invalid instants", () => {
+  for (const kind of ["BET", "LOSS"] as const) {
+    const transaction = WagerTransaction.create(props({ kind }));
+    expect(() =>
+      transaction.fail("PERMANENT_INFRASTRUCTURE_FAILURE", at),
+    ).toThrow(new DomainError("INVALID_TRANSACTION_STATE"));
+    expect(transaction.status).toBe("PENDING");
+  }
+  const independentWin = WagerTransaction.create(props());
+  expect(() =>
+    independentWin.fail("PERMANENT_INFRASTRUCTURE_FAILURE", at),
+  ).toThrow(new DomainError("INVALID_TRANSACTION_STATE"));
+  const referenced = WagerTransaction.create(
+    props({ referenceExternalTransactionId: "bet-external" }),
+  );
+  expect(() =>
+    referenced.fail("PERMANENT_INFRASTRUCTURE_FAILURE", new Date(Number.NaN)),
+  ).toThrow(new DomainError("INVALID_TRANSACTION_STATE"));
+  expect(referenced.status).toBe("PENDING");
+});
+
+test("reject refuses the infrastructure code while accepting commercial codes", () => {
+  const transaction = WagerTransaction.create(
+    props({ referenceExternalTransactionId: "bet-external" }),
+  );
+  expect(() =>
+    transaction.reject("PERMANENT_INFRASTRUCTURE_FAILURE" as never, at),
+  ).toThrow(new DomainError("INVALID_TRANSACTION_STATE"));
+  expect(transaction.status).toBe("PENDING");
+  expect(transaction.failureCode).toBeUndefined();
+  transaction.reject("REFERENCE_NOT_PROCESSED", at);
+  expect(transaction.status).toBe("REJECTED");
+  expect(transaction.failureCode).toBe("REFERENCE_NOT_PROCESSED");
+});
+
+test("rehydrated FAILED refuses every transition without replaying fail", () => {
+  const transaction = WagerTransaction.rehydrate({
+    ...props({ referenceExternalTransactionId: "bet-external" }),
+    status: "FAILED",
+    failureCode: "PERMANENT_INFRASTRUCTURE_FAILURE",
+    processedAt: at,
+    createdAt: at,
+  });
+  expect(transaction.status).toBe("FAILED");
+  expect(transaction.failureCode).toBe("PERMANENT_INFRASTRUCTURE_FAILURE");
+  expect(transaction.processedAt).toEqual(at);
+  for (const transition of [
+    () =>
+      transaction.fail(
+        "PERMANENT_INFRASTRUCTURE_FAILURE",
+        new Date(at.getTime() + 1000),
+      ),
+    () => transaction.reject("REFERENCE_NOT_PROCESSED", at),
+    () => transaction.markProcessed(at),
+    () => transaction.markPendingReference(),
+    () => transaction.resolveReference(undefined, at),
+  ]) {
+    expect(transition).toThrow(new DomainError("INVALID_TRANSACTION_STATE"));
+    expect(transaction.status).toBe("FAILED");
+    expect(transaction.processedAt).toEqual(at);
+  }
+});
+
+test("fail refuses commercial codes without leaving PENDING", () => {
+  const transaction = WagerTransaction.create(
+    props({ referenceExternalTransactionId: "bet-external" }),
+  );
+  for (const code of [
+    "INSUFFICIENT_FUNDS",
+    "REFERENCE_NOT_PROCESSED",
+    "REFERENCE_NOT_FOUND",
+  ])
+    expect(() => transaction.fail(code as never, at)).toThrow(
+      new DomainError("INVALID_TRANSACTION_STATE"),
+    );
+  expect(transaction.status).toBe("PENDING");
+  expect(transaction.failureCode).toBeUndefined();
+  expect(transaction.processedAt).toBeUndefined();
+});

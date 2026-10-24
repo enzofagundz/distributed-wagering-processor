@@ -168,7 +168,7 @@ async function reconcile(
 }
 
 test("empty inbox migration reverses and reapplies without changing financial tables", async () => {
-  await orm.migrator.down();
+  await orm.migrator.down({ to: "Migration20261023000800" });
   expect(
     await orm.em.execute("select to_regclass(?) as name", [
       `${schema}.inbox_messages`,
@@ -1177,9 +1177,9 @@ test("inbox constraints reject incomplete results and destructive down refuses d
       "insert into inbox_messages (consumer_name, message_id, payload_hash) values ('test', 'invalid', 'bad')",
     ),
   ).rejects.toThrow();
-  await expect(orm.migrator.down()).rejects.toThrow(
-    "Cannot remove inbox deduplication history",
-  );
+  await expect(
+    orm.migrator.down({ to: "Migration20261023000800" }),
+  ).rejects.toThrow("Cannot remove inbox deduplication history");
   expect(
     await orm.em.execute("select message_id from inbox_messages"),
   ).not.toHaveLength(0);
