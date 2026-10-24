@@ -1,16 +1,16 @@
-import { HttpException, Logger } from "@nestjs/common";
+import { createHash } from "node:crypto";
 import {
   ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
+  type Message,
   ReceiveMessageCommand,
   SendMessageCommand,
-  type Message,
   type SQSClient,
 } from "@aws-sdk/client-sqs";
-import { createHash } from "node:crypto";
+import { HttpException, Logger } from "@nestjs/common";
 import { DomainError } from "../domain/money";
-import { WageringService } from "./wagering-service";
 import { parseWagerMessage } from "./wager-message";
+import type { WageringService } from "./wagering-service";
 
 export class WagerConsumer {
   private readonly logger = new Logger(WagerConsumer.name);
@@ -44,14 +44,16 @@ export class WagerConsumer {
   }
 
   private async process(message: Message): Promise<void> {
-    if (!message.ReceiptHandle) throw new Error("Missing SQS receipt handle");
+    const receiptHandle = message.ReceiptHandle;
+    if (receiptHandle === undefined)
+      throw new Error("Missing SQS receipt handle");
     let context: Awaited<ReturnType<typeof parseWagerMessage>> | undefined;
     const heartbeat = setInterval(() => {
       void this.sqs
         .send(
           new ChangeMessageVisibilityCommand({
             QueueUrl: this.queueUrl,
-            ReceiptHandle: message.ReceiptHandle!,
+            ReceiptHandle: receiptHandle,
             VisibilityTimeout: 30,
           }),
           { abortSignal: AbortSignal.timeout(5000) },

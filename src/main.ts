@@ -1,10 +1,10 @@
-import { WagerConsumer } from "./wagering/wager-consumer";
-import type { INestApplication } from "@nestjs/common";
 import { MikroORM } from "@mikro-orm/postgresql";
+import type { INestApplication } from "@nestjs/common";
 import { createApplication } from "./create-application";
+import { OutboxPublisher } from "./outbox/outbox-publisher";
 import { databaseConfig } from "./persistence/config";
 import { PendingReferenceWorker } from "./wagering/pending-reference-worker";
-import { OutboxPublisher } from "./outbox/outbox-publisher";
+import { WagerConsumer } from "./wagering/wager-consumer";
 
 const orm = await MikroORM.init(databaseConfig());
 let app: INestApplication | undefined;
@@ -13,16 +13,19 @@ let publisher: OutboxPublisher | undefined;
 let consumer: WagerConsumer | undefined;
 let closing: Promise<void> | undefined;
 function close() {
-  return (closing ??= (async () => {
-    try {
-      await consumer?.stop();
-      await worker?.stop();
-      await publisher?.stop();
-      await app?.close();
-    } finally {
-      await orm.close();
-    }
-  })());
+  if (closing === undefined) {
+    closing = (async () => {
+      try {
+        await consumer?.stop();
+        await worker?.stop();
+        await publisher?.stop();
+        await app?.close();
+      } finally {
+        await orm.close();
+      }
+    })();
+  }
+  return closing;
 }
 try {
   app = await createApplication(orm);
@@ -33,10 +36,12 @@ try {
   const pendingWorker = app.get(PendingReferenceWorker);
   worker = pendingWorker;
   pendingWorker.start();
-  publisher = app.get(OutboxPublisher);
-  publisher!.start();
-  consumer = app.get(WagerConsumer);
-  consumer!.start();
+  const outboxPublisher = app.get(OutboxPublisher);
+  publisher = outboxPublisher;
+  outboxPublisher.start();
+  const wagerConsumer = app.get(WagerConsumer);
+  consumer = wagerConsumer;
+  wagerConsumer.start();
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, close);
   }

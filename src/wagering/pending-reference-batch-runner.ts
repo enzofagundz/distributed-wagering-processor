@@ -1,9 +1,9 @@
-import { Logger } from "@nestjs/common";
 import type { FilterQuery } from "@mikro-orm/core";
-import { MikroORM } from "@mikro-orm/postgresql";
+import type { MikroORM } from "@mikro-orm/postgresql";
+import { Logger } from "@nestjs/common";
 import {
-  wagerTransactionSchema,
   type WagerTransactionRecord,
+  wagerTransactionSchema,
 } from "../persistence/wager-transaction-record";
 import { WageringService } from "./wagering-service";
 
@@ -47,8 +47,9 @@ export class PendingReferenceBatchRunner {
           orderBy: { id: "ASC" },
           limit: pageSize,
         });
-      if (page.length === 0) break;
-      cursor = page[page.length - 1]!.id;
+      const last = page.at(-1);
+      if (last === undefined) break;
+      cursor = last.id;
       for (const candidate of page) {
         summary.scanned++;
         try {

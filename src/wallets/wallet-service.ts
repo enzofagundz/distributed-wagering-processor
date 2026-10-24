@@ -1,19 +1,18 @@
-import { Logger } from "@nestjs/common";
-import { MikroORM } from "@mikro-orm/postgresql";
 import { UniqueConstraintViolationException } from "@mikro-orm/core";
+import type { MikroORM } from "@mikro-orm/postgresql";
+import { Logger } from "@nestjs/common";
 import { DomainError, Money, type MoneyProps } from "../domain/money";
-import { Wallet } from "../domain/wallet";
-import { walletSchema } from "../persistence/wallet-record";
-import { wagerTransactionSchema } from "../persistence/wager-transaction-record";
-import { walletLedgerEntrySchema } from "../persistence/wallet-ledger-entry-record";
-import { outboxMessageSchema } from "../persistence/outbox-message-record";
-import { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
 import {
   WagerTransactionProcessed,
   WalletBalanceChanged,
 } from "../domain/opening-events";
-import { uuidPattern } from "../domain/wallet";
+import { uuidPattern, Wallet } from "../domain/wallet";
+import { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
+import { outboxMessageSchema } from "../persistence/outbox-message-record";
+import { wagerTransactionSchema } from "../persistence/wager-transaction-record";
 import type { WalletLedgerEntryRecord } from "../persistence/wallet-ledger-entry-record";
+import { walletLedgerEntrySchema } from "../persistence/wallet-ledger-entry-record";
+import { walletSchema } from "../persistence/wallet-record";
 
 export class WalletService {
   private readonly logger = new Logger(WalletService.name);
@@ -202,6 +201,7 @@ export class WalletService {
     );
     const hasMore = records.length > query.limit;
     if (hasMore) records.pop();
+    const lastRecord = records.at(-1);
     return {
       items: records.map((record) => ({
         id: record.id,
@@ -219,9 +219,10 @@ export class WalletService {
         },
         createdAt: record.createdAt,
       })),
-      nextCursor: hasMore
-        ? Buffer.from(records[records.length - 1]!.id).toString("base64url")
-        : null,
+      nextCursor:
+        hasMore && lastRecord !== undefined
+          ? Buffer.from(lastRecord.id).toString("base64url")
+          : null,
     };
   }
 }
