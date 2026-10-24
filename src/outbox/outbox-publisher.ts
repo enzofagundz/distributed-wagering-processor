@@ -1,6 +1,7 @@
 import { SendMessageCommand, type SQSClient } from "@aws-sdk/client-sqs";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { Logger } from "@nestjs/common";
+import { Metrics } from "../metrics/metrics";
 
 export class OutboxPublisher {
   private readonly logger = new Logger(OutboxPublisher.name);
@@ -12,6 +13,7 @@ export class OutboxPublisher {
     private readonly orm: MikroORM,
     private readonly sqs: SQSClient,
     private readonly queueUrl: string,
+    private readonly metrics = new Metrics(),
   ) {}
 
   async runOnce(): Promise<number> {
@@ -57,6 +59,7 @@ export class OutboxPublisher {
             walletId: message.payload.data?.walletId,
             errorType: error instanceof Error ? error.name : "UnknownError",
           });
+          this.metrics.increment("outbox_publication_retries_total");
           return "retry";
         }
         await em.execute(
@@ -74,7 +77,10 @@ export class OutboxPublisher {
         return true;
       });
       if (!sent) break;
-      if (sent === true) published++;
+      if (sent === true) {
+        published++;
+        this.metrics.increment("outbox_published_total");
+      }
     }
     return published;
   }

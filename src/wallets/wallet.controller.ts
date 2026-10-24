@@ -2,7 +2,6 @@ import {
   Body,
   Controller,
   Get,
-  Header,
   HttpCode,
   Inject,
   Param,
@@ -47,16 +46,5 @@ export class WalletController {
       limit: Number(query.limit),
       cursor: query.cursor,
     });
-  }
-}
-
-@Controller("metrics")
-export class WalletMetricsController {
-  constructor(@Inject(WalletService) private readonly wallets: WalletService) {}
-
-  @Get()
-  @Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-  get() {
-    return this.wallets.metrics();
   }
 }

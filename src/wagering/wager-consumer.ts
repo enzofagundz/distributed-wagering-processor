@@ -9,6 +9,7 @@ import {
 } from "@aws-sdk/client-sqs";
 import { HttpException, Logger } from "@nestjs/common";
 import { DomainError } from "../domain/money";
+import { Metrics } from "../metrics/metrics";
 import { parseWagerMessage } from "./wager-message";
 import type { WageringService } from "./wagering-service";
 
@@ -27,6 +28,7 @@ export class WagerConsumer {
     private readonly queueUrl: string,
     private readonly dlqUrl: string,
     private readonly drainMs = 20000,
+    private readonly metrics = new Metrics(),
   ) {}
 
   async runOnce(): Promise<number> {
@@ -146,6 +148,10 @@ export class WagerConsumer {
           }),
           { abortSignal: AbortSignal.timeout(5000) },
         );
+        this.metrics.increment(
+          "wager_dlq_messages_total",
+          permanent ? 'reason="PERMANENT"' : 'reason="RETRIES_EXHAUSTED"',
+        );
       } else {
         await this.sqs.send(
           new ChangeMessageVisibilityCommand({
@@ -155,6 +161,7 @@ export class WagerConsumer {
           }),
           { abortSignal: AbortSignal.timeout(5000) },
         );
+        this.metrics.increment("wager_message_retries_total");
         return;
       }
     } finally {

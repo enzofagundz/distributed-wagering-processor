@@ -1,6 +1,7 @@
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { type DynamicModule, Module } from "@nestjs/common";
+import { Metrics } from "../metrics/metrics";
 import { PersistenceModule } from "../persistence/persistence.module";
 import { PendingReferenceBatchRunner } from "./pending-reference-batch-runner";
 import { PendingReferenceWorker } from "./pending-reference-worker";
@@ -21,7 +22,7 @@ import { WageringService } from "./wagering-service";
     },
     {
       provide: WagerConsumer,
-      useFactory: (wagering: WageringService) =>
+      useFactory: (wagering: WageringService, metrics: Metrics) =>
         new WagerConsumer(
           wagering,
           new SQSClient({
@@ -34,14 +35,15 @@ import { WageringService } from "./wagering-service";
           process.env.WAGER_DLQ_URL ??
             "http://127.0.0.1:4566/queue/us-east-1/000000000000/wager-transactions-dlq.fifo",
           Number(process.env.WAGER_SHUTDOWN_DRAIN_MS ?? "20000"),
+          metrics,
         ),
-      inject: [WageringService],
+      inject: [WageringService, Metrics],
     },
     {
       provide: WageringService,
-      useFactory: (orm: MikroORM, inbox: WageringInbox) =>
-        new WageringService(orm, inbox),
-      inject: [MikroORM, WageringInbox],
+      useFactory: (orm: MikroORM, inbox: WageringInbox, metrics: Metrics) =>
+        new WageringService(orm, inbox, metrics),
+      inject: [MikroORM, WageringInbox, Metrics],
     },
     {
       provide: PendingReferenceBatchRunner,

@@ -8,6 +8,7 @@ import {
 } from "../domain/opening-events";
 import { uuidPattern, Wallet } from "../domain/wallet";
 import { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
+import { Metrics } from "../metrics/metrics";
 import { outboxMessageSchema } from "../persistence/outbox-message-record";
 import { wagerTransactionSchema } from "../persistence/wager-transaction-record";
 import type { WalletLedgerEntryRecord } from "../persistence/wallet-ledger-entry-record";
@@ -16,12 +17,6 @@ import { walletSchema } from "../persistence/wallet-record";
 
 export class WalletService {
   private readonly logger = new Logger(WalletService.name);
-  private reconciliationDivergences = 0;
-
-  metrics() {
-    return `# TYPE wallet_reconciliation_divergences_total counter\nwallet_reconciliation_divergences_total ${this.reconciliationDivergences}\n`;
-  }
-
   async reconcile(walletId: string) {
     const [row] = await this.orm.em.fork().execute<
       {
@@ -46,7 +41,7 @@ export class WalletService {
     const money = (amount: string) => ({ amount, currency: row.currency });
     const consistent = row.difference === "0.00";
     if (!consistent) {
-      this.reconciliationDivergences++;
+      this.metrics.increment("wallet_reconciliation_divergences_total");
       this.logger.warn({ event: "WalletReconciliationDivergence", walletId });
     }
     return {
@@ -59,7 +54,10 @@ export class WalletService {
     };
   }
 
-  constructor(private readonly orm: MikroORM) {}
+  constructor(
+    private readonly orm: MikroORM,
+    private readonly metrics = new Metrics(),
+  ) {}
 
   async open(playerId: string, initialBalance: MoneyProps): Promise<Wallet> {
     const wallet = Wallet.open({

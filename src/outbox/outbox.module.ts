@@ -1,6 +1,7 @@
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { type DynamicModule, Module } from "@nestjs/common";
+import { Metrics } from "../metrics/metrics";
 import { PersistenceModule } from "../persistence/persistence.module";
 import { OutboxPublisher } from "./outbox-publisher";
 
@@ -8,7 +9,7 @@ import { OutboxPublisher } from "./outbox-publisher";
   providers: [
     {
       provide: OutboxPublisher,
-      useFactory: (orm: MikroORM) =>
+      useFactory: (orm: MikroORM, metrics: Metrics) =>
         new OutboxPublisher(
           orm,
           new SQSClient({
@@ -18,8 +19,9 @@ import { OutboxPublisher } from "./outbox-publisher";
           }),
           process.env.OUTBOX_QUEUE_URL ??
             "http://127.0.0.1:4566/queue/us-east-1/000000000000/wagering-events",
+          metrics,
         ),
-      inject: [MikroORM],
+      inject: [MikroORM, Metrics],
     },
   ],
 })

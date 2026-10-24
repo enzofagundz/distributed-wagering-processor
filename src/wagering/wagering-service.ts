@@ -16,6 +16,7 @@ import {
 } from "../domain/wager-transaction";
 import { Wallet } from "../domain/wallet";
 import { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
+import { Metrics } from "../metrics/metrics";
 import { outboxMessageSchema } from "../persistence/outbox-message-record";
 import type { WagerTransactionRecord } from "../persistence/wager-transaction-record";
 import { wagerTransactionSchema } from "../persistence/wager-transaction-record";
@@ -81,7 +82,7 @@ const transientCodes: Readonly<Record<string, true>> = {
   EAI_AGAIN: true,
 };
 
-function isTransient(error: unknown): boolean {
+function transientCode(error: unknown): string | undefined {
   const visited = new Set<object>();
   while (error !== null && typeof error === "object" && !visited.has(error)) {
     visited.add(error);
@@ -90,17 +91,24 @@ function isTransient(error: unknown): boolean {
       typeof error.code === "string" &&
       transientCodes[error.code] === true
     )
-      return true;
+      return error.code;
     error = "cause" in error ? error.cause : undefined;
   }
-  return false;
+  return undefined;
 }
+
+const lockConflictCodes: Readonly<Record<string, true>> = {
+  "40001": true,
+  "40P01": true,
+  "55P03": true,
+};
 
 export class WageringService {
   private readonly logger = new Logger(WageringService.name);
   constructor(
     private readonly orm: MikroORM,
     private readonly inbox: WageringInbox,
+    private readonly metrics = new Metrics(),
   ) {}
 
   async submit(
@@ -114,8 +122,11 @@ export class WageringService {
       providerId: input.providerId,
       kind: input.kind,
     };
+    const started = performance.now();
     try {
       const result = await this.apply(input, inbox);
+      if (result.idempotentReplay)
+        this.metrics.increment("wager_duplicates_total", 'outcome="replay"');
       this.logger.log({
         event: "WagerTransactionSubmitted",
         correlationId: result.transactionId,
@@ -132,7 +143,15 @@ export class WageringService {
         ...ids,
         code: error instanceof DomainError ? error.code : "UNEXPECTED",
       });
+      if (
+        error instanceof DomainError &&
+        (error.code === "IDEMPOTENCY_CONFLICT" ||
+          error.code === "MESSAGE_ID_CONFLICT")
+      )
+        this.metrics.increment("wager_duplicates_total", 'outcome="conflict"');
       throw error;
+    } finally {
+      this.metrics.observeProcessing((performance.now() - started) / 1000);
     }
   }
 
@@ -210,13 +229,16 @@ export class WageringService {
                 ),
               );
         } catch (replayError) {
-          if (isTransient(replayError))
+          if (transientCode(replayError))
             throw new DomainError("TEMPORARY_UNAVAILABLE");
           throw replayError;
         }
         throw new DomainError("TRANSACTION_ALREADY_EXISTS");
       }
-      if (isTransient(error)) throw new DomainError("TEMPORARY_UNAVAILABLE");
+      const code = transientCode(error);
+      if (code && lockConflictCodes[code])
+        this.metrics.increment("wager_lock_conflicts_total");
+      if (code) throw new DomainError("TEMPORARY_UNAVAILABLE");
       throw error;
     }
   }
