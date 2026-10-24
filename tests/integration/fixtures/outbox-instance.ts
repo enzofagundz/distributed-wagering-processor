@@ -1,5 +1,6 @@
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { MikroORM } from "@mikro-orm/postgresql";
+import { Logger } from "@nestjs/common";
 import { OutboxPublisher } from "../../../src/outbox/outbox-publisher";
 import { databaseConfig } from "../../../src/persistence/config";
 
@@ -13,6 +14,8 @@ if (
   throw new Error(
     "Outbox fixture requires an isolated test schema and database",
   );
+// O teste lê sinais no stdout; logs do publisher ali quebrariam o protocolo.
+Logger.overrideLogger(false);
 const orm = await MikroORM.init({
   ...databaseConfig(url),
   schema,
