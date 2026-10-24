@@ -26,7 +26,7 @@ export class MetricsController {
       DatabaseGauges["transactionsByStatus"]
     >(
       `select s.status, count(t.id)::text as count
-      from unnest(array['PROCESSED', 'REJECTED', 'PENDING_REFERENCE']) as s(status)
+      from unnest(array['PROCESSED', 'REJECTED', 'PENDING_REFERENCE', 'FAILED']) as s(status)
       left join wager_transactions t on t.status = s.status
       group by s.status order by s.status`,
     );

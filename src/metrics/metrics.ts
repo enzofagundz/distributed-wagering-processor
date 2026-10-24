@@ -30,6 +30,10 @@ const counters = {
     help: "Reconciliações com saldo materializado diferente do ledger.",
     labels: [""],
   },
+  wager_failed_transactions_total: {
+    help: "Transações marcadas FAILED por falha permanente, por código.",
+    labels: ['failureCode="PERMANENT_INFRASTRUCTURE_FAILURE"'],
+  },
 } as const;
 
 type Counters = typeof counters;
