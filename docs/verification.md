@@ -769,3 +769,37 @@ Smoke final: script Bun local, fora do repositório (`.scratch/ticket03-smoke.ts
 - `wager_failed_transactions_total{failureCode="PERMANENT_INFRASTRUCTURE_FAILURE"}` ficou em 1; uma nova varredura manteve `FAILED`.
 
 Limites: o smoke cria e remove o próprio banco e as próprias filas; a falha permanente foi induzida por gatilho, não por queda real de serviço; worker e publisher rodaram no processo da API. Isso não mede throughput, não soma contadores entre instâncias e não amplia a prova multiprocesso para além de BET.
+
+## Auditoria do refactor de condicionais — 2026-10-24
+
+Ticket 04. A auditoria comparou a base `7aecfcb65a377d325870dbab4a11a4d24e59884f`, merge da PR #4, com o estado final `d2e60cb6cbabe5f0c7fe74c97f0139fc6179b145`. A base rodou em worktree separado, com `node_modules` e `.env` apontando para o checkout principal, para não misturar as duas árvores.
+
+Ambiente: Bun 1.3.14 e Node 22.23.4 para o servidor MCP, PostgreSQL 17.6, LocalStack 4.11.1 e Keycloak 26.4.0 nos containers Podman preexistentes. Portas 55433 (banco de testes), 4566 (LocalStack) e 8080 (Keycloak). Sem Docker CLI; `podman` 5.8.9.
+
+Suíte completa contra PostgreSQL e LocalStack reais, na mesma máquina e nos mesmos containers:
+
+- base: `bun test` → 320 testes, 2911 assertions, 33 arquivos, zero falhas, 277,39 s;
+- final: `bun test` → 321 testes, 2926 assertions, 33 arquivos, zero falhas, 280,53 s.
+
+A diferença é o teste `reordered envelope keys replay without new effect and divergent payload still conflicts`, do ticket 03. Isolado por `--test-name-pattern 'reordered'`, ele soma 15 `expect()`, exatamente o delta das assertions. O diff de `tests/` tem 51 linhas adicionadas em `bet-sqs.test.ts` e nenhuma removida, então todo teste que existia na base continua igual, inclusive os pontos com condicional aninhada.
+
+O diff `git diff 7aecfcb..HEAD` toca três arquivos de produção e um de teste, sem arquivo novo em `src/`, sem migration, schema, DTO, controller, configuração de fila ou dependência:
+
+- `src/wagering/wager-consumer.ts`: +5/-6;
+- `src/wagering/wager-message.ts`: +7/-1;
+- `src/wagering/wagering-service.ts`: +33/-17;
+- `tests/integration/bet-sqs.test.ts`: +51/-0.
+
+A lista de `export` de `src/` é idêntica antes e depois. Os dois auxiliares novos, `compareKeys` e `settlementEvents`, não são exportados; `settlementEvents` é privado. O diff de produção não acrescenta valor de string: os literais que aparecem são `PENDING_REFERENCE`, `PROCESSED`, `LOSS`, `INVALID_TRANSACTION_PAYLOAD` e `PROCESSING_FAILED`, todos já usados na base. Rotas, DTOs, schemas de entidade, migrations, eventos e tabela de códigos de falha vivem em arquivos que o diff não toca; dentro dos três arquivos alterados, nenhum `eventType`, campo de payload, chave de mensagem ou assinatura pública mudou.
+
+Equivalência dos três pontos:
+
+- eventos da liquidação: a guarda `!isNew && status === "PENDING_REFERENCE"` devolve lista vazia; `entry && transaction.kind !== "LOSS"` devolve `WagerTransactionProcessed` e `WalletBalanceChanged`; `PROCESSED` devolve o evento do LOSS; `PENDING_REFERENCE` devolve o evento de referência pendente; o resto devolve rejeição. A condição de entrada é a negação da original pela lei de De Morgan (`!(isNew || status !== "PENDING_REFERENCE")`). As factories dos eventos são síncronas e puras; a chamada fica depois do flush do ledger e antes do persist da outbox, na mesma posição da expressão antiga.
+- código de falha da DLQ: erro de domínio devolve `error.code`; erro de transporte devolve `INVALID_TRANSACTION_PAYLOAD`; os demais devolvem `PROCESSING_FAILED`. A ordem de teste não mudou.
+- comparador do envelope: `a < b` devolve `-1`; `a > b` devolve `1`; o resto devolve `0`. O hash continua SHA-256 do JSON da estrutura canônica.
+
+Nest Boost por MCP, em processos separados para a base e o estado final, com `application_info`, `list_routes` e `module_graph`: saída idêntica. 13 módulos, 4 controllers, 16 providers e 10 rotas, as mesmas rotas e o mesmo grafo, com `WagerConsumer` em `WageringModule`. `evaluate` não foi chamado.
+
+`bun run typecheck`, `bun run lint` e `bun run format:check` passaram nas duas pontas sem correção aplicada.
+
+Limites: a auditoria compara árvores Git e o resultado da suíte; não examina bytecode. A equivalência vale para as entradas que a suíte cobre; entradas fora dela não foram exercitadas nas duas versões. O PostgreSQL de testes e o LocalStack são compartilhados entre execuções, mas cada teste cria schema, banco ou fila próprios. O `## Answer` do ticket fica em `.scratch/`, que não é versionado.
