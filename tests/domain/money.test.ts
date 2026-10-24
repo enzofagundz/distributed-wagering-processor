@@ -48,6 +48,7 @@ for (const amount of [
   " 1.00",
   "1.00 ",
   "1,00",
+  `1${"0".repeat(28)}.00`,
   1,
   null,
 ]) {
@@ -57,6 +58,11 @@ for (const amount of [
     );
   });
 }
+
+test("accepts the largest amount the numeric(30,2) columns store", () => {
+  const amount = `${"9".repeat(28)}.99`;
+  expect(Money.from({ amount, currency: "BRL" }).toString()).toBe(amount);
+});
 
 for (const currency of ["", "brl", "ZZZ", "BR", null, 1]) {
   test(`rejects invalid currency ${JSON.stringify(currency)}`, () => {

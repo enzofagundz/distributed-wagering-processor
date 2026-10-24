@@ -23,7 +23,8 @@ export class Money {
     if (
       !props ||
       typeof props.amount !== "string" ||
-      !/^(0|[1-9]\d*)\.\d{2}$/.test(props.amount)
+      // numeric(30,2): até 28 dígitos inteiros.
+      !/^(0|[1-9]\d{0,27})\.\d{2}$/.test(props.amount)
     ) {
       throw new DomainError("INVALID_AMOUNT");
     }
