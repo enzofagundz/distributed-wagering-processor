@@ -61,3 +61,13 @@ Sem mudança de produção. A política de retry descrita acima já separa falha
 Como a queda ocorre antes do commit, inbox, transação, ledger e outbox não existem quando a mensagem volta. A entrega seguinte executa a transação inteira uma única vez. Se o banco cair depois do commit e antes do ack, o reenvio encontra a inbox e devolve o resultado original.
 
 Alternativa descartada: depender só da `RedrivePolicy` com visibilidade fixa. O retry ficaria com intervalo constante e sem registro da causa no consumidor. Limite: cinco tentativas com backoff somam cerca de 30 segundos; uma queda mais longa leva a mensagem à DLQ, e o redrive manual deve começar pela consulta da transação. [Evidências](../verification.md#falhas-transitórias-do-consumidor--2026-10-24).
+
+## Extensão no ticket 22
+
+A mensagem enviada à DLQ mantém o corpo original e leva a causa em atributos SQS: `failureCode`, `failureKind` (`PERMANENT` ou `RETRIES_EXHAUSTED`), `receiveCount`, `sourceMessageId` (ID SQS da entrega) e `wagerMessageId`, quando o envelope foi lido. Assim o operador sabe por que a mensagem parou ali sem abrir log, e o hash usado na inbox não muda num redrive.
+
+Saldo insuficiente não vai à DLQ. É rejeição de negócio: grava REJECTED/INSUFFICIENT_FUNDS, inbox e `WagerTransactionRejected` na mesma transação e recebe ack. A DLQ fica para falha técnica ou mensagem que nunca vai processar.
+
+Não criamos status FAILED. As falhas que chegam à DLQ acontecem antes de existir transação (envelope inválido, provider reservado, identidade incompatível), contra uma transação que já tem resultado (conflito de messageId) ou depois de rollback completo (tentativas esgotadas). Em nenhum desses casos há linha de transação para marcar. FAILED de referência continua restrito ao domínio.
+
+Redrive: consultar antes a transação por provider e ID externo. Se já houver resultado, descartar a mensagem; senão, reenviar o corpo sem alteração à fila de entrada com novo `MessageDeduplicationId`. [Evidências](../verification.md#dlq-do-consumidor--2026-10-24).

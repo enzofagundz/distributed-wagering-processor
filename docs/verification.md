@@ -549,3 +549,13 @@ Sequência verificada: com o proxy fora do ar, a BET recebida não gera inbox ne
 Com PostgreSQL e LocalStack locais, `bun test tests/integration/bet-sqs.test.ts` passou: 31 testes, 425 assertions, zero falhas (231.44s). O arquivo também cobre falha 40001 repetida até a DLQ e SIGKILL entre commit e ack. `bun run typecheck`, `bun run lint` e `bun run format` passaram antes do commit.
 
 Limites: o proxy simula a queda de rede entre consumidor e banco; o processo do PostgreSQL não foi parado. Indisponibilidade real do SQS não foi exercitada. Suíte completa não foi executada nesta entrega.
+
+## DLQ do consumidor — 2026-10-24
+
+Ticket 22. O consumidor passou a enviar à DLQ os atributos `failureCode`, `failureKind`, `receiveCount`, `sourceMessageId` e `wagerMessageId` (quando o envelope foi lido). O corpo continua idêntico ao original.
+
+Integração em `tests/integration/bet-sqs.test.ts`, com PostgreSQL e LocalStack locais: `bun test tests/integration/bet-sqs.test.ts` passou com 31 testes, 496 assertions e zero falhas (234.99s). Os casos de envelope inválido e conflito de messageId conferem `failureKind=PERMANENT`, `sourceMessageId` e, no conflito, `failureCode=MESSAGE_ID_CONFLICT`. A falha 40001 repetida chega à DLQ com `TEMPORARY_UNAVAILABLE`, `RETRIES_EXHAUSTED`, `receiveCount=5` e o messageId do envelope. Saldo insuficiente grava REJECTED, um `WagerTransactionRejected` e deixa a DLQ vazia.
+
+Smoke com `bun run start` e as filas do Compose, script temporário `.scratch/smoke/ticket22.ts`: wallet com 10.00 BRL recebeu uma BET de 50.00 e um envelope com campo extra. A DLQ recebeu só o envelope inválido, com `INVALID_MESSAGE_ENVELOPE`, `PERMANENT` e `receiveCount=1`. A BET aparece em `GET /providers/smoke/wagering/transactions/{id}` como REJECTED/INSUFFICIENT_FUNDS; reconciliação em 10.00 BRL, diferença 0.00. SIGTERM encerrou a API com código 0.
+
+`bun run typecheck`, `bun run lint` e `bun run format` passaram antes do commit. Suíte completa não foi executada. Redrive manual descrito no ADR não foi exercitado.
