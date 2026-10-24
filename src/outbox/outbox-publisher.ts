@@ -2,6 +2,19 @@ import { SendMessageCommand, type SQSClient } from "@aws-sdk/client-sqs";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { Logger } from "@nestjs/common";
 import { Metrics } from "../metrics/metrics";
+import {
+  fromOutboxRow,
+  type OutboxMessageRow,
+  outboxMessageClaimSql,
+  outboxMessagePublishedSql,
+  outboxMessageRetrySql,
+} from "../persistence/outbox-message-record";
+
+type Envelope = {
+  eventType?: string;
+  correlationId?: string;
+  data?: { transactionId?: string; walletId?: string };
+};
 
 export class OutboxPublisher {
   private readonly logger = new Logger(OutboxPublisher.name);
@@ -20,19 +33,12 @@ export class OutboxPublisher {
     let published = 0;
     for (let i = 0; i < 100; i++) {
       const sent = await this.orm.em.fork().transactional(async (em) => {
-        const [message] = await em.execute<
-          {
-            id: string;
-            payload: {
-              eventType?: string;
-              correlationId?: string;
-              data?: { transactionId?: string; walletId?: string };
-            };
-          }[]
-        >(`select id, payload from outbox_messages where published_at is null
-          and (next_attempt_at is null or next_attempt_at <= clock_timestamp())
-          order by occurred_at, id limit 1 for update skip locked`);
-        if (!message) return false;
+        const [row] = await em.execute<OutboxMessageRow[]>(
+          outboxMessageClaimSql,
+        );
+        if (!row) return false;
+        const message = fromOutboxRow(row);
+        const envelope = message.payload as Envelope;
         try {
           await this.sqs.send(
             new SendMessageCommand({
@@ -42,37 +48,36 @@ export class OutboxPublisher {
             { abortSignal: AbortSignal.timeout(5000) },
           );
         } catch (error) {
-          await em.execute(
-            `update outbox_messages
-            set attempts = attempts + 1,
-              next_attempt_at = clock_timestamp() +
-                least(300, power(2, least(attempts + 1, 9))) * interval '1 second'
-            where id = ?`,
-            [message.id],
-          );
+          message.scheduleRetry(new Date(row.now_ms));
+          await em.execute(outboxMessageRetrySql, [
+            message.attempts,
+            message.nextAttemptAt,
+            message.id,
+          ]);
           this.logger.error({
             event: "OutboxPublicationFailed",
             eventId: message.id,
-            eventType: message.payload.eventType,
-            correlationId: message.payload.correlationId,
-            transactionId: message.payload.data?.transactionId,
-            walletId: message.payload.data?.walletId,
+            eventType: message.eventType,
+            correlationId: envelope.correlationId,
+            transactionId: envelope.data?.transactionId,
+            walletId: envelope.data?.walletId,
             errorType: error instanceof Error ? error.name : "UnknownError",
           });
           this.metrics.increment("outbox_publication_retries_total");
           return "retry";
         }
-        await em.execute(
-          "update outbox_messages set published_at = clock_timestamp(), next_attempt_at = null where id = ?",
-          [message.id],
-        );
+        message.markPublished(new Date(row.now_ms));
+        await em.execute(outboxMessagePublishedSql, [
+          message.publishedAt,
+          message.id,
+        ]);
         this.logger.log({
           event: "OutboxEventPublished",
           eventId: message.id,
-          eventType: message.payload.eventType,
-          correlationId: message.payload.correlationId,
-          transactionId: message.payload.data?.transactionId,
-          walletId: message.payload.data?.walletId,
+          eventType: message.eventType,
+          correlationId: envelope.correlationId,
+          transactionId: envelope.data?.transactionId,
+          walletId: envelope.data?.walletId,
         });
         return true;
       });
