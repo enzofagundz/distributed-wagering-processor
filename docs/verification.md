@@ -895,3 +895,24 @@ Testes focais existentes, sem alteração: `bun test tests/integration/auth-http
 `bun run typecheck`, `bun run lint` e `bun run format:check` passaram sem correção pendente.
 
 Limites: a correção é editorial e não reexecutou a suíte completa. O teste focal usa o PostgreSQL de testes e o Keycloak do Compose que já estavam no ar. A documentação não promete que o ambiente local é seguro para produção: o README mantém o aviso de ambiente exclusivamente local, o ADR-0004 registra que aquele incremento não era seguro para exposição pública, e o ADR-0008 registra os limites de revogação e cache de chaves.
+
+## Toolchain em container — 2026-10-24
+
+A aplicação já rodava em container, mas lint, formatação, typecheck e testes exigiam Bun no host: a imagem instalava só dependências de produção e não copiava `tests/`. O `Dockerfile` ganhou dois estágios finais sobre a mesma base `oven/bun:1.3.14` e o Compose ganhou o serviço `app-dev`.
+
+Antes de editar, `docker compose run --rm app bun run typecheck` falhou com `tsc: command not found` e `docker compose run --rm app bun test` respondeu `No tests found!`, confirmando que o toolchain não estava na imagem de produção.
+
+Estados e comandos usados, em Podman rootless com `podman compose` e o provider `docker-compose` v5.5.1:
+
+- `podman compose build app app-dev`: as duas imagens construíram. `app` usa o estágio `production` (dependências de produção, lockfile congelado) e `app-dev` usa `development` (lockfile completo, `src/`, `tests/`, `biome.json`, `tsconfig.json`, `.gitignore`).
+- `podman compose up -d --wait postgres localstack keycloak`, `podman compose run --rm app bun run migration:up`: migration `Migration20261023000900` aplicada.
+- `podman compose up -d --force-recreate app`: `GET /health/live` 200 e `GET /health/ready` 200 com `{"status":"ready","checks":{"postgres":"up","sqs":"up"}}`. Com token `client_credentials` do Keycloak do Compose, `POST /wallets` respondeu 201.
+- `podman compose run --rm app-dev bun run typecheck`: `tsc --noEmit` sem saída.
+- `podman compose run --rm app-dev bun run lint` e `bun run format:check`: `Checked 94 files`. A primeira tentativa falhou com `Biome couldn't find an ignore file: /app`; a correção foi copiar `.gitignore` para o estágio `development`, porque `biome.json` declara `vcs.useIgnoreFile`.
+- `podman compose run --rm app-dev bun run test:domain`: 181 testes, 730 assertions, zero falhas.
+- `podman compose run --rm app-dev bun test tests/integration/wallet-http.test.ts`: 8 testes, 64 assertions, zero falhas, contra `postgres-test:5432`.
+- `podman compose run --rm app-dev bun test`: 365 testes, 3116 assertions, 36 arquivos, zero falhas, 280,04 s. Os mesmos números da [seção anterior](#hash-e-consultas-de-estado-no-agregado--2026-10-24), agora dentro do container.
+
+Uma execução intermediária da suíte falhou em um teste: o smoke do Keycloak recebia 401 porque o teste usava `TEST_KEYCLOAK_URL` como emissor esperado. No container o token vem de `http://keycloak:8080`, mas `KC_HOSTNAME` faz o `iss` ser `http://127.0.0.1:8080/realms/wagering`. O teste passou a aceitar `TEST_KEYCLOAK_ISSUER`, com padrão no próprio `TEST_KEYCLOAK_URL`, e o Compose define os dois; nova execução do arquivo isolado: 1 teste, 8 assertions, zero falhas.
+
+Limites: a verificação usou Podman rootless com o provider Docker Compose, não o binário `docker`; os caminhos são os mesmos comandos documentados. `app-dev` monta `src/` e `tests/` do host, então a imagem do estágio `development` foi exercitada com o código do working tree, não congelada como `production`. Nenhum contrato HTTP, SQS, schema, migration ou regra de domínio mudou; a única alteração de código foi o emissor configurável do teste de smoke.

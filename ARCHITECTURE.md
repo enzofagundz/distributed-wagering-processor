@@ -22,6 +22,7 @@ Este documento descreve a implementação atual. Os requisitos estão no [enunci
 | Domínio | `src/domain/` | Money, Wallet, WalletMovement, WagerTransaction, WalletLedgerEntry, InboxMessage e eventos; sem NestJS/ORM |
 | Persistência | `src/persistence/persistence.module.ts`, `*record.ts`, `config.ts` | Provider MikroORM exportado explicitamente, EntitySchema e configuração |
 | Schema | `src/persistence/migrations/` | Constraints, FKs, trigger append-only e índices versionados |
+| Ambiente | `Dockerfile`, `compose.yaml`, `.dockerignore`, `infra/` | Estágios `production`/`development`, serviços de PostgreSQL, LocalStack e Keycloak e filas iniciais |
 | Verificação | `tests/domain/`, `tests/integration/` | Invariantes, constraints, atomicidade e fronteira HTTP com PostgreSQL real |
 
 ## Composição e injeção
@@ -420,6 +421,16 @@ Conflito de lock exige um limite de espera. O lock da wallet é `FOR UPDATE` e, 
 Não há biblioteca de métricas. `prom-client` resolveria o formato, mas o projeto só precisa de contadores, um histograma e três gauges, e `src/metrics/metrics.ts` cabe em uma tela. Referência: [formato de exposição do Prometheus](https://prometheus.io/docs/instrumenting/exposition_formats/).
 
 Evidências: [verificação](docs/verification.md#métricas--2026-10-24).
+
+## Ambiente de execução
+
+O `Dockerfile` tem dois estágios finais sobre a mesma base `oven/bun:1.3.14`. `production` instala só dependências de produção com lockfile congelado, copia `src/` e roda `bun run start` como usuário `bun`; é o alvo do serviço `app`. `development` instala o lockfile completo, incluindo TypeScript, Biome e `@types/bun`, e copia também `tests/`, `biome.json`, `tsconfig.json` e `.gitignore`, porque `biome.json` usa `vcs.useIgnoreFile` e o Biome falha sem esse arquivo. Ele é o alvo do serviço `app-dev`.
+
+Nada do toolchain depende de Bun no host: migrations, lint, formatação, typecheck e os dois níveis de teste rodam por `docker compose run --rm app-dev ...`. Os bind mounts de `src/` e `tests/` no `app-dev` fazem o container enxergar o código em edição sem reconstruir a imagem, e o `postgres-test` da rede Compose é acessível como `postgres-test:5432`. `app-dev` fica no profile `tools` para não competir com o `app` em `docker compose up`; `docker compose run` o resolve mesmo com profile.
+
+O token do Keycloak separa endereço interno e emissor: o Compose busca token em `http://keycloak:8080`, mas `KC_HOSTNAME` faz o `iss` ser `http://127.0.0.1:8080/realms/wagering`. Por isso o teste de smoke aceita `TEST_KEYCLOAK_ISSUER` separado de `TEST_KEYCLOAK_URL`; no host os dois coincidem e o padrão continua sendo o próprio `TEST_KEYCLOAK_URL`.
+
+Evidências: [verificação](docs/verification.md#toolchain-em-container--2026-10-24).
 
 ## Decisões
 

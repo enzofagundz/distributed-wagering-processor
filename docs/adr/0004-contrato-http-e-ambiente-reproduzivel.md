@@ -22,11 +22,13 @@ O Compose executa a imagem `oven/bun:1.3.14`, com dependências do lockfile. O h
 
 A imagem instala somente dependências de produção e executa código-fonte. Migrations são comando explícito antes do startup; `bun run typecheck` permanece obrigatório no desenvolvimento porque Bun executa TypeScript sem comprovar correção estática. `SIGINT` e `SIGTERM` fecham HTTP antes do pool; não há consumer ou ack neste estágio.
 
+Nota posterior: a imagem de produção manteve essas escolhas, e o `Dockerfile` ganhou um estágio `development`, usado pelo serviço `app-dev`, para que typecheck, lint e testes também rodem em container. Ver [Ambiente de execução](../../ARCHITECTURE.md#ambiente-de-execução) e as [evidências](../verification.md#toolchain-em-container--2026-10-24).
+
 ## Consequências
 
 O domínio permanece reutilizável sem transportar decorators HTTP ou ORM. Reprodutibilidade depende das versões fixadas e do lockfile; evidência de compatibilidade Bun/NestJS vem de HTTP real já registrado, não da versão atual de exemplos upstream.
 
-No incremento original, o serviço não possuía autenticação e não era seguro para exposição pública. Apostas, suas transições, publisher, SQS, health e métricas não integram este incremento. Taxonomia transitória 503 não está implementada; escopo futuro fica na [cobertura do desafio](../../PROGRESS.md) e no [ticket de autenticação](../../.scratch/distributed-wagering-processor/issues/27-limite-autenticacao.md).
+No incremento original, o serviço não possuía autenticação e não era seguro para exposição pública. Apostas, suas transições, publisher, SQS, health e métricas não integram este incremento. Taxonomia transitória 503 não está implementada; escopo futuro fica na [cobertura do desafio](../../PROGRESS.md).
 
 Fontes: [DTO de abertura](../../src/wallets/open-wallet.dto.ts), [filtro](../../src/shared/domain-error.filter.ts), [startup](../../src/main.ts), [Compose](../../compose.yaml) e [evidências históricas](../verification.md).
 

@@ -19,7 +19,7 @@ Em wagering, `WageringService` coordena submissão e liquidação; `WageringQuer
 
 ## Executar
 
-Requisitos: Docker com Compose v2+. Para desenvolvimento/testes no host: Bun 1.3.14. Portas locais: HTTP 3000, PostgreSQL 55432, banco descartável de testes 55433, LocalStack 4566 e Keycloak 8080 (`KEYCLOAK_PORT`).
+Requisitos: Docker com Compose v2+. A aplicação, o Bun, o TypeScript e as ferramentas de verificação rodam em containers; Bun 1.3.14 no host é opcional, apenas para o caminho alternativo descrito em [Host](#host). Portas locais: HTTP 3000, PostgreSQL 55432, banco descartável de testes 55433, LocalStack 4566 e Keycloak 8080 (`KEYCLOAK_PORT`).
 
 ### Containers
 
@@ -33,9 +33,13 @@ docker compose logs app
 
 Antes de chamar a API, espere `curl -fsS http://127.0.0.1:3000/health/ready` responder 200. A imagem usa Bun 1.3.14 e dependências de produção com lockfile congelado; este modo dispensa Bun no host. Execute as migrations explicitamente: o startup nunca as executa.
 
+O `Dockerfile` tem dois estágios finais. `production` é o padrão do serviço `app` e carrega só dependências de produção. `development` inclui TypeScript, Biome, `@types/bun` e `tests/`; o serviço `app-dev` usa esse estágio para lint, formatação, typecheck e testes, sem Bun no host. O `app-dev` fica no profile `tools`, então `docker compose up` não o inicia; invoque-o com `docker compose run`.
+
 Se a porta estiver ocupada, use `APP_PORT=3109 docker compose up -d app` e ajuste `baseUrl` no Postman para `http://127.0.0.1:3109`. Na rede Compose, a API conecta a `postgres:5432`, não a localhost. Podman rootless com Docker Compose como provider também foi verificado em Linux. Para usá-lo, inicie `systemctl --user start podman.socket` e substitua `docker compose` por `podman compose`.
 
 ### Host
+
+Caminho alternativo, opcional. Exige Bun 1.3.14 no host.
 
 ```sh
 bun install --frozen-lockfile
@@ -78,7 +82,7 @@ Os exemplos abaixo omitem o header por brevidade; inclua `-H "Authorization: Bea
 | `providerId` do token diferente do `providerId` do body ou da rota | 403 `{"code":"PROVIDER_IDENTITY_MISMATCH"}`, antes do caso de uso |
 | Token válido e coerente | fluxo normal; o domínio continua validando provider, player e wallet |
 
-Mensagens SQS não levam token: a fila é canal interno confiável, e a identidade da mensagem passa só pelas regras de domínio, que validam provider, player e wallet sem autenticar. Testes focais: `bun test tests/integration/auth-http.test.ts` gera a chave RSA no próprio teste; `bun test tests/integration/keycloak-smoke.test.ts` pede token ao Keycloak em `TEST_KEYCLOAK_URL` (padrão `http://127.0.0.1:8080`). Decisão e limites: [ADR-0008](docs/adr/0008-autenticacao-com-keycloak.md) e [arquitetura](ARCHITECTURE.md#autenticação).
+Mensagens SQS não levam token: a fila é canal interno confiável, e a identidade da mensagem passa só pelas regras de domínio, que validam provider, player e wallet sem autenticar. Testes focais: `bun test tests/integration/auth-http.test.ts` gera a chave RSA no próprio teste; `bun test tests/integration/keycloak-smoke.test.ts` pede token ao Keycloak em `TEST_KEYCLOAK_URL` (padrão `http://127.0.0.1:8080`) e valida o `iss` emitido, que vem de `TEST_KEYCLOAK_ISSUER` (padrão: o próprio `TEST_KEYCLOAK_URL`). No Compose, o token é buscado em `http://keycloak:8080` e o `iss` continua sendo o endereço público `http://127.0.0.1:8080/realms/wagering`, porque `KC_HOSTNAME` fixa a URL de frente. Decisão e limites: [ADR-0008](docs/adr/0008-autenticacao-com-keycloak.md) e [arquitetura](ARCHITECTURE.md#autenticação).
 
 ### Logs
 
@@ -347,6 +351,22 @@ UUID inválido retorna 400 `INVALID_IDENTITY`; provider inválido, 400 `INVALID_
 Teste focal: `bun test tests/integration/transaction-query-http.test.ts`. Usa `TEST_DATABASE_URL` do `.env` e o mesmo setup PostgreSQL abaixo, sem nova migration.
 
 ## Verificação
+
+Em container, sem Bun no host:
+
+```sh
+docker compose build app-dev
+docker compose up -d --wait postgres postgres-test localstack keycloak
+docker compose run --rm app-dev bun run lint
+docker compose run --rm app-dev bun run format:check
+docker compose run --rm app-dev bun run typecheck
+docker compose run --rm app-dev bun run test:domain
+docker compose run --rm app-dev bun test
+```
+
+O `app-dev` recebe do Compose `DATABASE_URL`, `TEST_DATABASE_URL`, `TEST_SQS_ENDPOINT`, `TEST_KEYCLOAK_URL`, `TEST_KEYCLOAK_ISSUER` e as chaves `AUTH_*`, todas apontando para os serviços da rede Compose. `bun test` roda domínio e integração; `bun run test:integration` existe para rodar só a segunda camada. Os bind mounts de `src/` e `tests/` fazem o container executar o código do host sem reconstruir a imagem, e os testes podem criar bancos descartáveis porque o usuário do `postgres-test` é superusuário. `docker compose run` não publica portas; cada teste escuta em porta dinâmica dentro do próprio container.
+
+No host, com Bun 1.3.14:
 
 ```sh
 test -f .env || cp .env.example .env
