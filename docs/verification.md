@@ -621,3 +621,21 @@ Smoke com `PORT=3199 bun run start` e filas do Compose (`.scratch/smoke/ticket25
 `bun test` completo: 289 testes, 2578 assertions, zero falhas em 27 arquivos (279.58s). `bun run typecheck`, `bun run lint` e `bun run format` passaram. Nest Boost MCP não rodou, pela mesma falha de caminho Windows do ticket 24.
 
 Limites: o smoke não exercitou retry pela fila; retry da outbox e DLQ ficaram só no teste. O header `X-Correlation-Id` é ignorado. O bootstrap do Nest também escreve linhas JSON de inicialização, sem dados de negócio.
+
+## Métricas — 2026-10-24
+
+Ticket 26. `GET /metrics` em texto Prometheus; desenho e semântica em [arquitetura](../ARCHITECTURE.md#métricas).
+
+`tests/integration/metrics.test.ts` usa PostgreSQL e LocalStack reais, schema e filas exclusivos, e lê as métricas pelo HTTP da aplicação. A conexão do teste define `lock_timeout=300`. Três cenários:
+
+- BET HTTP, replay com a mesma chave e reenvio com valor diferente (409): `PROCESSED` sobe 2 (OPENING e BET), `replay` e `conflict` sobem 1 cada, o histograma conta 3 submissões e o texto não traz o `walletId`;
+- com eventos pendentes, `outbox_pending_messages` e `outbox_lag_seconds` ficam acima de zero; um publisher apontado para endpoint inalcançável soma um retry por evento; depois de zerar o backoff, o publisher real publica todos, `outbox_published_total` sobe na mesma quantidade e os dois gauges voltam a 0;
+- uma transação segura `FOR UPDATE` na wallet enquanto o consumidor processa uma BET da fila FIFO: `wager_lock_conflicts_total` e `wager_message_retries_total` sobem 1. Uma mensagem `not-json` vai à DLQ e soma 1 em `reason="PERMANENT"`; `RETRIES_EXHAUSTED` não muda.
+
+Na primeira rodada, duas expectativas estavam erradas, não o código: replay HTTP devolve 201, como o original, e o publisher tenta todos os pendentes na mesma rodada, então o número de retries é o de pendentes, não 1.
+
+Smoke com `PORT=3199 bun run start` no banco de desenvolvimento: abertura de wallet 201 e `GET /metrics` 200 com `Content-Type: text/plain; charset=utf-8; version=0.0.4`, todos os contadores presentes, `wager_transactions{status="PROCESSED"} 27`, `outbox_pending_messages 2` e `outbox_lag_seconds 0.127`, porque o publisher não roda nesse bootstrap.
+
+`bun test` completo: 292 testes, zero falhas em 28 arquivos (281.04s). `bun run typecheck`, `bun run lint` e `bun run format` passaram. Nest Boost MCP não rodou: o servidor sobe no clone do Windows, não no notebook onde está o código.
+
+Limites: contadores são por processo e não foram verificados com várias instâncias; `RETRIES_EXHAUSTED` e conflitos por deadlock ou serialização não têm cenário próprio, só o código compartilhado com `55P03`.

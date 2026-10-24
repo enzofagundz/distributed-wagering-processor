@@ -181,6 +181,16 @@ TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test \
 
 A suíte cria schema e filas exclusivos, remove-os ao terminar e inclui SIGKILL entre commit e ack, três processos consumidores, rollback e DLQ. A prova de crash espera 30 segundos pela visibilidade real; esgotar retries leva mais cerca de 30 segundos. Evidências executadas: [BET por SQS](docs/verification.md#bet-por-sqs--2026-10-23).
 
+### Métricas
+
+```sh
+curl -s http://127.0.0.1:3000/metrics
+```
+
+Texto no formato Prometheus, sem autenticação: transações por status, duplicatas, conflitos de lock, retries e DLQ do consumidor, publicações e retries da outbox, outbox lag, latência de processamento e divergências de reconciliação. Status e outbox são lidos do PostgreSQL; o resto conta por processo e zera no reinício. Com três APIs, raspe cada porta e some. Nenhum label carrega id de wallet, transação ou mensagem. Para contar conflitos de lock, a conexão precisa de `lock_timeout` (por exemplo `?options=-c%20lock_timeout%3D2000` na `DATABASE_URL`); sem ele a transação espera o lock. Unidades e semântica de cada série: [arquitetura](ARCHITECTURE.md#métricas).
+
+Teste focal: `bun test tests/integration/metrics.test.ts`, com PostgreSQL de testes e LocalStack.
+
 ## Experimentar HTTP
 
 ```sh
@@ -195,7 +205,7 @@ curl -i http://127.0.0.1:3000/metrics
 
 Dinheiro entra e sai como string decimal com duas casas. Abertura retorna 201; consultas, 200; reenvio de abertura para mesmo player/moeda retorna 409, não replay. Saldo zero não gera lançamento. Contratos, exemplos de resposta, erros e paginação: [guia Postman](docs/postman/README.md).
 
-Reconciliação retorna 200 com `walletId`, `storedBalance`, `calculatedBalance`, `difference` (armazenado menos calculado, inclusive negativo), `consistent` e `checkedEntries`. Valores monetários seguem `{amount, currency}`. Wallet ausente retorna 404; UUID inválido, 400. A soma inclui OPENING e débitos/créditos no mesmo snapshot SQL. Não altera saldo, versão ou ledger. `GET /metrics` expõe contador Prometheus `wallet_reconciliation_divergences_total`, sem labels de wallet; soma por instância, reinicia com processo. Cada chamada divergente incrementa contador, inclusive reenvios. Detalhes: [arquitetura](ARCHITECTURE.md#reconciliação).
+Reconciliação retorna 200 com `walletId`, `storedBalance`, `calculatedBalance`, `difference` (armazenado menos calculado, inclusive negativo), `consistent` e `checkedEntries`. Valores monetários seguem `{amount, currency}`. Wallet ausente retorna 404; UUID inválido, 400. A soma inclui OPENING e débitos/créditos no mesmo snapshot SQL. Não altera saldo, versão ou ledger. Cada chamada divergente, inclusive reenvio, incrementa `wallet_reconciliation_divergences_total` em `GET /metrics`. Detalhes: [arquitetura](ARCHITECTURE.md#reconciliação).
 
 ### Submeter BET
 

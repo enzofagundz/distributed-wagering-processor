@@ -9,7 +9,8 @@ Este documento descreve a implementação atual. Os requisitos estão no [enunci
 | Bootstrap | `src/main.ts` | Inicializa ORM/HTTP; fecha aplicação e pool em sinais ou falha de startup |
 | Criação da aplicação | `src/create-application.ts` | Recebe ORM do chamador e cria aplicação Nest |
 | Composição | `src/app.module.ts`, `src/{wallets,wagering,outbox}/*.module.ts` | Módulo raiz compõe funcionalidades; módulos declaram providers e controllers aplicáveis |
-| Transporte | `src/wallets/wallet.controller.ts`, `src/wallets/*dto.ts` | Wallets, reconciliação e métrica Prometheus; validação estrutural |
+| Transporte | `src/wallets/wallet.controller.ts`, `src/wallets/*dto.ts` | Wallets e reconciliação; validação estrutural |
+| Métricas | `src/metrics/` | Registro Prometheus em processo, gauges lidos do PostgreSQL e `GET /metrics` |
 | Erros compartilhados | `src/shared/domain-error.filter.ts` | Tradução global de erros conhecidos, registrada uma vez pelo módulo raiz |
 | Caso de uso e leitura | `src/wallets/wallet-service.ts` | Abertura atômica, reidratação, ledger keyset e reconciliação em snapshot único |
 | Submissão e liquidação | `src/wagering/wagering-service.ts` | Transação SQL, lock da wallet, operações, resolução individual de referências e replay financeiro |
@@ -284,7 +285,7 @@ Decisão adotada no ticket 04 (§9): um único SELECT parametrizado lê wallet e
 
 O snapshot de comando em READ COMMITTED vê saldo e ledger no mesmo instante, sem bloquear escritor. Uma movimentação atômica concorrente aparece inteira ou não aparece. Alternativa: duas leituras em REPEATABLE READ; descartada por adicionar transação sem benefício para uma única consulta. Duas leituras em READ COMMITTED seriam incorretas. Resultado é diagnóstico daquele instante, não reserva nem garantia sobre escrita posterior.
 
-Nenhuma correção automática, mudança de versão ou escrita financeira. Cada divergência emite mensagem JSON `WalletReconciliationDivergence` via Logger Nest, apenas com walletId, sem saldos, player ou payload; envelope de saída segue logger configurado. Incrementa contador Prometheus sem labels, exposto em GET /metrics no mesmo módulo. Contador por processo, cumulativo por chamada, não persistente e não usado como garantia financeira; coletor deve agregar instâncias e tratar resets. As demais métricas do §12 continuam pendentes.
+Nenhuma correção automática, mudança de versão ou escrita financeira. Cada divergência emite mensagem JSON `WalletReconciliationDivergence` via Logger Nest, apenas com walletId, sem saldos, player ou payload; envelope de saída segue logger configurado. Incrementa `wallet_reconciliation_divergences_total`, sem labels, no registro compartilhado descrito em [Métricas](#métricas). Contador por processo, cumulativo por chamada, não persistente e não usado como garantia financeira.
 
 Teste HTTP com PostgreSQL real cobre zero, abertura além de Number.MAX_SAFE_INTEGER, duas direções de diferença, ausência de reparo, log, contador e transação concorrente parada entre alteração de saldo e inclusão de ledger. Fixture crédito/débito é sintética e isolada, não implementação de BET. Evidências: [verificação](docs/verification.md#reconciliação--2026-10-22).
 
@@ -321,13 +322,43 @@ O `correlationId` é o `transactionId`. Esse id já é o `correlationId` dos eve
 
 Nenhum log leva valor, saldo, `playerId`, chave de idempotência, corpo da mensagem ou texto de exceção. Exceções viram `code` ou `errorType` (nome da classe), porque mensagens de driver podem trazer SQL, host ou parâmetros. O worker de referências passou a seguir essa regra; antes registrava `error.message`.
 
+## Métricas
+
+`GET /metrics` responde no formato texto do Prometheus (`text/plain; version=0.0.4`). `MetricsModule` é global e exporta um único `Metrics` por aplicação. Os módulos de wallets, wagering e outbox recebem essa instância pelas factories. Quem instancia as classes direto, como os testes, ganha um registro próprio.
+
+| Série | Tipo | Unidade e semântica | Onde incrementa |
+|---|---|---|---|
+| `wager_transactions{status}` | gauge | transações persistidas por `PROCESSED`, `REJECTED` ou `PENDING_REFERENCE`, OPENING incluída | `count` no PostgreSQL a cada scrape |
+| `wager_duplicates_total{outcome}` | counter | `replay`: chave ou `messageId` repetidos com mesmo payload; `conflict`: `IDEMPOTENCY_CONFLICT` ou `MESSAGE_ID_CONFLICT` | `WageringService.submit` |
+| `wager_lock_conflicts_total` | counter | submissões abortadas com `55P03` (lock_timeout), `40P01` (deadlock) ou `40001` (serialização) | catch de `WageringService.apply`, antes de virar `TEMPORARY_UNAVAILABLE` |
+| `wager_message_retries_total` | counter | mensagens SQS devolvidas à fila com backoff de visibilidade | `WagerConsumer` |
+| `wager_dlq_messages_total{reason}` | counter | mensagens enviadas à DLQ por este processo, `PERMANENT` ou `RETRIES_EXHAUSTED` | `WagerConsumer`, depois do `SendMessage` |
+| `outbox_published_total` | counter | eventos marcados como publicados | `OutboxPublisher` |
+| `outbox_publication_retries_total` | counter | falhas de envio reagendadas | `OutboxPublisher` |
+| `outbox_pending_messages` | gauge | eventos com `published_at` nulo | PostgreSQL a cada scrape |
+| `outbox_lag_seconds` | gauge | segundos desde o `occurred_at` do pendente mais antigo; 0 sem pendência | PostgreSQL a cada scrape |
+| `wager_processing_duration_seconds` | histogram | duração de `submit` em segundos, HTTP e SQS, sucesso e falha; buckets de 5 ms a 5 s | `WageringService.submit` |
+| `wallet_reconciliation_divergences_total` | counter | reconciliações divergentes | `WalletService.reconcile` |
+
+Os gauges saem do banco porque status e outbox são estado compartilhado: qualquer instância devolve o mesmo valor, e um reinício não zera nada. Os contadores e o histograma ficam em memória, por processo. Zeram no reinício e precisam ser somados entre instâncias pelo coletor, com `rate()`/`increase()` tratando o reset. Persistir contadores custaria uma escrita a mais por operação sem ganho para o diagnóstico; o valor financeiro continua no ledger e na reconciliação, não na métrica.
+
+Labels só aceitam valores fixos do código. `walletId`, `transactionId`, `messageId` e `providerId` ficam fora: cada um criaria uma série por entidade. Para chegar a uma transação específica, use os logs pelo `correlationId`.
+
+Conflito de lock exige um limite de espera. O lock da wallet é `FOR UPDATE` e, sem `lock_timeout`, a segunda transação espera em vez de falhar, então o contador fica em zero. Para observar disputa, defina `lock_timeout` na conexão, por exemplo com `options=-c lock_timeout=2000` na `DATABASE_URL`. A espera em si não é medida; ela aparece na latência.
+
+`wager_dlq_messages_total` conta envios deste consumidor. Não é a profundidade atual da DLQ, que inclui o redrive do próprio SQS após `maxReceiveCount`; para isso, use `ApproximateNumberOfMessages` da fila.
+
+Não há biblioteca de métricas. `prom-client` resolveria o formato, mas o projeto só precisa de contadores, um histograma e três gauges, e `src/metrics/metrics.ts` cabe em uma tela. Referência: [formato de exposição do Prometheus](https://prometheus.io/docs/instrumenting/exposition_formats/).
+
+Evidências: [verificação](docs/verification.md#métricas--2026-10-24).
+
 ## Decisões
 
 [DECISIONS](DECISIONS.md) relaciona as decisões aos requisitos. As decisões D-001 a D-005 estão registradas nos ADRs 0001 a 0005, com os mesmos status e limites. O [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) registra a organização modular adotada. Os ADRs reúnem justificativas, alternativas e consequências.
 
 ## Ainda não entregue
 
-Métricas além da reconciliação continuam pendentes em [PROGRESS](PROGRESS.md). Resolução de referências, consumo dos kinds externos e publicação de outbox têm workers separados. Próximo ticket: 26.
+Resolução de referências, consumo dos kinds externos e publicação de outbox têm workers separados. Pendências em [PROGRESS](PROGRESS.md).
 
 API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown para novas leituras e espera o consumidor e os workers antes de fechar HTTP e ORM. A espera pelo consumidor tem prazo (`WAGER_SHUTDOWN_DRAIN_MS`, padrão 20 s); workers e outbox ainda não têm.
 
