@@ -85,12 +85,12 @@ test("divergence reports both signs without repairing audit or wallet, counts an
   const ledgerBefore = await (
     await fetch(`${base}/wallets/${wallet.id}/ledger`)
   ).json();
-  const logs: string[] = [];
+  const logs: unknown[] = [];
   app.useLogger({
     log() {},
     error() {},
     warn(message: unknown) {
-      logs.push(String(message));
+      logs.push(message);
     },
   });
   for (const [stored, difference] of [
@@ -116,7 +116,7 @@ test("divergence reports both signs without repairing audit or wallet, counts an
       await (await fetch(`${base}/wallets/${wallet.id}/ledger`)).json(),
     ).toEqual(ledgerBefore);
   }
-  expect(logs.map((line) => JSON.parse(line))).toEqual([
+  expect(logs).toEqual([
     { event: "WalletReconciliationDivergence", walletId: wallet.id },
     { event: "WalletReconciliationDivergence", walletId: wallet.id },
   ]);

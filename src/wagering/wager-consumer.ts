@@ -70,12 +70,10 @@ export class WagerConsumer {
           { abortSignal: AbortSignal.timeout(5000) },
         )
         .catch(() =>
-          this.logger.warn(
-            JSON.stringify({
-              event: "WagerVisibilityExtensionFailed",
-              messageId: context?.messageId ?? message.MessageId,
-            }),
-          ),
+          this.logger.warn({
+            event: "WagerVisibilityExtensionFailed",
+            messageId: context?.messageId ?? message.MessageId,
+          }),
         );
     }, 10000);
     heartbeat.unref?.();
@@ -87,18 +85,16 @@ export class WagerConsumer {
         messageId: context.messageId,
         payloadHash: context.payloadHash,
       });
-      this.logger.log(
-        JSON.stringify({
-          event: "WagerMessageCommitted",
-          correlationId: result.transactionId,
-          messageId: context.messageId,
-          transactionId: result.transactionId,
-          walletId: context.data.walletId,
-          providerId: context.data.providerId,
-          status: result.status,
-          idempotentReplay: result.idempotentReplay,
-        }),
-      );
+      this.logger.log({
+        event: "WagerMessageCommitted",
+        correlationId: result.transactionId,
+        messageId: context.messageId,
+        transactionId: result.transactionId,
+        walletId: context.data.walletId,
+        providerId: context.data.providerId,
+        status: result.status,
+        idempotentReplay: result.idempotentReplay,
+      });
     } catch (error) {
       const permanent =
         error instanceof HttpException ||
@@ -111,16 +107,14 @@ export class WagerConsumer {
           : error instanceof HttpException
             ? "INVALID_TRANSACTION_PAYLOAD"
             : "PROCESSING_FAILED";
-      this.logger.warn(
-        JSON.stringify({
-          event: permanent ? "WagerMessageInvalid" : "WagerMessageRetry",
-          messageId: context?.messageId ?? message.MessageId,
-          walletId: context?.data.walletId,
-          providerId: context?.data.providerId,
-          code,
-          attempt: count,
-        }),
-      );
+      this.logger.warn({
+        event: permanent ? "WagerMessageInvalid" : "WagerMessageRetry",
+        messageId: context?.messageId ?? message.MessageId,
+        walletId: context?.data.walletId,
+        providerId: context?.data.providerId,
+        code,
+        attempt: count,
+      });
       if (permanent || count >= 5) {
         await this.sqs.send(
           new SendMessageCommand({
@@ -201,7 +195,7 @@ export class WagerConsumer {
     if (drained || this.inFlight === undefined) return;
     clearInterval(this.heartbeat);
     // Sem ack a mensagem volta; commit já feito vira replay pela inbox, transação aberta sofre rollback ao fechar a conexão.
-    this.logger.warn(JSON.stringify({ event: "WagerShutdownDeadline" }));
+    this.logger.warn({ event: "WagerShutdownDeadline" });
     await this.sqs
       .send(
         new ChangeMessageVisibilityCommand({
@@ -223,12 +217,10 @@ export class WagerConsumer {
         .then(
           () => {},
           (error) =>
-            this.logger.error(
-              JSON.stringify({
-                event: "WagerConsumerFailed",
-                errorType: error instanceof Error ? error.name : "UnknownError",
-              }),
-            ),
+            this.logger.error({
+              event: "WagerConsumerFailed",
+              errorType: error instanceof Error ? error.name : "UnknownError",
+            }),
         )
         .finally(() => {
           this.running = undefined;

@@ -63,23 +63,17 @@ export class PendingReferenceWorker {
     try {
       const summary = await this.runOnce();
       if (summary.processed > 0 || summary.rejected > 0)
-        this.logger.log(
-          JSON.stringify({ event: "PendingReferenceResolved", ...summary }),
-        );
+        this.logger.log({ event: "PendingReferenceResolved", ...summary });
       if (summary.failed > 0)
-        this.logger.warn(
-          JSON.stringify({
-            event: "PendingReferenceResolutionFailed",
-            ...summary,
-          }),
-        );
+        this.logger.warn({
+          event: "PendingReferenceResolutionFailed",
+          ...summary,
+        });
     } catch (error) {
-      this.logger.error(
-        JSON.stringify({
-          event: "PendingReferenceWorkerFailed",
-          message: error instanceof Error ? error.message : String(error),
-        }),
-      );
+      this.logger.error({
+        event: "PendingReferenceWorkerFailed",
+        errorType: error instanceof Error ? error.name : "UnknownError",
+      });
     }
   }
 }

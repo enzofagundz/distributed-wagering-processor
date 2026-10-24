@@ -47,9 +47,7 @@ export class WalletService {
     const consistent = row.difference === "0.00";
     if (!consistent) {
       this.reconciliationDivergences++;
-      this.logger.warn(
-        JSON.stringify({ event: "WalletReconciliationDivergence", walletId }),
-      );
+      this.logger.warn({ event: "WalletReconciliationDivergence", walletId });
     }
     return {
       walletId,

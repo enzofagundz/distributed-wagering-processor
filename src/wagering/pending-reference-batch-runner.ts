@@ -63,13 +63,12 @@ export class PendingReferenceBatchRunner {
           else summary.skipped++;
         } catch (error) {
           summary.failed++;
-          this.logger.warn(
-            JSON.stringify({
-              event: "PendingReferenceResolutionFailed",
-              transactionId: candidate.id,
-              message: error instanceof Error ? error.message : String(error),
-            }),
-          );
+          this.logger.warn({
+            event: "PendingReferenceResolutionFailed",
+            correlationId: candidate.id,
+            transactionId: candidate.id,
+            errorType: error instanceof Error ? error.name : "UnknownError",
+          });
         }
       }
       if (page.length < pageSize) break;

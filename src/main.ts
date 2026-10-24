@@ -1,5 +1,5 @@
 import { MikroORM } from "@mikro-orm/postgresql";
-import type { INestApplication } from "@nestjs/common";
+import { ConsoleLogger, type INestApplication } from "@nestjs/common";
 import { createApplication } from "./create-application";
 import { OutboxPublisher } from "./outbox/outbox-publisher";
 import { databaseConfig } from "./persistence/config";
@@ -28,7 +28,7 @@ function close() {
   return closing;
 }
 try {
-  app = await createApplication(orm);
+  app = await createApplication(orm, new ConsoleLogger({ json: true }));
   await app.listen(
     Number(process.env.PORT ?? "3000"),
     process.env.HOST ?? "127.0.0.1",
