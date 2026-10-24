@@ -2,7 +2,7 @@
 
 ## Status
 
-Aceita e adotada. Migra D-005.
+Aceita e adotada. Migra D-005. A autenticação entrou depois, no [ADR-0008](0008-autenticacao-com-keycloak.md); a passagem sobre ausência de autenticação descreve o estágio original.
 
 ## Contexto
 
@@ -12,7 +12,7 @@ O histórico precisa de leitura determinística, sem saltos de `OFFSET` causados
 
 `GET /wallets/:walletId/ledger` usa keyset crescente por `(created_at, id)`. UUID é desempate único; índice `(wallet_id, created_at, id)` atende filtro e ordenação. A migration [20261022000300](../../src/persistence/migrations/Migration20261022000300.ts) substitui o índice simples por wallet; `down` restaura o índice anterior sem tocar dados.
 
-O cursor opaco contém o UUID do último lançamento retornado, codificado em base64url canônico. Não é token de autorização nem possui assinatura; o cliente não deve interpretá-lo. O servidor aceita somente ID existente na mesma wallet. Trocar o cursor por outro lançamento da mesma wallet escolhe outra posição de leitura, sem permitir escrita ou acesso a outra wallet. Não há autenticação neste estágio.
+O cursor opaco contém o UUID do último lançamento retornado, codificado em base64url canônico. Não é token de autorização nem possui assinatura; o cliente não deve interpretá-lo. O servidor aceita somente ID existente na mesma wallet. Trocar o cursor por outro lançamento da mesma wallet escolhe outra posição de leitura, sem permitir escrita ou acesso a outra wallet. Não havia autenticação quando este contrato foi definido; o estado atual está no [ADR-0008](0008-autenticacao-com-keycloak.md).
 
 Consulta parametrizada via MikroORM compara tuplas no PostgreSQL e busca timestamp diretamente do lançamento apontado pelo cursor. Não converte esse timestamp em `Date` para retomar página: isso perderia microssegundos e poderia repetir ou omitir linhas. Resposta mantém timestamp textual com offset e dinheiro como string decimal. Busca `limit + 1`, devolve no máximo `limit` e só emite `nextCursor` quando existe outro lançamento.
 

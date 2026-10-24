@@ -78,7 +78,7 @@ Os exemplos abaixo omitem o header por brevidade; inclua `-H "Authorization: Bea
 | `providerId` do token diferente do `providerId` do body ou da rota | 403 `{"code":"PROVIDER_IDENTITY_MISMATCH"}`, antes do caso de uso |
 | Token válido e coerente | fluxo normal; o domínio continua validando provider, player e wallet |
 
-Mensagens SQS não levam token. Testes focais: `bun test tests/integration/auth-http.test.ts` gera a chave RSA no próprio teste; `bun test tests/integration/keycloak-smoke.test.ts` pede token ao Keycloak em `TEST_KEYCLOAK_URL` (padrão `http://127.0.0.1:8080`). Decisão e limites: [ADR-0008](docs/adr/0008-autenticacao-com-keycloak.md) e [arquitetura](ARCHITECTURE.md#autenticação).
+Mensagens SQS não levam token: a fila é canal interno confiável, e a identidade da mensagem passa só pelas regras de domínio, que validam provider, player e wallet sem autenticar. Testes focais: `bun test tests/integration/auth-http.test.ts` gera a chave RSA no próprio teste; `bun test tests/integration/keycloak-smoke.test.ts` pede token ao Keycloak em `TEST_KEYCLOAK_URL` (padrão `http://127.0.0.1:8080`). Decisão e limites: [ADR-0008](docs/adr/0008-autenticacao-com-keycloak.md) e [arquitetura](ARCHITECTURE.md#autenticação).
 
 ### Logs
 

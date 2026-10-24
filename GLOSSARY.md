@@ -16,7 +16,7 @@ Código reconhecido por `Intl.supportedValuesOf('currency')` do Bun/ICU, preserv
 
 ## Player
 
-Identidade UUID recebida como `playerId`, associada à wallet; não existe cadastro de jogador ou autenticação implementados. O par player/moeda identifica uma única wallet no banco.
+Identidade UUID recebida como `playerId`, associada à wallet. Não existe cadastro de jogador. A autenticação das rotas HTTP é feita por IdP externo (Keycloak), com o desenho em [Autenticação](ARCHITECTURE.md#autenticação) e no [ADR-0008](docs/adr/0008-autenticacao-com-keycloak.md); o domínio valida a identidade do jogador, não autentica. O par player/moeda identifica uma única wallet no banco.
 
 ## Wallet
 

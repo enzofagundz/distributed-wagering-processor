@@ -128,7 +128,7 @@ Referências consultadas via Context7: [AWS SDK v3](https://github.com/aws/aws-s
 
 `WageringService.submit` usa um EntityManager novo por chamada e `transactional`. A primeira leitura da wallet usa `PESSIMISTIC_WRITE` (`SELECT … FOR UPDATE`). O lock dura até commit/rollback; a próxima aposta na mesma wallet espera e lê o saldo confirmado pela anterior. Wallets diferentes não compartilham lock financeiro. Alternativa: versão otimista com retry limitado; descartada neste incremento para evitar repetição do caso de uso após conflito.
 
-O serviço valida player e moeda contra a wallet carregada antes de escrever. Provider tem validação de formato e nome reservado, não autenticação nem cadastro. A API permanece local e sem IdP.
+O serviço valida player e moeda contra a wallet carregada antes de escrever. Provider tem validação de formato e nome reservado, não autenticação nem cadastro. A API continua restrita ao ambiente local, mas as rotas HTTP exigem token do Keycloak com `aud` e claim `providerId`; o desenho está em [Autenticação](#autenticação) e no [ADR-0008](docs/adr/0008-autenticacao-com-keycloak.md).
 
 Com saldo suficiente, `Wallet.debit` devolve o par imutável com a wallet resultante, versão incrementada e o lançamento DEBIT. SQL confirma BET PROCESSED, saldo observado, esse DEBIT, saldo materializado e eventos Processed/BalanceChanged juntos. Sem saldo, confirma BET REJECTED com `INSUFFICIENT_FUNDS` e evento Rejected; saldo, versão e ledger não mudam. Resposta sai após commit. Falha ao gravar qualquer evento desfaz também escritas anteriores. A publicação ocorre no worker separado, após commit.
 
@@ -361,7 +361,7 @@ Decisão em [ADR-0008](docs/adr/0008-autenticacao-com-keycloak.md). O Keycloak e
 
 `AuthModule.register(config)` registra a estratégia `passport-jwt` e um `APP_GUARD`. A estratégia busca as chaves em `AUTH_JWKS_URI` por `jwks-rsa`, com cache e rate limit, e confere assinatura RS256, `iss`, `aud` e `exp` localmente; não há introspecção por request. Depois disso, o guard compara `providerId` do token com `providerId` do body e do parâmetro de rota, quando existem. Diferença gera 403 antes de pipes e do caso de uso, então nada é gravado. Rotas sem `providerId` (wallets, ledger, consulta por ID interno, métricas) só exigem token válido. Não há autorização por scope.
 
-Com o guard, `WageringService` continua validando provider reservado, dono da wallet e moeda para HTTP e SQS. O consumidor SQS não passa pelo guard: a fila é canal interno confiável e a identidade da mensagem segue só as regras de domínio.
+Com o guard, `WageringService` continua validando provider reservado, dono da wallet e moeda para HTTP e SQS. Essas regras são de identidade do domínio, não de autenticação. O consumidor SQS não passa pelo guard: a fila é canal interno confiável e a identidade da mensagem segue só as regras de domínio.
 
 `createApplication(orm, logger, auth)` só instala o guard quando recebe `auth`. `main.ts` sempre lê a configuração do ambiente e falha no startup se faltar variável; testes antigos montam a aplicação sem guard, e `tests/integration/auth-http.test.ts` monta com uma chave gerada no teste.
 

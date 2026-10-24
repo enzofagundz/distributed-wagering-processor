@@ -870,3 +870,28 @@ O delta sobre a seção anterior é de 33 testes e 98 assertions: 32 testes novo
 Nest Boost por MCP com `application_info`, `list_routes` e `module_graph`, em processos separados antes e depois: 13 módulos, 4 controllers, 16 providers e 10 rotas nas duas pontas. `evaluate` não foi chamado.
 
 Limites: os hashes de referência fixam as entradas testadas, não toda entrada possível. O teste de backfill cobre BET, que é o único kind preenchido pela migration 00100. A suíte usa PostgreSQL 17.6 e LocalStack 4.11.1 reais nos containers preexistentes, mas não reexecutou a imagem da API. Nenhum contrato HTTP ou SQS, schema, migration, evento ou código de falha mudou.
+
+## Documentação de autenticação — 2026-10-24
+
+Ticket 05 de `.scratch/fortalecer-nucleo-financeiro`. Não entrou teste novo. A verificação foi leitura dos documentos, busca pelos termos "sem IdP", "sem autenticação", "não existe autenticação" e variantes, inspeção das rotas e módulos pelo Nest Boost MCP, e execução dos testes focais de autenticação que já existiam.
+
+Antes de editar, a busca encontrou:
+
+- `ARCHITECTURE.md#processamento-de-bet`, "A API permanece local e sem IdP": obsoleta. A frase virou "A API continua restrita ao ambiente local, mas as rotas HTTP exigem token do Keycloak com `aud` e claim `providerId`", com links para [Autenticação](../ARCHITECTURE.md#autenticação) e [ADR-0008](adr/0008-autenticacao-com-keycloak.md). A validação de provider, player e wallet no domínio não mudou.
+- `GLOSSARY.md#player`, "não existe cadastro de jogador ou autenticação implementados": obsoleta. O verbete agora diz que não há cadastro de jogador e que a autenticação HTTP usa IdP externo. O domínio valida identidade sem autenticar.
+- `docs/adr/0004-contrato-http-e-ambiente-reproduzivel.md`, "O serviço não possui autenticação": descrevia o incremento original. A frase passou para o passado, e o Status aponta o ADR-0008 como decisão posterior. "Isso não implementa autenticação", sobre a borda de rede, continua verdadeira e ficou como está.
+- `docs/adr/0005-consulta-estavel-do-ledger.md`, "Não há autenticação neste estágio": descrevia o estágio original. Passou para "Não havia autenticação quando este contrato foi definido", com link para o ADR-0008.
+- `docs/adr/0007-inbox-atomica-de-bet.md`, "broker local continua sendo um canal confiável sem IdP": verdadeira. SQS é canal interno e a mensagem não leva token; a identidade continua sujeita às regras de domínio.
+- `ARCHITECTURE.md#health`, "`/health/live` e `/health/ready` sem autenticação": verdadeira. As duas rotas seguem públicas.
+- `PROGRESS.md` R-024, "sem autenticação": verdadeira pelo mesmo motivo.
+- `README.md` e `DECISIONS.md`: nenhuma afirmação contraditória. O README já pedia token nas rotas HTTP, descrevia `aud`, `providerId`, 401/403 e SQS sem token. O índice lista o ADR-0008 como adotado.
+
+Também reli a seção de autenticação e o ADR-0008. Os dois descrevem o mesmo desenho: Keycloak com `client_credentials`, validação local de assinatura, `iss`, `aud` e `exp`, e claim `providerId`. O guard é global, health fica público, SQS é canal interno e o domínio valida identidade sem autenticar. Não sobrou afirmação de que a API não tem IdP.
+
+Nest Boost MCP, iniciado por `bun run nest-boost mcp` em processo novo, com `application_info`, `list_routes` e `module_graph`: 13 módulos, 4 controllers, 16 providers e 10 rotas. `AppModule` importa `AuthModule`. `list_routes` devolveu `/health/live` e `/health/ready` ao lado das rotas de wallet, wagering e `/metrics`. O preview não recebe configuração de autenticação, então não registra o guard; a inspeção confirma a composição e as rotas, não a proteção em runtime. `evaluate` não foi chamado.
+
+Testes focais existentes, sem alteração: `bun test tests/integration/auth-http.test.ts tests/integration/keycloak-smoke.test.ts` passou com 5 testes, 40 assertions e zero falhas. Eles confirmam 401 sem token, 403 por `providerId` divergente, health público e fluxo válido com token do Keycloak real.
+
+`bun run typecheck`, `bun run lint` e `bun run format:check` passaram sem correção pendente.
+
+Limites: a correção é editorial e não reexecutou a suíte completa. O teste focal usa o PostgreSQL de testes e o Keycloak do Compose que já estavam no ar. A documentação não promete que o ambiente local é seguro para produção: o README mantém o aviso de ambiente exclusivamente local, o ADR-0004 registra que aquele incremento não era seguro para exposição pública, e o ADR-0008 registra os limites de revogação e cache de chaves.
