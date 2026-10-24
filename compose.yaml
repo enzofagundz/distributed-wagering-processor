@@ -12,13 +12,37 @@ services:
       WAGER_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/wager-transactions.fifo
       WAGER_DLQ_URL: http://localstack:4566/queue/us-east-1/000000000000/wager-transactions-dlq.fifo
       OUTBOX_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/wagering-events
+      # iss segue o hostname público do Keycloak; as chaves vêm pela rede interna.
+      AUTH_ISSUER: http://127.0.0.1:${KEYCLOAK_PORT:-8080}/realms/wagering
+      AUTH_AUDIENCE: wagering-api
+      AUTH_JWKS_URI: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
     depends_on:
+      keycloak:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       localstack:
         condition: service_healthy
     ports:
       - "127.0.0.1:${APP_PORT:-3000}:3000"
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: http://127.0.0.1:${KEYCLOAK_PORT:-8080}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "127.0.0.1:${KEYCLOAK_PORT:-8080}:8080"
+    volumes:
+      - ./infra/keycloak/wagering-realm.json:/opt/keycloak/data/import/wagering-realm.json:ro,Z
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\r\n\r\n' >&3 && grep -q UP <&3"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
   localstack:
     image: localstack/localstack:4.11.1
     environment:

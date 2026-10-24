@@ -2,6 +2,7 @@ import "reflect-metadata";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { type DynamicModule, Module } from "@nestjs/common";
 import { APP_FILTER } from "@nestjs/core";
+import { type AuthConfig, AuthModule } from "./auth/auth.module";
 import { HealthModule } from "./health/health.module";
 import { MetricsModule } from "./metrics/metrics.module";
 import { OutboxModule } from "./outbox/outbox.module";
@@ -13,10 +14,11 @@ import { WalletsModule } from "./wallets/wallets.module";
   providers: [{ provide: APP_FILTER, useClass: DomainErrorFilter }],
 })
 export class AppModule {
-  static register(orm?: MikroORM): DynamicModule {
+  static register(orm?: MikroORM, auth?: AuthConfig): DynamicModule {
     return {
       module: AppModule,
       imports: [
+        AuthModule.register(auth),
         MetricsModule.register(orm),
         WalletsModule.register(orm),
         WageringModule.register(orm),

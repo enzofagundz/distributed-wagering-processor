@@ -1,11 +1,13 @@
 import { MikroORM } from "@mikro-orm/postgresql";
 import { ConsoleLogger, type INestApplication } from "@nestjs/common";
+import { authConfigFromEnv } from "./auth/auth.module";
 import { createApplication } from "./create-application";
 import { OutboxPublisher } from "./outbox/outbox-publisher";
 import { databaseConfig } from "./persistence/config";
 import { PendingReferenceWorker } from "./wagering/pending-reference-worker";
 import { WagerConsumer } from "./wagering/wager-consumer";
 
+const auth = authConfigFromEnv();
 const orm = await MikroORM.init(databaseConfig());
 let app: INestApplication | undefined;
 let worker: PendingReferenceWorker | undefined;
@@ -28,7 +30,7 @@ function close() {
   return closing;
 }
 try {
-  app = await createApplication(orm, new ConsoleLogger({ json: true }));
+  app = await createApplication(orm, new ConsoleLogger({ json: true }), auth);
   await app.listen(
     Number(process.env.PORT ?? "3000"),
     process.env.HOST ?? "127.0.0.1",

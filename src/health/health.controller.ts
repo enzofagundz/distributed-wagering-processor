@@ -6,6 +6,7 @@ import {
   HttpCode,
   ServiceUnavailableException,
 } from "@nestjs/common";
+import { Public } from "../auth/auth.module";
 
 type Status = "up" | "down";
 
@@ -58,6 +59,7 @@ export class HealthChecks {
   }
 }
 
+@Public()
 @Controller("health")
 export class HealthController {
   constructor(private readonly checks: HealthChecks) {}
