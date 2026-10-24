@@ -33,6 +33,7 @@ import { WageringService } from "./wagering-service";
             "http://127.0.0.1:4566/queue/us-east-1/000000000000/wager-transactions.fifo",
           process.env.WAGER_DLQ_URL ??
             "http://127.0.0.1:4566/queue/us-east-1/000000000000/wager-transactions-dlq.fifo",
+          Number(process.env.WAGER_SHUTDOWN_DRAIN_MS ?? "20000"),
         ),
       inject: [WageringService],
     },

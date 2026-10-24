@@ -43,7 +43,18 @@ try {
   consumer = wagerConsumer;
   wagerConsumer.start();
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, close);
+    // Sai mesmo com transação presa: o PostgreSQL desfaz o que não foi commitado.
+    process.once(signal, () => {
+      // orm.close() espera conexões ativas; 10 s após o prazo do consumidor, força a saída.
+      setTimeout(
+        () => process.exit(1),
+        Number(process.env.WAGER_SHUTDOWN_DRAIN_MS ?? "20000") + 10000,
+      ).unref();
+      close().then(
+        () => process.exit(0),
+        () => process.exit(1),
+      );
+    });
   }
   console.log(`Wallet HTTP listening at ${await app.getUrl()}`);
 } catch (error) {

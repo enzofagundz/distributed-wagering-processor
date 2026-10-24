@@ -867,10 +867,11 @@ for (const kind of ["BET", "WIN", "LOSS", "REFUND", "ROLLBACK"]) {
   }, 10000);
 }
 
-function childConsumer(pauseAck = false, start = false) {
+function childConsumer(pauseAck = false, start = false, drainMs = 20000) {
   return Bun.spawn(["bun", "tests/integration/fixtures/inbox-instance.ts"], {
     env: {
       ...process.env,
+      WAGER_SHUTDOWN_DRAIN_MS: String(drainMs),
       DATABASE_URL: url,
       INBOX_TEST_SCHEMA: schema,
       WAGER_QUEUE_URL: queueUrl,
@@ -996,6 +997,28 @@ test("SIGTERM drains an in-flight message through commit and ack before closing 
     await child.exited;
   }
 }, 10000);
+
+test("SIGTERM past the drain deadline releases the uncommitted ack and a restart replays without a second debit", async () => {
+  const message = await envelope();
+  await send(message);
+  const child = childConsumer(true, true, 500);
+  try {
+    await waitLine(child, "committed-before-ack");
+    await reconcile(message.data.walletId, "75.00", 2);
+    const signaled = Date.now();
+    child.kill("SIGTERM");
+    expect(await child.exited).toBe(0);
+    expect(Date.now() - signaled).toBeLessThan(5000);
+  } finally {
+    child.kill("SIGKILL");
+    await child.exited;
+  }
+  // Visibilidade devolvida: a mensagem volta já, sem esperar os 30 s.
+  expect(await consumer.runOnce()).toBe(1);
+  expect(await receive()).toBeUndefined();
+  expect(await inbox(message.messageId)).toHaveLength(1);
+  await reconcile(message.data.walletId, "75.00", 2);
+}, 15000);
 
 test("repeated infrastructure failure is bounded and reaches the FIFO DLQ without a partial debit", async () => {
   const message = await envelope();

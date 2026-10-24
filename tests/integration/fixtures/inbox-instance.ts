@@ -44,6 +44,7 @@ const consumer = new WagerConsumer(
   sqs,
   process.env.WAGER_QUEUE_URL!,
   process.env.WAGER_DLQ_URL!,
+  Number(process.env.WAGER_SHUTDOWN_DRAIN_MS ?? "20000"),
 );
 if (process.env.INBOX_START === "true") {
   consumer.start();
