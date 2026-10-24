@@ -1005,6 +1005,7 @@ test("repeated infrastructure failure is bounded and reaches the FIFO DLQ withou
     "create trigger fail_inbox_retry before insert on outbox_messages for each row execute function fail_inbox_retry()",
   );
   await send(message);
+  let deadBody = "";
   try {
     for (let attempt = 1; attempt <= 5; attempt++) {
       expect(await consumer.runOnce()).toBe(1);
@@ -1016,6 +1017,7 @@ test("repeated infrastructure failure is bounded and reaches the FIFO DLQ withou
     }
     const dead = await receive(dlqUrl);
     expect(JSON.parse(dead!.Body!)).toEqual(message);
+    deadBody = dead!.Body!;
     expect(dead!.MessageAttributes).toMatchObject({
       failureCode: { StringValue: "TEMPORARY_UNAVAILABLE" },
       failureKind: { StringValue: "RETRIES_EXHAUSTED" },
@@ -1034,7 +1036,18 @@ test("repeated infrastructure failure is bounded and reaches the FIFO DLQ withou
     await orm.em.execute("drop trigger fail_inbox_retry on outbox_messages");
     await orm.em.execute("drop function fail_inbox_retry()");
   }
-}, 45000);
+  // Redrive após recuperação: corpo intacto confirma uma vez; segundo redrive é replay.
+  for (let redrive = 0; redrive < 2; redrive++) {
+    await send(deadBody);
+    expect(await consumer.runOnce()).toBe(1);
+    expect(await receive()).toBeUndefined();
+    expect(await receive(dlqUrl)).toBeUndefined();
+    expect((await inbox(message.messageId))[0]!.result).toMatchObject({
+      status: "PROCESSED",
+    });
+    await reconcile(message.data.walletId, "75.00", 2);
+  }
+}, 50000);
 
 test("PostgreSQL outage keeps the message unacked, backs off and commits one debit after recovery", async () => {
   const target = new URL(url);
