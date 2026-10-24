@@ -2,12 +2,14 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import {
   CreateQueueCommand,
   DeleteQueueCommand,
+  ReceiveMessageCommand,
   SendMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
 import { MikroORM } from "@mikro-orm/postgresql";
 import type { INestApplication } from "@nestjs/common";
 import { createApplication } from "../../src/create-application";
+import { DomainError } from "../../src/domain/money";
 import { Metrics } from "../../src/metrics/metrics";
 import { OutboxPublisher } from "../../src/outbox/outbox-publisher";
 import { databaseConfig } from "../../src/persistence/config";
@@ -233,3 +235,65 @@ test("SQS lock conflict retries and invalid message goes to DLQ", async () => {
   expect(delta('wager_dlq_messages_total{reason="RETRIES_EXHAUSTED"}')).toBe(0);
   expect(after.text).not.toContain(identity.walletId);
 });
+
+test("temporary failure on every delivery counts four retries then one RETRIES_EXHAUSTED", async () => {
+  const queueUrl = await queue("exhausted", true);
+  const dlqUrl = await queue("exhausted-dlq", true);
+  let attempts = 0;
+  const unavailable = {
+    submit: async () => {
+      attempts++;
+      throw new DomainError("TEMPORARY_UNAVAILABLE");
+    },
+  } as unknown as WageringService;
+  const consumer = new WagerConsumer(
+    unavailable,
+    sqs,
+    queueUrl,
+    dlqUrl,
+    20000,
+    app.get(Metrics),
+  );
+  const identity = await wallet();
+  const before = await scrape();
+  await sqs.send(
+    new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageGroupId: identity.walletId,
+      MessageDeduplicationId: crypto.randomUUID(),
+      MessageBody: JSON.stringify({
+        messageId: crypto.randomUUID(),
+        type: "WagerTransactionRequested",
+        occurredAt: new Date().toISOString(),
+        data: { ...bet(identity, "5.00"), idempotencyKey: crypto.randomUUID() },
+      }),
+    }),
+  );
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    expect(await consumer.runOnce()).toBe(1);
+    const current = await scrape();
+    const delta = (series: string) => current(series) - before(series);
+    expect(delta("wager_message_retries_total")).toBe(Math.min(attempt, 4));
+    expect(delta('wager_dlq_messages_total{reason="RETRIES_EXHAUSTED"}')).toBe(
+      attempt === 5 ? 1 : 0,
+    );
+    expect(delta('wager_dlq_messages_total{reason="PERMANENT"}')).toBe(0);
+    // Visibilidade de retry: 2^tentativa segundos.
+    if (attempt < 5) await Bun.sleep(2 ** attempt * 1000 + 100);
+  }
+  expect(attempts).toBe(5);
+  const dead = await sqs.send(
+    new ReceiveMessageCommand({
+      QueueUrl: dlqUrl,
+      MessageAttributeNames: ["All"],
+      WaitTimeSeconds: 1,
+    }),
+  );
+  expect(dead.Messages?.[0]?.MessageAttributes).toMatchObject({
+    failureCode: { StringValue: "TEMPORARY_UNAVAILABLE" },
+    failureKind: { StringValue: "RETRIES_EXHAUSTED" },
+    receiveCount: { StringValue: "5" },
+  });
+  // Ack após a DLQ: a fila de origem fica vazia.
+  expect(await consumer.runOnce()).toBe(0);
+}, 45000);
