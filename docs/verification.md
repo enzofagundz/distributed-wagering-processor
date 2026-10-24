@@ -582,3 +582,24 @@ Smokes com `bun run start` e filas do Compose (`.scratch/smoke/ticket23.ts`, `.s
 `bun test` completo: 285 testes, 2529 assertions, zero falhas em 25 arquivos (273.34s). `bun run typecheck`, `bun run lint` e `bun run format` passaram. Nest Boost MCP, rodando no notebook, confirmou WagerConsumer em WageringModule após a mudança no construtor.
 
 Limites: workers de referência e outbox não têm prazo próprio de drenagem; ficam cobertos só pela saída forçada.
+
+## Health — 2026-10-24
+
+Ticket 24. `HealthModule` expõe `GET /health/live` e `GET /health/ready`.
+
+`tests/integration/health-http.test.ts` sobe a aplicação três vezes com `HEALTH_TIMEOUT_MS=500`:
+
+- Dependências disponíveis: live 200, ready 200 com `postgres` e `sqs` em `up`.
+- `SQS_ENDPOINT` em `127.0.0.1:1`: ready 503 com `sqs: "down"`, corpo sem o endereço; live 200.
+- PostgreSQL na porta 1: ready 503 com `postgres: "down"` em menos de 2 s, corpo sem a senha; live 200.
+
+Smoke com `PORT=3199 bun run start` e containers do Compose no Podman:
+
+- Tudo no ar: live 200, ready 200.
+- `docker-compose stop localstack`: live 200, ready 503 com `sqs: "down"` em 8 ms.
+- Com LocalStack ainda parado, `docker-compose stop postgres`: live 200, ready 503 com os dois `down` em 0,91 s.
+- Postgres de volta: ready passou a `postgres: "up"` sem reiniciar a API. Oito segundos após `start`, LocalStack ainda não respondia. Repetido com `up -d --wait localstack`: ready voltou a 200 no mesmo processo.
+
+`bun test` completo: 288 testes, 2541 assertions, zero falhas em 26 arquivos (272.70s). `bun run typecheck`, `bun run lint` e `bun run format` passaram. Nest Boost MCP não rodou: o servidor configurado neste ambiente falhou ao importar `src/app.module.ts` por caminho Windows.
+
+Limites: o Compose não usa `/health/ready` no healthcheck do serviço `app`. A query de PostgreSQL abandonada pelo timeout continua no pool.

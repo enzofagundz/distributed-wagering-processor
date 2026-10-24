@@ -305,13 +305,19 @@ Referência consultada via Context7: [PostgreSQL 17 — READ COMMITTED](https://
 
 Erros conhecidos retornam `{ "code": "..." }`, exceto a rejeição 422, que retorna o resultado financeiro auditado. Transação externa processada retorna 201, inclusive no replay. DTO rejeita campos extras, estruturas inválidas e dinheiro não textual, sem conversão implícita; falha estrutural precede formato. JSON malformado na submissão recebe `INVALID_TRANSACTION_PAYLOAD`. Falhas inesperadas não viram 400/409. WIN/REFUND/ROLLBACK com referência indisponível retorna 202 persistido; BET e LOSS são síncronas e nunca retornam 202. Kind desconhecido retorna 400. Após 503 ou perda da resposta, reenviar mesma chave/payload permite descobrir commit já ocorrido; não trocar chave. Erros 400 corrigem contrato; 409 exige resolver identidade/payload; 422 é resultado terminal, não retry para tentar obter outro saldo.
 
+## Health
+
+`HealthModule` expõe `/health/live` e `/health/ready` sem autenticação. Liveness responde sem I/O: queda de PostgreSQL ou SQS não deve fazer o orquestrador reiniciar um processo que voltaria no mesmo estado. Readiness verifica as duas dependências em paralelo, cada uma com prazo de `HEALTH_TIMEOUT_MS`, e devolve 503 quando qualquer uma falha. O corpo só diz `up`/`down` por dependência; exceções são descartadas para não vazar host, usuário ou senha.
+
+No SQS, `GetQueueAttributes` nas filas de entrada e de outbox prova endpoint acessível e fila existente. No PostgreSQL, o timeout limita a resposta, mas a query abandonada continua no pool até o driver desistir. Readiness não consulta a DLQ nem exige migrations aplicadas.
+
 ## Decisões
 
 [DECISIONS](DECISIONS.md) relaciona as decisões aos requisitos. As decisões D-001 a D-005 estão registradas nos ADRs 0001 a 0005, com os mesmos status e limites. O [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) registra a organização modular adotada. Os ADRs reúnem justificativas, alternativas e consequências.
 
 ## Ainda não entregue
 
-Health e observabilidade dos demais fluxos permanecem em [PROGRESS](PROGRESS.md). Resolução de referências, consumo dos kinds externos e publicação de outbox têm workers separados. Próximo ticket: 24, health.
+Observabilidade dos demais fluxos permanece em [PROGRESS](PROGRESS.md). Resolução de referências, consumo dos kinds externos e publicação de outbox têm workers separados. Próximo ticket: 25.
 
 API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown para novas leituras e espera o consumidor e os workers antes de fechar HTTP e ORM. A espera pelo consumidor tem prazo (`WAGER_SHUTDOWN_DRAIN_MS`, padrão 20 s); workers e outbox ainda não têm.
 
