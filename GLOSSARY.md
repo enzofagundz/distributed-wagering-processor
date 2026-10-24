@@ -60,7 +60,7 @@ Envelope com `eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt
 
 ## Outbox
 
-Tabela `outbox_messages` que persiste eventos na mesma transação SQL da operação e só recebe `published_at` após envio ao SQS. Falha conserva a pendência; entrega pode repetir o mesmo `eventId`, e consumidores precisam deduplicar por eventId (ver [publicação da outbox](ARCHITECTURE.md#publicação-da-outbox)).
+Tabela `outbox_messages` que persiste eventos na mesma transação SQL da operação e só recebe `published_at` após envio ao SQS. `OutboxMessage` é a classe de domínio correspondente: `enqueue` monta o registro a partir do evento de integração, `scheduleRetry` incrementa tentativas e agenda o próximo envio, e `markPublished` encerra a mensagem. Falha conserva a pendência; entrega pode repetir o mesmo `eventId`, e consumidores precisam deduplicar por eventId (ver [publicação da outbox](ARCHITECTURE.md#publicação-da-outbox)).
 
 ## Unit of Work / flush
 

@@ -9,6 +9,7 @@ import {
   WagerTransactionRejected,
   WalletBalanceChanged,
 } from "../domain/opening-events";
+import { OutboxMessage } from "../domain/outbox-message";
 import {
   type ExternalWagerKind,
   type FailureCode,
@@ -17,7 +18,10 @@ import {
 import { Wallet } from "../domain/wallet";
 import { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
 import { Metrics } from "../metrics/metrics";
-import { outboxMessageSchema } from "../persistence/outbox-message-record";
+import {
+  outboxMessageSchema,
+  toOutboxRecord,
+} from "../persistence/outbox-message-record";
 import type { WagerTransactionRecord } from "../persistence/wager-transaction-record";
 import { wagerTransactionSchema } from "../persistence/wager-transaction-record";
 import { walletLedgerEntrySchema } from "../persistence/wallet-ledger-entry-record";
@@ -512,13 +516,10 @@ export class WageringService {
     await em
       .persist(
         events.map((event) =>
-          em.create(outboxMessageSchema, {
-            id: event.eventId,
-            aggregateId: event.aggregateId,
-            eventType: event.eventType,
-            payload: event.toJSON(),
-            occurredAt: event.occurredAt,
-          }),
+          em.create(
+            outboxMessageSchema,
+            toOutboxRecord(OutboxMessage.enqueue(event)),
+          ),
         ),
       )
       .flush();

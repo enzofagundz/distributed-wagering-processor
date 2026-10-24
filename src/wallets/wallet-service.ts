@@ -6,10 +6,14 @@ import {
   WagerTransactionProcessed,
   WalletBalanceChanged,
 } from "../domain/opening-events";
+import { OutboxMessage } from "../domain/outbox-message";
 import { uuidPattern, Wallet } from "../domain/wallet";
 import { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
 import { Metrics } from "../metrics/metrics";
-import { outboxMessageSchema } from "../persistence/outbox-message-record";
+import {
+  outboxMessageSchema,
+  toOutboxRecord,
+} from "../persistence/outbox-message-record";
 import { wagerTransactionSchema } from "../persistence/wager-transaction-record";
 import type { WalletLedgerEntryRecord } from "../persistence/wallet-ledger-entry-record";
 import { walletLedgerEntrySchema } from "../persistence/wallet-ledger-entry-record";
@@ -117,13 +121,10 @@ export class WalletService {
           WagerTransactionProcessed.from(wallet, entry),
           WalletBalanceChanged.from(wallet, entry),
         ].map((event) =>
-          em.create(outboxMessageSchema, {
-            id: event.eventId,
-            aggregateId: wallet.id,
-            eventType: event.eventType,
-            payload: event.toJSON(),
-            occurredAt: event.occurredAt,
-          }),
+          em.create(
+            outboxMessageSchema,
+            toOutboxRecord(OutboxMessage.enqueue(event)),
+          ),
         );
         await em.persist(messages).flush();
       });
