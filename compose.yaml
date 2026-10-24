@@ -1,6 +1,8 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      target: production
     environment:
       DATABASE_URL: postgresql://wagering:wagering@postgres:5432/wagering
       HOST: 0.0.0.0
@@ -25,6 +27,39 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:${APP_PORT:-3000}:3000"
+  app-dev:
+    profiles: [tools]
+    build:
+      context: .
+      target: development
+    environment:
+      DATABASE_URL: postgresql://wagering:wagering@postgres:5432/wagering
+      TEST_DATABASE_URL: postgresql://wagering:wagering@postgres-test:5432/wagering_test
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://localstack:4566
+      OUTBOX_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/wagering-events
+      WAGER_QUEUE_URL: http://localstack:4566/queue/us-east-1/000000000000/wager-transactions.fifo
+      WAGER_DLQ_URL: http://localstack:4566/queue/us-east-1/000000000000/wager-transactions-dlq.fifo
+      TEST_SQS_ENDPOINT: http://localstack:4566
+      TEST_KEYCLOAK_URL: http://keycloak:8080
+      TEST_KEYCLOAK_ISSUER: http://127.0.0.1:${KEYCLOAK_PORT:-8080}/realms/wagering
+      AUTH_ISSUER: http://127.0.0.1:${KEYCLOAK_PORT:-8080}/realms/wagering
+      AUTH_AUDIENCE: wagering-api
+      AUTH_JWKS_URI: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      postgres-test:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src:Z
+      - ./tests:/app/tests:Z
   keycloak:
     image: quay.io/keycloak/keycloak:26.4.0
     command: ["start-dev", "--import-realm"]
