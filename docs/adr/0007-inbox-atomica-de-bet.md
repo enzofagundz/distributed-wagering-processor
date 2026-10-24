@@ -53,3 +53,11 @@ A inbox é o recibo do aceite original. Redelivery do mesmo envelope preserva es
 Manter a mensagem invisível até chegar a referência prenderia a continuidade ao transporte e ocuparia o grupo FIFO. Persistir e dar ack permite seguir a agenda do banco após reinício, inclusive quando a referência nunca chega. Falha antes do commit desfaz também inbox e pendência; falha depois do commit e antes do ack resulta em replay seguro.
 
 Documentação oficial consultada via Context7: [AWS SDK v3 SQS Message](https://github.com/aws/aws-sdk-js-v3/blob/main/clients/client-sqs/src/models/models_0.ts), receipt handle corrente por entrega; compatibilidade exercitada com SDK 3.1156.0. [Evidências e limites](../verification.md#reversões-por-sqs--2026-10-24).
+
+## Extensão no ticket 21
+
+Sem mudança de produção. A política de retry descrita acima já separa falhas terminais de transitórias. Rejeição de negócio persistida recebe ack. Payload inválido, conflito de messageId e identidade incompatível vão à DLQ. Erros de conexão do driver (ECONNREFUSED, ECONNRESET, ETIMEDOUT e similares) e SQLSTATE das classes 08, 40, 53, 55 e 57 viram `TEMPORARY_UNAVAILABLE`; falha inesperada segue o mesmo caminho. Nesses casos não há ack: a visibilidade passa para `min(2 ** count, 60)` segundos, e a quinta falha envia à DLQ.
+
+Como a queda ocorre antes do commit, inbox, transação, ledger e outbox não existem quando a mensagem volta. A entrega seguinte executa a transação inteira uma única vez. Se o banco cair depois do commit e antes do ack, o reenvio encontra a inbox e devolve o resultado original.
+
+Alternativa descartada: depender só da `RedrivePolicy` com visibilidade fixa. O retry ficaria com intervalo constante e sem registro da causa no consumidor. Limite: cinco tentativas com backoff somam cerca de 30 segundos; uma queda mais longa leva a mensagem à DLQ, e o redrive manual deve começar pela consulta da transação. [Evidências](../verification.md#falhas-transitórias-do-consumidor--2026-10-24).

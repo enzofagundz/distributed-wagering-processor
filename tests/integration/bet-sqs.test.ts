@@ -1021,6 +1021,99 @@ test("repeated infrastructure failure is bounded and reaches the FIFO DLQ withou
   }
 }, 45000);
 
+test("PostgreSQL outage keeps the message unacked, backs off and commits one debit after recovery", async () => {
+  const target = new URL(url);
+  const sockets = new Set<{ end(): void }>();
+  type Upstream = Awaited<ReturnType<typeof Bun.connect>>;
+  const listen = (port = 0) =>
+    Bun.listen<{ upstream?: Upstream; pending: Uint8Array[] }>({
+      hostname: "127.0.0.1",
+      port,
+      socket: {
+        async open(client) {
+          client.data = { pending: [] };
+          sockets.add(client);
+          const upstream = await Bun.connect({
+            hostname: target.hostname,
+            port: Number(target.port || 5432),
+            socket: {
+              data: (_, chunk) => void client.write(chunk),
+              close: () => {
+                client.end();
+              },
+              error: () => {
+                client.end();
+              },
+            },
+          });
+          sockets.add(upstream);
+          for (const chunk of client.data.pending) upstream.write(chunk);
+          client.data.upstream = upstream;
+        },
+        data(client, chunk) {
+          if (client.data.upstream) client.data.upstream.write(chunk);
+          else client.data.pending.push(new Uint8Array(chunk));
+        },
+        close: (client) => {
+          client.data?.upstream?.end();
+        },
+        error: (client) => {
+          client.data?.upstream?.end();
+        },
+      },
+    });
+  // Proxy TCP real: derrubá-lo recusa e encerra conexões como uma queda do banco.
+  let proxy = listen();
+  const port = proxy.port;
+  const proxied = new URL(url);
+  proxied.hostname = "127.0.0.1";
+  proxied.port = String(port);
+  const outageOrm = await MikroORM.init({
+    ...databaseConfig(proxied.toString()),
+    schema,
+    driverOptions: { connection: { options: `-c search_path=${schema}` } },
+  });
+  const outageConsumer = new WagerConsumer(
+    new WageringService(outageOrm, new WageringInbox()),
+    sqs,
+    queueUrl,
+    dlqUrl,
+  );
+  const stopProxy = () => {
+    proxy.stop(true);
+    for (const socket of sockets) socket.end();
+    sockets.clear();
+  };
+  try {
+    await outageOrm.em.execute("select 1");
+    const message = await envelope();
+    stopProxy();
+    await send(message);
+    expect(await outageConsumer.runOnce()).toBe(1);
+    expect(await inbox(message.messageId)).toEqual([]);
+    expect(await receive()).toBeUndefined();
+    await reconcile(message.data.walletId, "100.00", 1);
+    proxy = listen(port);
+    await Bun.sleep(2100);
+    expect(await outageConsumer.runOnce()).toBe(1);
+    expect((await inbox(message.messageId))[0]!.result).toMatchObject({
+      status: "PROCESSED",
+    });
+    expect(await receive()).toBeUndefined();
+    expect(await receive(dlqUrl)).toBeUndefined();
+    await reconcile(message.data.walletId, "75.00", 2);
+    expect(
+      await orm.em.execute(
+        "select event_type from outbox_messages where aggregate_id = ? and event_type = 'WagerTransactionProcessed'",
+        [message.data.walletId],
+      ),
+    ).toHaveLength(2); // abertura e um único BET
+  } finally {
+    await outageOrm.close();
+    stopProxy();
+  }
+}, 20000);
+
 test("inbox constraints reject incomplete results and destructive down refuses deduplication history", async () => {
   await expect(
     orm.em.execute(

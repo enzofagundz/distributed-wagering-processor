@@ -539,3 +539,13 @@ Nest Boost MCP executou handshake e `module_graph`: WagerConsumer, WageringInbox
 Revisão de texto com humanizer-pt-br e no-ai-slop: registro técnico preservado; menções a "reversões pendentes" foram substituídas pelo comportamento entregue, com links para a evidência. Sem linguagem promocional, fecho genérico ou alteração de resultados históricos.
 
 Limites: sem nova interrupção real de PostgreSQL/SQS, FAILED auditável ou prazo máximo de drenagem; continuam nos tickets seguintes. O smoke exercita resolução agendada; expiração usa a integração com instantes explícitos.
+
+## Falhas transitórias do consumidor — 2026-10-24
+
+Ticket 21. Teste novo em `tests/integration/bet-sqs.test.ts`: "PostgreSQL outage keeps the message unacked, backs off and commits one debit after recovery". O consumidor usa um ORM ligado ao PostgreSQL de testes por um proxy TCP local. Derrubar o proxy recusa novas conexões e encerra as abertas, como numa queda do banco, sem parar o container compartilhado pelos outros testes.
+
+Sequência verificada: com o proxy fora do ar, a BET recebida não gera inbox nem débito, a mensagem fica invisível pelo backoff e a reconciliação continua em 100.00 BRL com um lançamento. Depois de religar o proxy e esperar 2,1 s, a reentrega é processada: inbox PROCESSED, nada na fila nem na DLQ, saldo 75.00 BRL com dois lançamentos e um único `WagerTransactionProcessed` da BET na outbox, além do evento da abertura.
+
+Com PostgreSQL e LocalStack locais, `bun test tests/integration/bet-sqs.test.ts` passou: 31 testes, 425 assertions, zero falhas (231.44s). O arquivo também cobre falha 40001 repetida até a DLQ e SIGKILL entre commit e ack. `bun run typecheck`, `bun run lint` e `bun run format` passaram antes do commit.
+
+Limites: o proxy simula a queda de rede entre consumidor e banco; o processo do PostgreSQL não foi parado. Indisponibilidade real do SQS não foi exercitada. Suíte completa não foi executada nesta entrega.
