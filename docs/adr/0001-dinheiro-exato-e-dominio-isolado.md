@@ -2,7 +2,7 @@
 
 ## Status
 
-Aceita e adotada. Migra a decisão D-001.
+Aceita e adotada.
 
 ## Contexto
 

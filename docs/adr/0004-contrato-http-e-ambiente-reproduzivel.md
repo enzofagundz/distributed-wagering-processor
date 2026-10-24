@@ -2,7 +2,7 @@
 
 ## Status
 
-Aceita e adotada. Migra D-004 e as fronteiras HTTP e operacionais registradas junto de D-002. A autenticação entrou depois, no [ADR-0008](0008-autenticacao-com-keycloak.md); as passagens abaixo sobre ausência de autenticação descrevem o incremento original.
+Aceita e adotada. Cobre o contrato HTTP e as fronteiras operacionais. A autenticação entrou depois, no [ADR-0008](0008-autenticacao-com-keycloak.md); as passagens abaixo sobre ausência de autenticação descrevem o incremento original.
 
 ## Contexto
 
@@ -28,7 +28,7 @@ Nota posterior: a imagem de produção manteve essas escolhas, e o `Dockerfile` 
 
 O domínio permanece reutilizável sem transportar decorators HTTP ou ORM. Reprodutibilidade depende das versões fixadas e do lockfile; evidência de compatibilidade Bun/NestJS vem de HTTP real já registrado, não da versão atual de exemplos upstream.
 
-No incremento original, o serviço não possuía autenticação e não era seguro para exposição pública. Apostas, suas transições, publisher, SQS, health e métricas não integram este incremento. Taxonomia transitória 503 não está implementada; escopo futuro fica na [cobertura do desafio](../../PROGRESS.md).
+No incremento original, o serviço não possuía autenticação e não era seguro para exposição pública. Apostas, suas transições, publisher, SQS, health e métricas não integram este incremento. A taxonomia transitória 503 não está implementada; o que continua aberto está em [limitações e lacunas](../../ARCHITECTURE.md#limitações-e-lacunas).
 
 Fontes: [DTO de abertura](../../src/wallets/open-wallet.dto.ts), [filtro](../../src/shared/domain-error.filter.ts), [startup](../../src/main.ts), [Compose](../../compose.yaml) e [evidências históricas](../verification.md).
 

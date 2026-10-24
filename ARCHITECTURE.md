@@ -1,6 +1,6 @@
 # Arquitetura
 
-Este documento descreve a implementação atual. Os requisitos estão no [enunciado](README_TECHNICAL_CHALLENGE.md), e a cobertura e as pendências, em [PROGRESS](PROGRESS.md). O [glossário](GLOSSARY.md) define os termos do domínio. Os ADRs vinculados abaixo registram decisões e alternativas.
+Este documento descreve a implementação atual e as garantias que ela sustenta. O [glossário](GLOSSARY.md) define os termos do domínio. Os ADRs vinculados registram decisões, alternativas descartadas e consequências.
 
 ## Mapa do código
 
@@ -57,7 +57,7 @@ A abertura zero é o único par sem lançamento porque zero não é movimento. C
 
 Um lançamento desbalanceado não passa pela factory. `WalletLedgerEntry.create` valida identidade, valor positivo, moeda, saldos não negativos e `balanceBefore ± money = balanceAfter`. `WalletMovement.of` acrescenta a conferência de que o lançamento pertence àquela wallet, termina no saldo dela e continua balanceado; um lançamento reidratado e inconsistente é recusado. Para produzir um par desbalanceado seria preciso contornar as duas fábricas.
 
-Alternativa descartada: devolver só a wallet e uma flag `walletChanged` para o serviço montar o lançamento. A flag devolve ao adaptador a decisão de escrever auditoria, e a invariante "saldo mudou, lançamento existe" volta a depender de disciplina. Com o par, a ausência do lançamento é a única representação de "não houve movimento" ([D-020](DECISIONS.md)).
+Alternativa descartada: devolver só a wallet e uma flag `walletChanged` para o serviço montar o lançamento. A flag devolve ao adaptador a decisão de escrever auditoria, e a invariante "saldo mudou, lançamento existe" volta a depender de disciplina. Com o par, a ausência do lançamento é a única representação de "não houve movimento".
 
 ## Abertura de wallet
 
@@ -175,11 +175,11 @@ Alternativa seria optimistic locking com retry limitado ou update condicionado. 
 
 ## Crédito de WIN e referências
 
-Decisão D-012, ticket 09 (§6.2–6.4, §7, §9 e §11): WIN reutiliza `WageringService.submit`, a chave global e o lock por wallet do BET. `Wallet.credit` devolve o par com o crédito exato, e a mesma transação SQL persiste WIN PROCESSED, saldo observado, o lançamento CREDIT, saldo/versão e eventos Processed/BalanceChanged. Qualquer falha antes do commit desfaz o conjunto. A resposta sai depois do commit; replay lê o resultado persistido, sem creditar novamente.
+WIN reutiliza `WageringService.submit`, a chave global e o lock por wallet do BET. `Wallet.credit` devolve o par com o crédito exato, e a mesma transação SQL persiste WIN PROCESSED, saldo observado, o lançamento CREDIT, saldo/versão e eventos Processed/BalanceChanged. Qualquer falha antes do commit desfaz o conjunto. A resposta sai depois do commit; replay lê o resultado persistido, sem creditar novamente.
 
 Mapeamentos monetários usam instância explícita de `StringType` com `columnType: 'numeric(30,2)'`. PostgreSQL continua responsável pela representação numérica exata; ORM compara strings canônicas. O `DecimalType` instalado em 6.6.8 converte para `number` em `compareValues`, e deixou de detectar um crédito de `0.01` sobre `9007199254740993.01` no teste HTTP. Declarar apenas `type: 'string'` ou passar a classe `StringType` não bastou: discovery voltou a inferir DecimalType pela coluna. A instância explícita evita essa substituição, sem tipo monetário customizado nem alteração SQL.
 
-Referência é opcional para WIN. Omissão significa prêmio independente, não referência faltante. Se `referenceExternalTransactionId` estiver presente, deve identificar BET no mesmo provider, player, wallet, moeda e rodada. A busca usa `(providerId, externalTransactionId)`: ID de outro provider não é resolvido por aproximação. WIN não é reversão; prêmio pode diferir do valor da BET e `gameId` não integra a regra de compatibilidade do §7, item 2.
+Referência é opcional para WIN. Omissão significa prêmio independente, não referência faltante. Se `referenceExternalTransactionId` estiver presente, deve identificar BET no mesmo provider, player, wallet, moeda e rodada. A busca usa `(providerId, externalTransactionId)`: ID de outro provider não é resolvido por aproximação. WIN não é reversão; prêmio pode diferir do valor da BET e `gameId` não integra a regra de compatibilidade.
 
 | Referência informada | Resultado | Efeito financeiro |
 |---|---|---|
@@ -192,7 +192,7 @@ Validação da wallet precede resolução da referência: player ou moeda incomp
 
 PENDING_REFERENCE mantém payload/hash, referência externa e saldo observado no aceite. Não tem `processedAt`; não gera ledger ou BalanceChanged. Replay e GET consultam o registro, sem tentar resolução, mesmo que a BET apareça depois. O worker resolve ou encerra a pendência conforme a [política de referências](#resolução-de-referências-pendentes). Não se deve tratar HTTP 202 como crédito concluído.
 
-Alternativa descartada: ignorar referência opcional informada e creditar antes de validá-la. Isso aceitaria prêmio associado a outra wallet ou rodada. Exigir referência para todo WIN também restringiria o contrato além do enunciado. Publicar diretamente no broker após o crédito deixaria uma janela de perda; o caso de uso grava a outbox e deixa a publicação para o worker separado.
+Alternativa descartada: ignorar referência opcional informada e creditar antes de validá-la. Isso aceitaria prêmio associado a outra wallet ou rodada. Exigir referência para todo WIN proibiria WIN sem referência, que o contrato aceita. Publicar diretamente no broker após o crédito deixaria uma janela de perda; o caso de uso grava a outbox e deixa a publicação para o worker separado.
 
 Migration `20261023000200` adiciona WIN, PENDING_REFERENCE, IDs de referência e checks de formato/estado. Uma FK composta liga o ID interno ao provider e ID externo resolvidos; rejeições por incompatibilidade preservam a referência para auditoria. O `down` restaura o contrato BET anterior somente quando não há WIN ou histórico de referência. Caso contrário, recusa a reversão sem apagar dados. Unicidades de chave/identidade externa, FKs financeiras e proteção append-only do ledger permanecem.
 
@@ -200,11 +200,11 @@ Referência consultada: [MikroORM 6.6 — transações e concorrência](https://
 
 ## LOSS sem movimento
 
-Decisão D-013, ticket 10 (§6.2–6.4, §7 e §11): LOSS reutiliza `WageringService.submit`, lock por wallet, hash e unicidades existentes. O lock fixa o saldo observado em relação às operações concorrentes. Não chama `Wallet.debit` ou `Wallet.credit`, não altera saldo, versão ou `updatedAt`, não cria ledger e não produz `WalletBalanceChanged`.
+LOSS reutiliza `WageringService.submit`, lock por wallet, hash e unicidades existentes. O lock fixa o saldo observado em relação às operações concorrentes. Não chama `Wallet.debit` ou `Wallet.credit`, não altera saldo, versão ou `updatedAt`, não cria ledger e não produz `WalletBalanceChanged`.
 
 LOSS nasce PENDING e passa diretamente a PROCESSED. Resultado, saldo observado, `processedAt` e `WagerTransactionProcessed` são confirmados na mesma transação SQL. Transições após PROCESSED lançam `INVALID_TRANSACTION_STATE`, erro de programação; replay ocorre antes de qualquer nova transição. Falha ao inserir outbox desfaz também a transação de aposta. Após commit, reenvio devolve resultado original, mesmo se outra operação já mudou saldo.
 
-Valor continua positivo e segue o contrato monetário comum, mas não exige saldo disponível. Referência não é aceita; LOSS registra resultado independente, sem buscar BET nem impor uma derrota por rodada. Essas restrições adicionais não constam do enunciado. Alternativa descartada: lançamento de valor zero ou novo débito, que alteraria auditoria e versão sem movimento financeiro.
+Valor continua positivo e segue o contrato monetário comum, mas não exige saldo disponível. Referência não é aceita; LOSS registra resultado independente, sem buscar BET nem impor uma derrota por rodada. Alternativa descartada: lançamento de valor zero ou novo débito, que alteraria auditoria e versão sem movimento financeiro.
 
 Migration `20261023000300` amplia checks existentes sem relaxar contratos BET/WIN: LOSS exige identidade externa, hash, saldo observado e metadados terminais, sem referência ou failure code. `down` restaura checks anteriores apenas sem histórico LOSS; caso contrário, recusa sem apagar dados. A correspondência saldo/ledger continua sob responsabilidade do caso de uso transacional, não de um trigger novo.
 
@@ -213,7 +213,7 @@ HTTP retorna 201, inclusive no replay; validação e conflitos seguem códigos e
 
 ## Devolução de BET com REFUND
 
-Decisão D-014, ticket 11 (§6.3, §7, §9 e §11): REFUND exige `referenceExternalTransactionId` e reutiliza resolução por provider/ID externo, lock da wallet, hash e replay existentes. O domínio aceita apenas BET PROCESSED do mesmo provider, player, wallet, moeda e rodada, com valor exatamente igual. `gameId` não integra a compatibilidade exigida no §7. Reversão parcial não é aceita.
+REFUND exige `referenceExternalTransactionId` e reutiliza resolução por provider/ID externo, lock da wallet, hash e replay existentes. O domínio aceita apenas BET PROCESSED do mesmo provider, player, wallet, moeda e rodada, com valor exatamente igual. `gameId` não integra a compatibilidade. Reversão parcial não é aceita.
 
 Referência incompatível resulta em REJECTED com `REFERENCE_MISMATCH`; BET terminal sem processamento, `REFERENCE_NOT_PROCESSED`. Referência inexistente ou ainda não terminal resulta em PENDING_REFERENCE. Pendência e rejeição persistem saldo observado e evento correspondente, sem ledger, crédito ou incremento de versão. A validação da própria wallet ainda precede a referência: player/moeda divergente da wallet retorna 400 antes de aceitar a transação. Busca não atravessa providers; ID existente apenas em outro provider é referência ausente.
 
@@ -229,11 +229,11 @@ Referências consultadas: [MikroORM 6.6 — transações e concorrência](https:
 
 ## Reversão de movimento com ROLLBACK
 
-Decisão D-015, ticket 12 (§6.3, §7, §9 e §11): ROLLBACK exige referência externa e aceita BET, WIN ou REFUND PROCESSED. O domínio valida provider, identidade externa, player, wallet, moeda, rodada e valor integral. Jogo pode diferir. OPENING, LOSS e ROLLBACK são inelegíveis e resultam em `REFERENCE_MISMATCH`; referência terminal sem processamento resulta em `REFERENCE_NOT_PROCESSED`. Referência ausente ou não terminal fica PENDING_REFERENCE, sem movimento.
+ROLLBACK exige referência externa e aceita BET, WIN ou REFUND PROCESSED. O domínio valida provider, identidade externa, player, wallet, moeda, rodada e valor integral. Jogo pode diferir. OPENING, LOSS e ROLLBACK são inelegíveis e resultam em `REFERENCE_MISMATCH`; referência terminal sem processamento resulta em `REFERENCE_NOT_PROCESSED`. Referência ausente ou não terminal fica PENDING_REFERENCE, sem movimento.
 
 `WagerTransaction.ledgerDirectionFor` define a direção: BET é revertida com CREDIT; WIN e REFUND, com DEBIT. A verificação de saldo ocorre sob lock da wallet antes de aplicar o débito, e `Wallet.credit` ou `Wallet.debit` devolve o par com o lançamento na direção escolhida. Insuficiência gera REJECTED com `INSUFFICIENT_REVERSAL_FUNDS`, distinto de `INSUFFICIENT_FUNDS` da BET. Rejeição persiste saldo observado e evento Rejected, sem ledger ou incremento de versão.
 
-Após resolver a referência, o serviço procura reversão PROCESSED do mesmo tipo sob o lock existente. Segunda tentativa ROLLBACK recebe `REFERENCE_ALREADY_ROLLED_BACK`. Migration `20261023000500` acrescenta `wager_transactions_rollback_reference_unique`, índice único parcial sobre a referência somente para ROLLBACK PROCESSED. REFUND mantém seu índice separado. As duas operações podem reverter a mesma BET uma vez cada: proibição cruzada ampliaria §7.4 sem base no enunciado. Tentativas rejeitadas ou pendentes não reservam sucesso.
+Após resolver a referência, o serviço procura reversão PROCESSED do mesmo tipo sob o lock existente. Segunda tentativa ROLLBACK recebe `REFERENCE_ALREADY_ROLLED_BACK`. Migration `20261023000500` acrescenta `wager_transactions_rollback_reference_unique`, índice único parcial sobre a referência somente para ROLLBACK PROCESSED. REFUND mantém seu índice separado. As duas operações podem reverter a mesma BET uma vez cada. Proibir o cruzamento acrescentaria uma regra que o modelo não tem. Tentativas rejeitadas ou pendentes não reservam sucesso.
 
 Saldo/versão, ROLLBACK, ledger invertido e eventos Processed/BalanceChanged confirmam na mesma transação SQL. Falha de outbox antes do commit desfaz o conjunto, inclusive a reserva no índice; nova tentativa continua possível. Replay lê status, código e saldo originais, mesmo após reinício, sem reaplicar movimento ou resolver pendência. A resolução agendada reutiliza as mesmas regras na seção abaixo.
 
@@ -243,7 +243,7 @@ Alternativas descartadas: unicidade de todas as tentativas impediria correção 
 
 ## Resolução de referências pendentes
 
-Decisão D-016, tickets 13 e 14 (§6.3, §7.1 e §13): `WageringService.settle` concentra a aplicação financeira usada por `submit` e pela resolução. A resolução reidrata o registro `PENDING_REFERENCE` em vez de criar outra transação e reutiliza validação da referência, exclusão de reversões duplicadas e persistência financeira.
+`WageringService.settle` concentra a aplicação financeira usada por `submit` e pela resolução. A resolução reidrata o registro `PENDING_REFERENCE` em vez de criar outra transação e reutiliza validação da referência, exclusão de reversões duplicadas e persistência financeira.
 
 `PendingReferenceWorker` inicia em `src/main.ts` e para em `SIGTERM`/`SIGINT` antes de fechar o ORM. Seu `runOnce` chama `PendingReferenceBatchRunner.run`, que lista apenas pendências com `reference_next_attempt_at <= at`, por `id`, em páginas de `PENDING_REFERENCE_PAGE_SIZE`. O runner chama `WageringService.resolvePendingReference` por candidato e contabiliza processados, rejeitados, pendentes, pulados e falhas; uma falha não interrompe os candidatos ou páginas seguintes. `PENDING_REFERENCE_INTERVAL_MS` controla o agendamento, não substitui o backoff por operação. Não há rota HTTP para disparar a varredura. A resolução individual, `batch.run` e `worker.runOnce` aceitam `Date` opcional; testes fornecem tempo explícito, sem sleeps para simular o backoff.
 
@@ -329,7 +329,7 @@ Referência: [NestJS controllers](https://docs.nestjs.com/controllers), consulta
 
 ## Reconciliação
 
-Decisão adotada no ticket 04 (§9): um único SELECT parametrizado lê wallet e soma assinada de todo ledger via agregação lateral. CREDIT soma, DEBIT subtrai; histórico vazio vale `0.00`. `numeric` preserva escala e precisão; soma não é limitada novamente a numeric(30,2). Strings monetárias nunca passam por `number`. `difference = storedBalance - calculatedBalance`, podendo ser negativa; `checkedEntries` conta lançamentos, não transações.
+A reconciliação usa um único SELECT parametrizado, que lê wallet e soma assinada de todo ledger via agregação lateral. CREDIT soma, DEBIT subtrai; histórico vazio vale `0.00`. `numeric` preserva escala e precisão; soma não é limitada novamente a numeric(30,2). Strings monetárias nunca passam por `number`. `difference = storedBalance - calculatedBalance`, podendo ser negativa; `checkedEntries` conta lançamentos, não transações.
 
 O snapshot de comando em READ COMMITTED vê saldo e ledger no mesmo instante, sem bloquear escritor. Uma movimentação atômica concorrente aparece inteira ou não aparece. Alternativa: duas leituras em REPEATABLE READ; descartada por adicionar transação sem benefício para uma única consulta. Duas leituras em READ COMMITTED seriam incorretas. Resultado é diagnóstico daquele instante, não reserva nem garantia sobre escrita posterior.
 
@@ -434,7 +434,7 @@ Evidências: [verificação](docs/verification.md#toolchain-em-container--2026-1
 
 ## Decisões
 
-[DECISIONS](DECISIONS.md) relaciona as decisões aos requisitos. As decisões D-001 a D-005 estão registradas nos ADRs 0001 a 0005, com os mesmos status e limites. O [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) registra a organização modular adotada. Os ADRs reúnem justificativas, alternativas e consequências.
+As oito decisões estão nos ADRs, de [0001](docs/adr/0001-dinheiro-exato-e-dominio-isolado.md) a [0008](docs/adr/0008-autenticacao-com-keycloak.md). Cada registro traz contexto, alternativa descartada e consequência. Os ADRs 0001 a 0005 cobrem dinheiro exato e domínio isolado, persistência e concorrência da abertura, auditoria, contrato HTTP com ambiente reproduzível e consulta do ledger. Os ADRs [0006](docs/adr/0006-organizacao-modular-nest.md) a [0008](docs/adr/0008-autenticacao-com-keycloak.md) cobrem a organização modular, a inbox atômica de BET e a autenticação com Keycloak.
 
 ## Limitações e lacunas
 

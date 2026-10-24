@@ -2,7 +2,7 @@
 
 ## Status
 
-Aceita e adotada. Migra D-002: persistência e concorrência da abertura entregues; ticket 05 adotou também [lock pessimista por wallet para BET](../../ARCHITECTURE.md#processamento-de-bet). Idempotência, inbox e publicação da outbox foram entregues nos tickets 06–17 e 18–20; `FAILED` e a outbox de domínio fecharam nos tickets 01 e 02 de `fechar-lacunas-obrigatorias`. As seções abaixo registram o escopo original da abertura; comportamento atual fica na arquitetura.
+Aceita e adotada. Cobre a persistência e a concorrência da abertura; depois dela entraram o [lock pessimista por wallet para BET](../../ARCHITECTURE.md#processamento-de-bet), a idempotência, a inbox, a publicação da outbox, `FAILED` e a outbox de domínio. As seções abaixo registram o escopo original da abertura; comportamento atual fica na arquitetura.
 
 ## Contexto
 
@@ -24,7 +24,7 @@ Migrations são explícitas, versionadas e reversíveis; startup não migra auto
 
 ## Consequências
 
-Abertura positiva preserva atomicidade entre saldo, auditoria e eventos persistidos, mas não entrega processamento de apostas, locks de movimentação, idempotência, inbox, consumer ou publisher. `published_at` permanece nulo; evento persistido não é evento publicado. Pendências e próximos incrementos estão na [cobertura do desafio](../../PROGRESS.md).
+Abertura positiva preserva atomicidade entre saldo, auditoria e eventos persistidos, mas não entrega processamento de apostas, locks de movimentação, idempotência, inbox, consumer ou publisher. `published_at` permanece nulo; evento persistido não é evento publicado. Os incrementos seguintes estão nos ADRs posteriores; o que continua aberto está em [limitações e lacunas](../../ARCHITECTURE.md#limitações-e-lacunas).
 
 A garantia concorrente atual limita-se à criação única por player/moeda; não comprova proteção contra lost update em movimentações ou execução financeira em múltiplas instâncias. A auditoria e seus limites estão no [ADR-0003](0003-auditoria-da-abertura.md).
 

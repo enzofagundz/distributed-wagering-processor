@@ -2,7 +2,7 @@
 
 ## Status
 
-Aceita. Ticket 18, seções 10 e 11 do enunciado.
+Aceita. Cobre o envelope aceito, a deduplicação persistente e o ack depois do commit.
 
 ## Contexto
 

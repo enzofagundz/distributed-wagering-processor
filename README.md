@@ -1,17 +1,17 @@
 # Distributed Wagering Processor
 
-Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECHNICAL_CHALLENGE.md), com Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL.
+Serviço financeiro de apostas com Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL.
 
 A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET, WIN, LOSS, REFUND e ROLLBACK por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva e operações financeiras persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL. LOSS confirma resultado e evento sem movimentar saldo. Um worker agendado resolve WIN, REFUND e ROLLBACK que chegaram antes da referência.
 
-O publisher envia eventos confirmados da outbox ao SQS no LocalStack. BET, WIN, LOSS, REFUND e ROLLBACK também entram por SQS, com inbox persistente e ack após commit. `GET /health/live` e `GET /health/ready` ficam abertos; as demais rotas HTTP exigem token JWT emitido pelo Keycloak do Compose. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. Erro permanente de infraestrutura na tentativa de resolução encerra a transação em `FAILED`, com código estável, `processedAt` e o saldo observado no aceite, sem ledger nem novo evento. A API escreve logs JSON no stdout, com `correlationId` e os identificadores de cada etapa. `GET /metrics` expõe métricas no formato Prometheus. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+O publisher envia eventos confirmados da outbox ao SQS no LocalStack. BET, WIN, LOSS, REFUND e ROLLBACK também entram por SQS, com inbox persistente e ack após commit. `GET /health/live` e `GET /health/ready` ficam abertos; as demais rotas HTTP exigem token JWT emitido pelo Keycloak do Compose. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. Erro permanente de infraestrutura na tentativa de resolução encerra a transação em `FAILED`, com código estável, `processedAt` e o saldo observado no aceite, sem ledger nem novo evento. A API escreve logs JSON no stdout, com `correlationId` e os identificadores de cada etapa. `GET /metrics` expõe métricas no formato Prometheus. O que fica fora da entrega está em [limitações e lacunas](ARCHITECTURE.md#limitações-e-lacunas).
 
 ## Roteiro para leitura e avaliação
 
 1. Execute API e migrations abaixo.
 2. Importe [collection e environment Postman](docs/postman/README.md); percorra abertura, ledger, BET, replay, consultas e reconciliação. O guia inclui disputa manual entre três instâncias. Não exige conta ou publicação em workspace.
 3. Leia [arquitetura e garantias atuais](ARCHITECTURE.md), [glossário](GLOSSARY.md) e decisões vinculadas.
-4. Consulte a [prova final dos oito cenários](docs/verification.md#prova-final--2026-10-24), as [evidências executadas](docs/verification.md) e [pendências por requisito](PROGRESS.md). Resultados históricos não substituem execução local.
+4. Consulte a [prova final dos oito cenários](docs/verification.md#prova-final--2026-10-24) e as [evidências executadas](docs/verification.md). Resultados históricos não substituem execução local.
 
 Wallets ficam em `src/wallets/`; submissão de BET, WIN, LOSS, REFUND e ROLLBACK, em `src/wagering/`. Cada funcionalidade tem controller, DTO, serviço e módulo. `src/app.module.ts` compõe módulos e registra filtro global compartilhado; `src/create-application.ts` recebe o ORM inicializado pelo chamador. Domínio e mapeamentos permanecem separados. Justificativa e injeção de dependências: [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) e [composição na arquitetura](ARCHITECTURE.md#composição-e-injeção).
 
@@ -309,7 +309,7 @@ curl -i http://127.0.0.1:3000/wagering/transactions \
 
 Retorna 201 com saldo `100.00 BRL` e um CREDIT. ROLLBACK de WIN ou REFUND gera DEBIT do valor integral. Referência obrigatória deve estar PROCESSED, com mesmo provider, player, wallet, moeda e rodada. LOSS, OPENING e ROLLBACK não são referências elegíveis. Códigos de incompatibilidade e pendência seguem o contrato de REFUND.
 
-Débito sem saldo retorna 422 `INSUFFICIENT_REVERSAL_FUNDS`, distinto de BET sem saldo. Segunda reversão ROLLBACK da mesma referência retorna 422 `REFERENCE_ALREADY_ROLLED_BACK`. Ambas ficam auditadas, sem movimento. REFUND e ROLLBACK da mesma BET podem coexistir: unicidade é por tipo, conforme §7.4. Replay preserva o resultado terminal depois da resolução; enquanto a pendência não for resolvida, retorna 202 com o saldo do aceite.
+Débito sem saldo retorna 422 `INSUFFICIENT_REVERSAL_FUNDS`, distinto de BET sem saldo. Segunda reversão ROLLBACK da mesma referência retorna 422 `REFERENCE_ALREADY_ROLLED_BACK`. Ambas ficam auditadas, sem movimento. REFUND e ROLLBACK da mesma BET podem coexistir: unicidade é por tipo. Replay preserva o resultado terminal depois da resolução; enquanto a pendência não for resolvida, retorna 202 com o saldo do aceite.
 
 Aplique `bun run migration:up` antes do startup. Testes focais: `bun test tests/domain/rollback.test.ts tests/integration/rollback.test.ts tests/integration/rollback-schema.test.ts`. Decisão e limites: [ROLLBACK](ARCHITECTURE.md#reversão-de-movimento-com-rollback); resultados executados: [verificação](docs/verification.md#rollback-de-movimento--2026-10-23).
 

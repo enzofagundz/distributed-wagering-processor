@@ -2,11 +2,11 @@
 
 ## Status
 
-Aceita. Ticket 27, seção 2 do enunciado.
+Aceita. Cobre a autenticação HTTP com IdP externo.
 
 ## Contexto
 
-O enunciado aceita omitir autenticação, mas, se implementada, exige IdP externo, não autenticação artesanal. Health fica aberto; SQS é canal interno confiável, e a identidade do provedor na mensagem continua sujeita às validações de domínio. Os chamadores HTTP são provedores, sistemas sem interação humana.
+A autenticação HTTP usa IdP externo; a aplicação não tem tabela de usuários nem hash de senha. Health fica aberto; SQS é canal interno confiável, e a identidade do provedor na mensagem continua sujeita às validações de domínio. Os chamadores HTTP são provedores, sistemas sem interação humana.
 
 ## Decisão
 

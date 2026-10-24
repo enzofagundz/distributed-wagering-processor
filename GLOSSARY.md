@@ -1,6 +1,6 @@
 # Glossário
 
-Este glossário descreve o comportamento atual. A [cobertura do desafio](PROGRESS.md) lista os requisitos ainda não entregues, que não fazem parte das garantias descritas aqui.
+Este glossário descreve o comportamento atual. O que ainda não foi implementado aparece em [limitações e lacunas](ARCHITECTURE.md#limitações-e-lacunas) e não faz parte das garantias descritas aqui.
 
 ## Money
 

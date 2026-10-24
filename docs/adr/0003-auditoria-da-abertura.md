@@ -2,7 +2,7 @@
 
 ## Status
 
-Aceita e adotada. Migra D-003. O publisher e a política de retry foram entregues nos tickets 15–17; a decisão abaixo registra o escopo da abertura naquela data.
+Aceita e adotada. O publisher e a política de retry entraram depois; a decisão abaixo registra o escopo da abertura naquela data.
 
 ## Contexto
 
@@ -14,7 +14,7 @@ A abertura com saldo positivo precisa de trilha financeira consistente e imutáv
 
 PostgreSQL repete a aritmética em CHECKs. FKs compostas mantêm wallet/player/moeda e transação/wallet/moeda/valor consistentes; UNIQUE limita uma OPENING por wallet e um lançamento por transação/wallet. Trigger rejeita UPDATE, DELETE e TRUNCATE do ledger; não há cascatas de exclusão.
 
-Abertura e auditoria usam a mesma transação de aplicação, conforme [ADR-0002](0002-persistencia-e-concorrencia-da-abertura.md). O schema de transações aceita somente `OPENING`/`PROCESSED`, sem simular estados futuros ou retries. A outbox registra envelope e `published_at` nulo; não existe publisher nem política de retry implementada. Escopo pendente: [cobertura do desafio](../../PROGRESS.md).
+Abertura e auditoria usam a mesma transação de aplicação, conforme [ADR-0002](0002-persistencia-e-concorrencia-da-abertura.md). O schema de transações aceita somente `OPENING`/`PROCESSED`, sem simular estados futuros ou retries. A outbox registra envelope e `published_at` nulo; não existe publisher nem política de retry implementada. O que continua aberto está em [limitações e lacunas](../../ARCHITECTURE.md#limitações-e-lacunas).
 
 ## Consequências
 

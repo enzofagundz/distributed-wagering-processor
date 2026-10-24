@@ -211,7 +211,7 @@ Verificações executadas:
 - `bun test tests/integration/loss-http.test.ts`: 4 testes, 75 assertions, zero falhas. Resultado/evento, ausência de ledger/BalanceChanged, saldo/versão/updatedAt estáveis, replay após mudança de saldo e reinício de aplicação/pool, dez duplicatas concorrentes no primeiro aceite e no replay, conflito de payload, rollback induzido na outbox, wallet zerada e checks SQL de hash/estado/referência.
 - `bun run typecheck && bun test`: aprovados; suíte completa executada uma vez ao final, 144 testes em 14 arquivos, 1218 assertions, zero falhas.
 
-Smoke independente: `bun .scratch/loss-smoke.ts`, harness temporário, iniciou `bun src/main.ts` com porta dinâmica em banco exclusivo. Aplicou todas as migrations e executou down/up da migration LOSS sem histórico. Abriu wallet com `100.00 BRL`; LOSS de `25.00` retornou PROCESSED com saldo `100.00`, versão 1, nenhum ledger próprio e somente evento Processed. Após BET de `25.00` e reinício do processo, replay de LOSS manteve saldo original `100.00`; payload divergente retornou 409. Reconciliação final: armazenado e reconstruído `75.00 BRL`, diferença `0.00`, dois lançamentos. Down com histórico LOSS foi recusado e registro permaneceu PROCESSED. Ambos os processos encerraram por SIGTERM com saída 0; somente banco temporário foi removido.
+Smoke independente: um harness temporário iniciou `bun src/main.ts` com porta dinâmica em banco exclusivo. Aplicou todas as migrations e executou down/up da migration LOSS sem histórico. Abriu wallet com `100.00 BRL`; LOSS de `25.00` retornou PROCESSED com saldo `100.00`, versão 1, nenhum ledger próprio e somente evento Processed. Após BET de `25.00` e reinício do processo, replay de LOSS manteve saldo original `100.00`; payload divergente retornou 409. Reconciliação final: armazenado e reconstruído `75.00 BRL`, diferença `0.00`, dois lançamentos. Down com histórico LOSS foi recusado e registro permaneceu PROCESSED. Ambos os processos encerraram por SIGTERM com saída 0; somente banco temporário foi removido.
 
 Nest Boost confirmou POST `/wagering/transactions`, sem `evaluate`. Context7 e [documentação oficial MikroORM 6.6](https://mikro-orm.io/docs/6.6/transactions) consultados para transação, flush e rollback. Busca semântica falhou por indisponibilidade do provedor; busca textual substituiu. LSP sem servidor disponível.
 
@@ -320,7 +320,7 @@ Verificação final: `bun run format && bun run lint && bun run typecheck && bun
 
 O teste financeiro também induziu falha na inserção de `WagerTransactionRejected`: estado, tentativa final e evento foram desfeitos juntos. Dois pools independentes disputaram a tentativa seguinte e retornaram `REJECTED` e `SKIPPED`, com um único evento terminal. Uma BET recebida depois da expiração não reabriu a reversão. Outro fluxo processou uma referência válida na décima tentativa e rejeitou o ROLLBACK de um WIN que havia expirado.
 
-Smoke independente: `bun .scratch/reference-expiration-smoke.ts`, harness temporário removido após execução. Iniciou `bun src/main.ts` com porta dinâmica e intervalo de 20 ms. REFUND ausente retornou 202; a primeira tentativa ficou persistida e o processo encerrou por SIGTERM com código 0. Novo processo leu a pendência e o worker agendado chegou a dez tentativas, com `REJECTED` e `REFERENCE_NOT_FOUND`. Para não esperar o backoff, o harness antecipou somente `reference_next_attempt_at` por SQL no banco de testes; contadores e transições foram escritos pelo worker real. Esse smoke não mede os intervalos reais.
+Smoke independente: harness temporário, removido após a execução. Iniciou `bun src/main.ts` com porta dinâmica e intervalo de 20 ms. REFUND ausente retornou 202; a primeira tentativa ficou persistida e o processo encerrou por SIGTERM com código 0. Novo processo leu a pendência e o worker agendado chegou a dez tentativas, com `REJECTED` e `REFERENCE_NOT_FOUND`. Para não esperar o backoff, o harness antecipou somente `reference_next_attempt_at` por SQL no banco de testes; contadores e transições foram escritos pelo worker real. Esse smoke não mede os intervalos reais.
 
 Após receber a BET tardia, replay do REFUND retornou 422 com o saldo original da rejeição, `100.00 BRL`, e `idempotentReplay: true`. A transação tinha somente eventos `PendingReference` e `Rejected`, sem ledger próprio. Reconciliação final: `75.00 BRL`, dois lançamentos, consistente. Wallet `edab7fa0-a485-478e-a8b7-993dea35acc4`; REFUND `508a67d0-3515-4cfb-91f5-1b53e20a0e6d`. Processos próprios encerrados; containers e auditoria preservados. A primeira execução do harness falhou ao tentar consumir novamente stdout já usado; o leitor foi corrigido antes do smoke concluído.
 
@@ -349,7 +349,7 @@ Seams confirmados: BET HTTP → evento recebido no SQS real; execução do publi
 
 Verificação final: `bun run format`, `bun run lint`, `bun run format:check`, `bun run typecheck` e `bun test` aprovados. Suíte completa executada uma vez: 246 testes em 23 arquivos, 1909 assertions, zero falhas. Typecheck identificou uma anotação ausente no payload do último teste; a anotação foi corrigida e typecheck passou, sem mudar comportamento. `podman compose config --quiet` e `podman compose up -d --wait localstack` passaram. O health check confirmou a fila criada pelo hook executável. A primeira configuração com container init separado retornou erro do `--wait` após saída 0; foi substituída pelo hook antes da verificação final.
 
-Smoke independente: `bun .scratch/outbox-smoke.ts` iniciou `bun src/main.ts` com banco descartável e fila exclusivos. Abriu wallet de `100.00 BRL`, confirmou BET de `25.00`, recebeu quatro eventos reais pelo worker agendado e verificou as quatro marcações no banco. Replay retornou `idempotentReplay: true`; saldo materializado e reconstruído ficaram em `75.00 BRL`, diferença zero, dois lançamentos. SIGTERM encerrou com código 0. Wallet `c65aca78-f8e1-4c93-a5d2-2cea72cb0010`, BET `e659d2c1-2df6-4da0-bb46-04901c9f846f`, evento de saldo `cfeaacce-3896-4e30-923d-e80babfdf459`. Banco e fila temporários foram removidos.
+Smoke independente: um harness temporário iniciou `bun src/main.ts` com banco descartável e fila exclusivos. Abriu wallet de `100.00 BRL`, confirmou BET de `25.00`, recebeu quatro eventos reais pelo worker agendado e verificou as quatro marcações no banco. Replay retornou `idempotentReplay: true`; saldo materializado e reconstruído ficaram em `75.00 BRL`, diferença zero, dois lançamentos. SIGTERM encerrou com código 0. Wallet `c65aca78-f8e1-4c93-a5d2-2cea72cb0010`, BET `e659d2c1-2df6-4da0-bb46-04901c9f846f`, evento de saldo `cfeaacce-3896-4e30-923d-e80babfdf459`. Banco e fila temporários foram removidos.
 
 A primeira tentativa desse smoke usou search_path para isolar o schema, mas o bootstrap acessou public: recebeu eventos antigos e a asserção de correlação falhou. O harness passou a usar banco exclusivo antes do resultado acima. Houve publicação de pendências antigas no banco de testes nessa tentativa; nenhum dado de desenvolvimento foi usado. Os testes permanentes configuram schema explicitamente e não compartilham a fila da aplicação.
 
@@ -374,7 +374,7 @@ O teste focal foi alterado antes da implementação: falhou porque o publisher e
 - segunda falha com atraso de quatro segundos e teto de 300 segundos na nona falha; valores negativos de contagem e agenda infinita rejeitados pelo banco;
 - migration down/up preserva envelopes e marcações; o down remove a agenda, como documentado na arquitetura.
 
-Smoke independente executado com `bun .scratch/ticket16-smoke.ts`: banco `_test` e fila exclusivos, migrations completas e processo real `bun src/main.ts`. Com endpoint SQS indisponível, HTTP confirmou abertura de `100.00 BRL` e BET de `25.00`; as quatro linhas receberam uma tentativa e agenda. A API recebeu SIGKILL e reiniciou com endpoint correto. O worker agendado enviou quatro eventos com as mesmas identidades e marcou as quatro linhas. Reconciliação: saldo materializado e calculado `75.00 BRL`, diferença `0.00`, dois lançamentos. Wallet `bc470fae-4a31-4eea-bf54-68f624a909b3`; eventos `c5febf5a-1580-4a8f-bdbe-47b777707af7`, `cf2f935c-6c4e-49c6-9716-e9a073692759`, `075378f7-5904-48a2-a18e-ab0c66307747` e `2750b000-154f-4b3f-aadf-b73be1536935`. Processo encerrado, banco e fila temporários removidos. O broker compartilhado não foi parado: a indisponibilidade foi provocada pelo endpoint sem servidor e a interrupção real foi do publisher/API.
+Smoke independente com harness temporário: banco `_test` e fila exclusivos, migrations completas e processo real `bun src/main.ts`. Com endpoint SQS indisponível, HTTP confirmou abertura de `100.00 BRL` e BET de `25.00`; as quatro linhas receberam uma tentativa e agenda. A API recebeu SIGKILL e reiniciou com endpoint correto. O worker agendado enviou quatro eventos com as mesmas identidades e marcou as quatro linhas. Reconciliação: saldo materializado e calculado `75.00 BRL`, diferença `0.00`, dois lançamentos. Wallet `bc470fae-4a31-4eea-bf54-68f624a909b3`; eventos `c5febf5a-1580-4a8f-bdbe-47b777707af7`, `cf2f935c-6c4e-49c6-9716-e9a073692759`, `075378f7-5904-48a2-a18e-ab0c66307747` e `2750b000-154f-4b3f-aadf-b73be1536935`. Processo encerrado, banco e fila temporários removidos. O broker compartilhado não foi parado: a indisponibilidade foi provocada pelo endpoint sem servidor e a interrupção real foi do publisher/API.
 
 Verificação final: `bun run format`, `bun run lint`, `bun run typecheck` e suíte completa `bun test`, executada uma vez ao final: 247 testes em 23 arquivos, 1.952 assertions, zero falhas. Formatação não alterou código alheio ao ticket. Revisão code-review com dois agentes, padrões e spec contra o baseline incluindo alterações locais e arquivos novos: zero achados em cada eixo.
 
@@ -400,7 +400,7 @@ Executados:
 - `bun run typecheck` e `TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test bun test tests/integration/outbox.test.ts`: sete testes, 105 assertions, zero falhas.
 - `bun run format`, `bun run lint` e `bun run typecheck`: aprovados; somente o teste novo precisou de formatação.
 - Suíte completa `bun test`, com a mesma TEST_DATABASE_URL, executada uma vez ao final: 248 testes em 23 arquivos, 1.974 assertions, zero falhas.
-- Smoke independente `bun .scratch/ticket16-smoke.ts`, com a mesma TEST_DATABASE_URL: bootstrap real da API, falha de envio, SIGKILL e reinício; quatro envelopes recuperados e quatro marcações. Wallet `b16da1fe-ec69-4e12-abbc-d74e8e6fc886`, saldo materializado/calculado `75.00 BRL`, diferença `0.00`, dois lançamentos. Banco e fila exclusivos removidos. O smoke reaproveita o harness local do ticket 16; a prova de concorrência reproduzível está no teste versionado.
+- Smoke independente com harness temporário e a mesma TEST_DATABASE_URL: bootstrap real da API, falha de envio, SIGKILL e reinício; quatro envelopes recuperados e quatro marcações. Wallet `b16da1fe-ec69-4e12-abbc-d74e8e6fc886`, saldo materializado/calculado `75.00 BRL`, diferença `0.00`, dois lançamentos. Banco e fila exclusivos removidos. O smoke reaproveita o harness local do ticket 16; a prova de concorrência reproduzível está no teste versionado.
 - Nest Boost MCP por stdio: handshake, `application_info` e `module_graph`, com OutboxModule/OutboxPublisher entre oito módulos. Sem evaluate.
 
 Context7 consultou documentação oficial do PostgreSQL 17 sobre SKIP LOCKED e duração dos locks. Mantivemos lock transacional em vez de adicionar lease e renovação. Registro técnico para desenvolvedor e avaliador, revisado com humanizer-pt-br e no-ai-slop: "concorrência entre publishers e crash após envio continuam no ticket 17" foi substituído pelo cenário executado; a promessa ficou limitada à falha provocada. Não houve promoção, atribuição vaga ou conclusão genérica. Identidades, comandos e resultados foram preservados.
@@ -467,7 +467,7 @@ TEST_DATABASE_URL=postgresql://wagering:wagering@127.0.0.1:55433/wagering_test \
   bash -c 'for round in {1..10}; do bun test || exit 1; done'
 ```
 
-Preview do Nest Boost exercitado em processo novo por `rtk proxy bun .scratch/ticket16-boost.ts`: handshake MCP, listagem das ferramentas, `application_info` e `module_graph`; cliente encerrado ao final. O grafo mostrou oito módulos, três controllers, doze providers e oito rotas; `WageringModule` incluiu `WageringInbox`, `WageringQueries`, `WagerConsumer`, `WageringService`, `PendingReferenceBatchRunner` e `PendingReferenceWorker`. A primeira tentativa no sandbox teve a conexão fechada; a repetição com acesso ao ambiente local passou. Nenhum `evaluate` ou ferramenta de banco foi chamado. O resultado confirma a composição de preview; a execução bem-sucedida não usou uma URL de banco deliberadamente inalcançável e não comprova isolamento dessa dependência.
+Preview do Nest Boost exercitado em processo novo por um cliente MCP local: handshake MCP, listagem das ferramentas, `application_info` e `module_graph`; cliente encerrado ao final. O grafo mostrou oito módulos, três controllers, doze providers e oito rotas; `WageringModule` incluiu `WageringInbox`, `WageringQueries`, `WagerConsumer`, `WageringService`, `PendingReferenceBatchRunner` e `PendingReferenceWorker`. A primeira tentativa no sandbox teve a conexão fechada; a repetição com acesso ao ambiente local passou. Nenhum `evaluate` ou ferramenta de banco foi chamado. O resultado confirma a composição de preview; a execução bem-sucedida não usou uma URL de banco deliberadamente inalcançável e não comprova isolamento dessa dependência.
 
 | Rodada | Testes aprovados | Falhas | Assertions | Arquivos | Duração |
 |---|---:|---:|---:|---:|---|
@@ -530,7 +530,7 @@ Os cenários dos dois tipos verificam:
 - Falha SQLSTATE 40001 induzida na outbox desfaz inbox, transação e pendência. Redelivery real após visibilidade confirma uma vez.
 - SIGKILL entre commit e ack para REFUND e ROLLBACK pendentes, com espera real de 30 segundos e redelivery em outro processo, preserva o aceite e não cria movimento repetido.
 
-Smoke separado executado com `bun .scratch/ticket20-smoke.ts`, harness temporário em banco e filas exclusivos. Iniciou `src/main.ts`, enviou cada reversão antes da referência, observou pendência, encerrou e reiniciou o processo e enviou BET ou WIN. O worker agendado resolveu sem chamada manual; publisher marcou sete eventos por wallet. Reconciliação dos dois fluxos: saldo armazenado e calculado 100.00 BRL, diferença 0.00, três lançamentos. Recursos temporários foram removidos em finally. Para repetir o fluxo manualmente, use o envelope e comandos do [README](../README.md#enviar-bet-pelo-sqs), com referência enviada após reiniciar a API.
+Smoke separado com harness temporário, em banco e filas exclusivos. Iniciou `src/main.ts`, enviou cada reversão antes da referência, observou pendência, encerrou e reiniciou o processo e enviou BET ou WIN. O worker agendado resolveu sem chamada manual; publisher marcou sete eventos por wallet. Reconciliação dos dois fluxos: saldo armazenado e calculado 100.00 BRL, diferença 0.00, três lançamentos. Recursos temporários foram removidos em finally. Para repetir o fluxo manualmente, use o envelope e comandos do [README](../README.md#enviar-bet-pelo-sqs), com referência enviada após reiniciar a API.
 
 Validação final: `bun test` passou com 281 testes, zero falhas e 2427 assertions em 25 arquivos (214.70s). Incluiu os três cenários SIGKILL de BET/REFUND/ROLLBACK e os prazos reais de retry/DLQ. `bun run lint`, `bun run format`, `bun run format:check` e `bun run typecheck` passaram antes do commit. As revisões Standards e Spec não encontraram problema funcional; uma afirmação ampla demais sobre falhas reais de dependência foi corrigida na cobertura local.
 
@@ -556,7 +556,7 @@ Ticket 22. O consumidor passou a enviar à DLQ os atributos `failureCode`, `fail
 
 Integração em `tests/integration/bet-sqs.test.ts`, com PostgreSQL e LocalStack locais: `bun test tests/integration/bet-sqs.test.ts` passou com 31 testes, 496 assertions e zero falhas (234.99s). Os casos de envelope inválido e conflito de messageId conferem `failureKind=PERMANENT`, `sourceMessageId` e, no conflito, `failureCode=MESSAGE_ID_CONFLICT`. A falha 40001 repetida chega à DLQ com `TEMPORARY_UNAVAILABLE`, `RETRIES_EXHAUSTED`, `receiveCount=5` e o messageId do envelope. Saldo insuficiente grava REJECTED, um `WagerTransactionRejected` e deixa a DLQ vazia.
 
-Smoke com `bun run start` e as filas do Compose, script temporário `.scratch/smoke/ticket22.ts`: wallet com 10.00 BRL recebeu uma BET de 50.00 e um envelope com campo extra. A DLQ recebeu só o envelope inválido, com `INVALID_MESSAGE_ENVELOPE`, `PERMANENT` e `receiveCount=1`. A BET aparece em `GET /providers/smoke/wagering/transactions/{id}` como REJECTED/INSUFFICIENT_FUNDS; reconciliação em 10.00 BRL, diferença 0.00. SIGTERM encerrou a API com código 0.
+Smoke com `bun run start` e as filas do Compose, por script temporário: wallet com 10.00 BRL recebeu uma BET de 50.00 e um envelope com campo extra. A DLQ recebeu só o envelope inválido, com `INVALID_MESSAGE_ENVELOPE`, `PERMANENT` e `receiveCount=1`. A BET aparece em `GET /providers/smoke/wagering/transactions/{id}` como REJECTED/INSUFFICIENT_FUNDS; reconciliação em 10.00 BRL, diferença 0.00. SIGTERM encerrou a API com código 0.
 
 `bun run typecheck`, `bun run lint` e `bun run format` passaram antes do commit. `bun test` completo passou com 282 testes, 2509 assertions e zero falhas em 25 arquivos (263.39s). Essa execução começou antes do teste de redrive abaixo ser adicionado.
 
@@ -574,7 +574,7 @@ Testes novos ou alterados:
 - SIGTERM com drenagem dentro do prazo e os três SIGKILL entre commit e ack (BET, REFUND, ROLLBACK) continuam passando.
 - `Money.from` rejeita mais de 28 dígitos inteiros, limite das colunas `numeric(30,2)`, e aceita o maior valor armazenável. Antes, esse valor chegava ao PostgreSQL como erro 22003 e o consumidor o tratava como falha temporária.
 
-Smokes com `bun run start` e filas do Compose (`.scratch/smoke/ticket23.ts`, `.scratch/smoke/lock.ts`):
+Smokes com `bun run start` e filas do Compose, por scripts temporários:
 
 - BET de 4.00 enviada e SIGTERM 0,3 s depois: saída 0 em 865 ms. Após reiniciar, a transação estava PROCESSED, saldo 6.00 BRL, reconciliação com diferença 0.00 e dois lançamentos.
 - Wallet bloqueada por `select ... for update` em outra conexão, BET enviada e SIGTERM com prazo de 2 s: a transação ficou presa e o processo saiu com código 1 em 12041 ms, pela saída forçada. Depois de liberar o lock e reiniciar, a mesma BET foi processada uma vez: PROCESSED, 6.00 BRL, dois lançamentos. O evento `WagerShutdownDeadline` não apareceu no stdout porque o bootstrap usa `logger: false` (ticket 25).
@@ -616,7 +616,7 @@ Ticket 25. `main.ts` usa `ConsoleLogger({ json: true })`; `correlationId` é o `
 
 A primeira rodada completa falhou em três testes de `outbox.test.ts`. O processo filho em `fixtures/outbox-instance.ts` sinaliza `ready` pelo stdout, e o novo log de publicação chegava antes. O fixture agora chama `Logger.overrideLogger(false)`; os sete testes do arquivo passaram em seguida.
 
-Smoke com `PORT=3199 bun run start` e filas do Compose (`.scratch/smoke/ticket25.ts`): uma BET HTTP (201) e uma BET pela fila `wager-transactions.fifo`. O stdout trouxe linhas JSON com `WagerTransactionSubmitted`, `WagerMessageCommitted` e `OutboxEventPublished`. Os dois eventos de cada transação repetiram o `correlationId` do submit. `grep` no log não encontrou a chave de idempotência, os dois `playerId`, o valor `7.77` nem `test`; o `messageId` apareceu duas vezes.
+Smoke com `PORT=3199 bun run start` e filas do Compose: uma BET HTTP (201) e uma BET pela fila `wager-transactions.fifo`. O stdout trouxe linhas JSON com `WagerTransactionSubmitted`, `WagerMessageCommitted` e `OutboxEventPublished`. Os dois eventos de cada transação repetiram o `correlationId` do submit. `grep` no log não encontrou a chave de idempotência, os dois `playerId`, o valor `7.77` nem `test`; o `messageId` apareceu duas vezes.
 
 `bun test` completo: 289 testes, 2578 assertions, zero falhas em 27 arquivos (279.58s). `bun run typecheck`, `bun run lint` e `bun run format` passaram. Nest Boost MCP não rodou, pela mesma falha de caminho Windows do ticket 24.
 
@@ -724,7 +724,7 @@ A marcação precisa de outra transação porque a tentativa que falhou roda em 
 
 `TEMPORARY_UNAVAILABLE` e os SQLSTATE de conexão, serialização (`40001`), deadlock (`40P01`), timeout de lock (`55P03`), shutdown e rede não podem virar `FAILED`. Eles descrevem indisponibilidade temporária e a linha ainda pode resolver na próxima varredura. O teste com `40001` cobre as duas direções: a linha permanece pendente e depois credita uma única vez.
 
-Documentar `FAILED` como inalcançável e removê-lo da matriz foi descartado. Isso deixaria a falha permanente sem auditoria e sem fim definido, dependente do limite de dez tentativas ou de retry eterno. O enunciado pede um terminal auditável, então o gatilho de produção foi implementado.
+Documentar `FAILED` como inalcançável e removê-lo da matriz foi descartado. Isso deixaria a falha permanente sem auditoria e sem fim definido, dependente do limite de dez tentativas ou de retry eterno. O estado existe para auditar falha permanente, então o gatilho de produção foi implementado.
 
 Depois de replay e nova varredura, o estado continua imutável. `fail()` usa `assertPending` e `rehydrate` não reaplica transição. Replay lê o registro e devolve o resultado original, sem chamar domínio nem reabrir a operação. A varredura filtra `status = 'PENDING_REFERENCE'` e `reference_next_attempt_at <= at`; uma linha `FAILED` não entra na consulta, e a chamada direta devolve `SKIPPED`. O schema reforça o estado terminal com `failure_code` e `processed_at` obrigatórios e `reference_next_attempt_at` nulo.
 
@@ -758,7 +758,7 @@ Ticket 03. A ordem foi suíte completa com PostgreSQL 17.6, LocalStack 4.11.1 e 
 
 `bun test`: 320 testes, zero falhas, 2911 assertions em 33 arquivos (310,98 s). `bun run typecheck`, `bun run lint` e `bun run format:check` passaram, sem correção pendente. A inspeção pelo MCP do Nest Boost (`application_info`, `list_routes`, `module_graph`) devolveu 13 módulos, 4 controllers, 16 providers e 10 rotas. Nenhuma rota, mapping ou migration mudou nesta entrega.
 
-Smoke final: script Bun local, fora do repositório (`.scratch/ticket03-smoke.ts`, não versionado), com banco novo no PostgreSQL do Compose, filas novas no LocalStack e API iniciada por `src/main.ts` com fila FIFO de entrada, DLQ, fila standard de saída e token real do Keycloak (client `provider-a`). Fluxo observado:
+Smoke final: script Bun local, fora do repositório e não versionado, com banco novo no PostgreSQL do Compose, filas novas no LocalStack e API iniciada por `src/main.ts` com fila FIFO de entrada, DLQ, fila standard de saída e token real do Keycloak (client `provider-a`). Fluxo observado:
 
 - abertura de `100.00 BRL` publicou `WagerTransactionProcessed` e `WalletBalanceChanged` na fila real;
 - REFUND de `25.00` antes da BET ficou `PENDING_REFERENCE` com saldo observado `100.00` e publicou `WagerTransactionPendingReference`;
@@ -802,11 +802,11 @@ Nest Boost por MCP, em processos separados para a base e o estado final, com `ap
 
 `bun run typecheck`, `bun run lint` e `bun run format:check` passaram nas duas pontas sem correção aplicada.
 
-Limites: a auditoria compara árvores Git e o resultado da suíte; não examina bytecode. A equivalência vale para as entradas que a suíte cobre; entradas fora dela não foram exercitadas nas duas versões. O PostgreSQL de testes e o LocalStack são compartilhados entre execuções, mas cada teste cria schema, banco ou fila próprios. O `## Answer` do ticket fica em `.scratch/`, que não é versionado.
+Limites: a auditoria compara árvores Git e o resultado da suíte; não examina bytecode. A equivalência vale para as entradas que a suíte cobre; entradas fora dela não foram exercitadas nas duas versões. O PostgreSQL de testes e o LocalStack são compartilhados entre execuções, mas cada teste cria schema, banco ou fila próprios. O `## Answer` do ticket ficou fora do repositório.
 
 ## Movimento atômico no agregado — 2026-10-24
 
-Ticket 02 de `.scratch/fortalecer-nucleo-financeiro`. `Wallet.open`, `Wallet.debit` e `Wallet.credit` passaram a devolver `WalletMovement`, um par imutável com a wallet resultante e o lançamento. O serviço de abertura e a liquidação gravam o que o par contém, sem montar lançamento nem decidir se ele existe. A abertura zero devolve `entry` nulo; a positiva, um CREDIT de `0.00` até o saldo.
+`Wallet.open`, `Wallet.debit` e `Wallet.credit` passaram a devolver `WalletMovement`, um par imutável com a wallet resultante e o lançamento. O serviço de abertura e a liquidação gravam o que o par contém, sem montar lançamento nem decidir se ele existe. A abertura zero devolve `entry` nulo; a positiva, um CREDIT de `0.00` até o saldo.
 
 Ambiente: Bun 1.3.14, Node 22.23.4 para o servidor MCP, PostgreSQL 17.6, LocalStack 4.11.1 e Keycloak 26.4.0 nos containers Podman preexistentes, portas 55433, 4566 e 8080. Mesma máquina, mesma base e mesmos containers nas duas pontas:
 
@@ -829,7 +829,7 @@ Limites: o teste de integração novo usa o banco de testes compartilhado, com p
 
 ## Hash e consultas de estado no agregado — 2026-10-24
 
-Ticket 03 de `.scratch/fortalecer-nucleo-financeiro`. `WagerTransaction.create` passou a calcular o `payloadHash` depois de normalizar wallet e player, e o agregado expõe `payloadHash`, `matchesPayload`, `isTerminal`, `affectsBalance` e `requiresReference`. `rehydrate` recebe o hash persistido e não recalcula. O serviço deixou de montar o hash e de transportar o valor entre camadas: a gravação lê `transaction.payloadHash` e o replay compara com `matchesPayload`. A canonicalização não mudou.
+`WagerTransaction.create` passou a calcular o `payloadHash` depois de normalizar wallet e player, e o agregado expõe `payloadHash`, `matchesPayload`, `isTerminal`, `affectsBalance` e `requiresReference`. `rehydrate` recebe o hash persistido e não recalcula. O serviço deixou de montar o hash e de transportar o valor entre camadas: a gravação lê `transaction.payloadHash` e o replay compara com `matchesPayload`. A canonicalização não mudou.
 
 Os valores de referência foram registrados antes da mudança, numa base isolada, com o `WageringService` da árvore em `b72256c`. Provider `provider-hash`, wallet `11111111-1111-4111-8111-111111111111`, player `22222222-2222-4222-8222-222222222222`, round `round-hash` e game `fortune-chimp`, exceto onde o caso indica outra wallet e outro player:
 
@@ -873,7 +873,7 @@ Limites: os hashes de referência fixam as entradas testadas, não toda entrada 
 
 ## Documentação de autenticação — 2026-10-24
 
-Ticket 05 de `.scratch/fortalecer-nucleo-financeiro`. Não entrou teste novo. A verificação foi leitura dos documentos, busca pelos termos "sem IdP", "sem autenticação", "não existe autenticação" e variantes, inspeção das rotas e módulos pelo Nest Boost MCP, e execução dos testes focais de autenticação que já existiam.
+Não entrou teste novo. A verificação foi leitura dos documentos, busca pelos termos "sem IdP", "sem autenticação", "não existe autenticação" e variantes, inspeção das rotas e módulos pelo Nest Boost MCP, e execução dos testes focais de autenticação que já existiam.
 
 Antes de editar, a busca encontrou:
 
@@ -883,8 +883,7 @@ Antes de editar, a busca encontrou:
 - `docs/adr/0005-consulta-estavel-do-ledger.md`, "Não há autenticação neste estágio": descrevia o estágio original. Passou para "Não havia autenticação quando este contrato foi definido", com link para o ADR-0008.
 - `docs/adr/0007-inbox-atomica-de-bet.md`, "broker local continua sendo um canal confiável sem IdP": verdadeira. SQS é canal interno e a mensagem não leva token; a identidade continua sujeita às regras de domínio.
 - `ARCHITECTURE.md#health`, "`/health/live` e `/health/ready` sem autenticação": verdadeira. As duas rotas seguem públicas.
-- `PROGRESS.md` R-024, "sem autenticação": verdadeira pelo mesmo motivo.
-- `README.md` e `DECISIONS.md`: nenhuma afirmação contraditória. O README já pedia token nas rotas HTTP, descrevia `aud`, `providerId`, 401/403 e SQS sem token. O índice lista o ADR-0008 como adotado.
+- `README.md`: nenhuma afirmação contraditória. Já pedia token nas rotas HTTP e descrevia `aud`, `providerId`, 401/403 e SQS sem token.
 
 Também reli a seção de autenticação e o ADR-0008. Os dois descrevem o mesmo desenho: Keycloak com `client_credentials`, validação local de assinatura, `iss`, `aud` e `exp`, e claim `providerId`. O guard é global, health fica público, SQS é canal interno e o domínio valida identidade sem autenticar. Não sobrou afirmação de que a API não tem IdP.
 

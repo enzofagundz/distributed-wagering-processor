@@ -2,7 +2,7 @@
 
 ## Status
 
-Aceita e adotada. Migra D-005. A autenticação entrou depois, no [ADR-0008](0008-autenticacao-com-keycloak.md); a passagem sobre ausência de autenticação descreve o estágio original.
+Aceita e adotada. A autenticação entrou depois, no [ADR-0008](0008-autenticacao-com-keycloak.md); a passagem sobre ausência de autenticação descreve o estágio original.
 
 ## Contexto
 
