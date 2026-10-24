@@ -496,23 +496,14 @@ export class WageringService {
       });
       await em.persist(ledgerEntry).flush();
     }
-    const events =
-      isNew || status !== "PENDING_REFERENCE"
-        ? entry && transaction.kind !== "LOSS"
-          ? [
-              WagerTransactionProcessed.from(
-                resultingWallet,
-                entry,
-                transaction.kind,
-              ),
-              WalletBalanceChanged.from(resultingWallet, entry),
-            ]
-          : status === "PROCESSED"
-            ? [WagerTransactionProcessed.fromLoss(wallet, transaction)]
-            : status === "PENDING_REFERENCE"
-              ? [WagerTransactionPendingReference.from(wallet, transaction)]
-              : [WagerTransactionRejected.from(wallet, transaction)]
-        : [];
+    const events = this.settlementEvents(
+      transaction,
+      wallet,
+      resultingWallet,
+      entry,
+      status,
+      isNew,
+    );
     await em
       .persist(
         events.map((event) =>
@@ -532,6 +523,31 @@ export class WageringService {
         ? { failureCode: transaction.failureCode }
         : {}),
     };
+  }
+
+  private settlementEvents(
+    transaction: WagerTransaction,
+    wallet: Wallet,
+    resultingWallet: Wallet,
+    entry: WalletLedgerEntry | undefined,
+    status: "PROCESSED" | "REJECTED" | "PENDING_REFERENCE",
+    isNew: boolean,
+  ) {
+    if (!isNew && status === "PENDING_REFERENCE") return [];
+    if (entry && transaction.kind !== "LOSS")
+      return [
+        WagerTransactionProcessed.from(
+          resultingWallet,
+          entry,
+          transaction.kind,
+        ),
+        WalletBalanceChanged.from(resultingWallet, entry),
+      ];
+    if (status === "PROCESSED")
+      return [WagerTransactionProcessed.fromLoss(wallet, transaction)];
+    if (status === "PENDING_REFERENCE")
+      return [WagerTransactionPendingReference.from(wallet, transaction)];
+    return [WagerTransactionRejected.from(wallet, transaction)];
   }
 
   private rehydrateTransaction(
