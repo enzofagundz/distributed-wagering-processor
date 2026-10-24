@@ -12,6 +12,7 @@ export interface PendingReferenceBatch {
   processed: number;
   rejected: number;
   pending: number;
+  terminalFailures: number;
   skipped: number;
   failed: number;
 }
@@ -31,6 +32,7 @@ export class PendingReferenceBatchRunner {
       processed: 0,
       rejected: 0,
       pending: 0,
+      terminalFailures: 0,
       skipped: 0,
       failed: 0,
     };
@@ -60,6 +62,7 @@ export class PendingReferenceBatchRunner {
           if (status === "PROCESSED") summary.processed++;
           else if (status === "REJECTED") summary.rejected++;
           else if (status === "PENDING_REFERENCE") summary.pending++;
+          else if (status === "FAILED") summary.terminalFailures++;
           else summary.skipped++;
         } catch (error) {
           summary.failed++;

@@ -40,7 +40,7 @@ export interface SubmitTransactionInput {
 
 export interface SubmitTransactionResult {
   transactionId: string;
-  status: "PROCESSED" | "REJECTED" | "PENDING_REFERENCE";
+  status: "PROCESSED" | "REJECTED" | "PENDING_REFERENCE" | "FAILED";
   balance: MoneyProps;
   idempotentReplay: boolean;
   failureCode?: FailureCode;
@@ -50,6 +50,7 @@ export type PendingReferenceResolution =
   | "PROCESSED"
   | "REJECTED"
   | "PENDING_REFERENCE"
+  | "FAILED"
   | "SKIPPED";
 
 const duplicateConstraints: Readonly<Record<string, true>> = {
@@ -95,6 +96,13 @@ function transientCode(error: unknown): string | undefined {
     error = "cause" in error ? error.cause : undefined;
   }
   return undefined;
+}
+
+function isTransientFailure(error: unknown): boolean {
+  return (
+    transientCode(error) !== undefined ||
+    (error instanceof DomainError && error.code === "TEMPORARY_UNAVAILABLE")
+  );
 }
 
 const lockConflictCodes: Readonly<Record<string, true>> = {
@@ -247,35 +255,84 @@ export class WageringService {
     transactionId: string,
     at?: Date,
   ): Promise<PendingReferenceResolution> {
+    try {
+      return await this.orm.em.fork().transactional(async (em) => {
+        const record = await em.findOne(
+          wagerTransactionSchema,
+          {
+            id: transactionId,
+            status: "PENDING_REFERENCE",
+            referenceNextAttemptAt: { $lte: at ?? new Date() },
+          },
+          { lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE },
+        );
+        if (!record) return "SKIPPED";
+        if (record.payloadHash == null)
+          throw new Error("Invalid persisted pending transaction");
+        const walletRecord = await em.findOne(
+          walletSchema,
+          { id: record.walletId },
+          { lockMode: LockMode.PESSIMISTIC_WRITE },
+        );
+        if (!walletRecord) throw new DomainError("WALLET_NOT_FOUND");
+        const result = await this.settle(
+          em,
+          this.rehydrateTransaction(record),
+          walletRecord,
+          record.payloadHash,
+          false,
+          at ?? new Date(),
+          (record.referenceAttempts ?? 0) + 1,
+        );
+        if (result.status === "FAILED")
+          throw new Error("Unexpected FAILED settlement");
+        return result.status;
+      });
+    } catch (error) {
+      if (isTransientFailure(error)) throw error;
+      const resolution = await this.markReferenceFailed(
+        transactionId,
+        at ?? new Date(),
+      );
+      if (resolution === "FAILED") {
+        this.metrics.increment(
+          "wager_failed_transactions_total",
+          'failureCode="PERMANENT_INFRASTRUCTURE_FAILURE"',
+        );
+        this.logger.warn({
+          event: "PendingReferenceFailed",
+          correlationId: transactionId,
+          transactionId,
+          failureCode: "PERMANENT_INFRASTRUCTURE_FAILURE",
+          errorType: error instanceof Error ? error.name : "UnknownError",
+        });
+      }
+      return resolution;
+    }
+  }
+
+  private async markReferenceFailed(
+    transactionId: string,
+    at: Date,
+  ): Promise<PendingReferenceResolution> {
     return this.orm.em.fork().transactional(async (em) => {
       const record = await em.findOne(
         wagerTransactionSchema,
-        {
-          id: transactionId,
-          status: "PENDING_REFERENCE",
-          referenceNextAttemptAt: { $lte: at ?? new Date() },
-        },
+        { id: transactionId },
         { lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE },
       );
       if (!record) return "SKIPPED";
-      if (record.payloadHash == null)
-        throw new Error("Invalid persisted pending transaction");
-      const walletRecord = await em.findOne(
-        walletSchema,
-        { id: record.walletId },
-        { lockMode: LockMode.PESSIMISTIC_WRITE },
-      );
-      if (!walletRecord) throw new DomainError("WALLET_NOT_FOUND");
-      const result = await this.settle(
-        em,
-        this.rehydrateTransaction(record),
-        walletRecord,
-        record.payloadHash,
-        false,
-        at ?? new Date(),
-        (record.referenceAttempts ?? 0) + 1,
-      );
-      return result.status;
+      if (record.status !== "PENDING_REFERENCE") return "SKIPPED";
+      const transaction = this.rehydrateTransaction(record);
+      transaction.fail("PERMANENT_INFRASTRUCTURE_FAILURE", at);
+      em.assign(record, {
+        status: "FAILED",
+        failureCode: transaction.failureCode,
+        processedAt: transaction.processedAt,
+        referenceNextAttemptAt: null,
+      });
+      await em.flush();
+      return "FAILED";
     });
   }
 
@@ -351,7 +408,11 @@ export class WageringService {
       }
     }
     const status = transaction.status;
-    if (status === "PENDING")
+    if (
+      status !== "PROCESSED" &&
+      status !== "REJECTED" &&
+      status !== "PENDING_REFERENCE"
+    )
       throw new DomainError("INVALID_TRANSACTION_STATE");
     const entry =
       status === "PROCESSED" && transaction.kind !== "LOSS"

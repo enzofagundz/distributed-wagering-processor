@@ -62,7 +62,11 @@ export class PendingReferenceWorker {
   private async tick(): Promise<void> {
     try {
       const summary = await this.runOnce();
-      if (summary.processed > 0 || summary.rejected > 0)
+      if (
+        summary.processed > 0 ||
+        summary.rejected > 0 ||
+        summary.terminalFailures > 0
+      )
         this.logger.log({ event: "PendingReferenceResolved", ...summary });
       if (summary.failed > 0)
         this.logger.warn({

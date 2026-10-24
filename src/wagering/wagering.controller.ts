@@ -40,6 +40,7 @@ export class WageringController {
     if (result.status === "REJECTED") throw new HttpException(result, 422);
     if (result.status === "PENDING_REFERENCE")
       throw new HttpException(result, 202);
+    if (result.status === "FAILED") throw new HttpException(result, 500);
     return result;
   }
 
