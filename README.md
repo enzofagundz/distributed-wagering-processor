@@ -4,14 +4,14 @@ Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECH
 
 A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET, WIN, LOSS, REFUND e ROLLBACK por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva e operações financeiras persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL. LOSS confirma resultado e evento sem movimentar saldo. Um worker agendado resolve WIN, REFUND e ROLLBACK que chegaram antes da referência.
 
-O publisher envia eventos confirmados da outbox ao SQS no LocalStack. BET, WIN, LOSS, REFUND e ROLLBACK também entram por SQS, com inbox persistente e ack após commit. `GET /health/live` e `GET /health/ready` estão disponíveis; autenticação continua pendente. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. A API escreve logs JSON no stdout, com `correlationId` e os identificadores de cada etapa. Só a reconciliação tem métrica; as demais métricas continuam pendentes. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+O publisher envia eventos confirmados da outbox ao SQS no LocalStack. BET, WIN, LOSS, REFUND e ROLLBACK também entram por SQS, com inbox persistente e ack após commit. `GET /health/live` e `GET /health/ready` ficam abertos; as demais rotas HTTP exigem token JWT emitido pelo Keycloak do Compose. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. A API escreve logs JSON no stdout, com `correlationId` e os identificadores de cada etapa. `GET /metrics` expõe métricas no formato Prometheus. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
 1. Execute API e migrations abaixo.
 2. Importe [collection e environment Postman](docs/postman/README.md); percorra abertura, ledger, BET, replay, consultas e reconciliação. O guia inclui disputa manual entre três instâncias. Não exige conta ou publicação em workspace.
 3. Leia [arquitetura e garantias atuais](ARCHITECTURE.md), [glossário](GLOSSARY.md) e decisões vinculadas.
-4. Consulte [evidências executadas](docs/verification.md) e [pendências por requisito](PROGRESS.md). Resultados históricos não substituem execução local.
+4. Consulte a [prova final dos oito cenários](docs/verification.md#prova-final--2026-10-24), as [evidências executadas](docs/verification.md) e [pendências por requisito](PROGRESS.md). Resultados históricos não substituem execução local.
 
 Wallets ficam em `src/wallets/`; submissão de BET, WIN, LOSS, REFUND e ROLLBACK, em `src/wagering/`. Cada funcionalidade tem controller, DTO, serviço e módulo. `src/app.module.ts` compõe módulos e registra filtro global compartilhado; `src/create-application.ts` recebe o ORM inicializado pelo chamador. Domínio e mapeamentos permanecem separados. Justificativa e injeção de dependências: [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) e [composição na arquitetura](ARCHITECTURE.md#composição-e-injeção).
 
@@ -19,13 +19,13 @@ Em wagering, `WageringService` coordena submissão e liquidação; `WageringQuer
 
 ## Executar
 
-Requisitos: Docker com Compose v2+. Para desenvolvimento/testes no host: Bun 1.3.14. Portas locais: HTTP 3000, PostgreSQL 55432, banco descartável de testes 55433 e LocalStack 4566.
+Requisitos: Docker com Compose v2+. Para desenvolvimento/testes no host: Bun 1.3.14. Portas locais: HTTP 3000, PostgreSQL 55432, banco descartável de testes 55433, LocalStack 4566 e Keycloak 8080 (`KEYCLOAK_PORT`).
 
 ### Containers
 
 ```sh
 docker compose build app
-docker compose up -d --wait postgres localstack
+docker compose up -d --wait postgres localstack keycloak
 docker compose run --rm app bun run migration:up
 docker compose up -d app
 docker compose logs app
@@ -40,7 +40,7 @@ Se a porta estiver ocupada, use `APP_PORT=3109 docker compose up -d app` e ajust
 ```sh
 bun install --frozen-lockfile
 test -f .env || cp .env.example .env
-docker compose up -d --wait postgres postgres-test localstack
+docker compose up -d --wait postgres postgres-test localstack keycloak
 bun run migration:up
 bun run start
 ```
@@ -53,13 +53,32 @@ Variáveis exportadas no terminal têm prioridade sobre `.env`. Se uma configura
 
 No container da API, o Compose define `DATABASE_URL`, `HOST` e `PORT`: banco em `postgres:5432` e bind em `0.0.0.0`. Essas configurações não vêm do `.env` do host, e a imagem exclui arquivos `.env`. Para mudar a porta publicada pelo Compose, defina `APP_PORT` no `.env` local.
 
-**Ambiente exclusivamente local, sem autenticação. Não expor em produção.** Credenciais do Compose são locais. Publicação HTTP fica em loopback; bind interno do container é `0.0.0.0`. No host, bind padrão é `127.0.0.1`.
+**Ambiente exclusivamente local. Não expor em produção.** Credenciais do Compose, inclusive os secrets dos clients Keycloak, são locais e estão versionadas. Publicação HTTP fica em loopback; bind interno do container é `0.0.0.0`. No host, bind padrão é `127.0.0.1`.
 
 ### Health
 
 `GET /health/live` responde 200 `{"status":"live"}` enquanto o processo atende HTTP. Não consulta dependências, então serve para decidir reinício.
 
 `GET /health/ready` consulta PostgreSQL (`select 1`) e as filas `WAGER_QUEUE_URL` e `OUTBOX_QUEUE_URL` (`GetQueueAttributes`) em paralelo. Responde 200 com `{"status":"ready","checks":{"postgres":"up","sqs":"up"}}` ou 503 com `"status":"not_ready"` e o check que falhou como `down`. Cada verificação espera no máximo `HEALTH_TIMEOUT_MS` (padrão 2000). A resposta não traz mensagem de erro, URL nem credencial. Os dois endpoints são públicos.
+
+### Autenticação
+
+O Keycloak do Compose importa o realm `wagering` de [infra/keycloak/wagering-realm.json](infra/keycloak/wagering-realm.json). Cada provedor é um client `client_credentials`: `provider-a` e `provider-b`, com secrets `provider-a-local-secret` e `provider-b-local-secret`. O token traz `aud: wagering-api` e a claim `providerId` com o nome do client. Não há usuários nem senhas na aplicação.
+
+```sh
+TOKEN=$(curl -s http://127.0.0.1:8080/realms/wagering/protocol/openid-connect/token   -u provider-a:provider-a-local-secret -d grant_type=client_credentials | jq -r .access_token)
+curl -i http://127.0.0.1:3000/metrics -H "Authorization: Bearer $TOKEN"
+```
+
+Os exemplos abaixo omitem o header por brevidade; inclua `-H "Authorization: Bearer $TOKEN"` em todos, exceto health. O token dura 5 minutos. `bun run start` exige `AUTH_ISSUER`, `AUTH_AUDIENCE` e `AUTH_JWKS_URI` (valores em `.env.example`) e não sobe sem elas.
+
+| Situação | Resposta |
+|---|---|
+| Token ausente, malformado, expirado, com assinatura, `iss` ou `aud` inválidos, ou sem `providerId` | 401 `{"code":"UNAUTHORIZED"}` |
+| `providerId` do token diferente do `providerId` do body ou da rota | 403 `{"code":"PROVIDER_IDENTITY_MISMATCH"}`, antes do caso de uso |
+| Token válido e coerente | fluxo normal; o domínio continua validando provider, player e wallet |
+
+Mensagens SQS não levam token. Testes focais: `bun test tests/integration/auth-http.test.ts` gera a chave RSA no próprio teste; `bun test tests/integration/keycloak-smoke.test.ts` pede token ao Keycloak em `TEST_KEYCLOAK_URL` (padrão `http://127.0.0.1:8080`). Decisão e limites: [ADR-0008](docs/adr/0008-autenticacao-com-keycloak.md) e [arquitetura](ARCHITECTURE.md#autenticação).
 
 ### Logs
 
@@ -187,7 +206,7 @@ A suíte cria schema e filas exclusivos, remove-os ao terminar e inclui SIGKILL 
 curl -s http://127.0.0.1:3000/metrics
 ```
 
-Texto no formato Prometheus, sem autenticação: transações por status, duplicatas, conflitos de lock, retries e DLQ do consumidor, publicações e retries da outbox, outbox lag, latência de processamento e divergências de reconciliação. Status e outbox são lidos do PostgreSQL; o resto conta por processo e zera no reinício. Com três APIs, raspe cada porta e some. Nenhum label carrega id de wallet, transação ou mensagem. Para contar conflitos de lock, a conexão precisa de `lock_timeout` (por exemplo `?options=-c%20lock_timeout%3D2000` na `DATABASE_URL`); sem ele a transação espera o lock. Unidades e semântica de cada série: [arquitetura](ARCHITECTURE.md#métricas).
+Texto no formato Prometheus, com o mesmo token das outras rotas: transações por status, duplicatas, conflitos de lock, retries e DLQ do consumidor, publicações e retries da outbox, outbox lag, latência de processamento e divergências de reconciliação. Status e outbox são lidos do PostgreSQL; o resto conta por processo e zera no reinício. Com três APIs, raspe cada porta e some. Nenhum label carrega id de wallet, transação ou mensagem. Para contar conflitos de lock, a conexão precisa de `lock_timeout` (por exemplo `?options=-c%20lock_timeout%3D2000` na `DATABASE_URL`); sem ele a transação espera o lock. Unidades e semântica de cada série: [arquitetura](ARCHITECTURE.md#métricas).
 
 Teste focal: `bun test tests/integration/metrics.test.ts`, com PostgreSQL de testes e LocalStack.
 
@@ -331,7 +350,7 @@ bun run lint
 bun run format:check
 bun run typecheck
 bun run test:domain
-docker compose up -d --wait postgres-test localstack
+docker compose up -d --wait postgres-test localstack keycloak
 bun run test:integration
 bun test
 ```

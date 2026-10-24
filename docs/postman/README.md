@@ -9,7 +9,7 @@ Material para executar e avaliar a API atual, sem instalar dependências ou publ
 3. Selecione o environment Wallet HTTP — Local. `baseUrl` começa em `http://127.0.0.1:3000`, sem barra final; ajuste para a porta publicada localmente, se necessário.
 4. Para smoke em uma API, execute as pastas 1 a 4 em ordem, com uma iteração no Collection Runner. Scripts ficam em Pre-request e Post-response; resultados aparecem em Test Results. A pasta 5 usa três APIs e tem roteiro manual próprio abaixo.
 
-Não há credenciais no environment nem autenticação nos endpoints atuais. Use ambiente local descartável: cada envio de abertura válida cria dados persistentes; a coleção não limpa o banco e não existe endpoint HTTP de exclusão.
+O pre-request da coleção pede token `client_credentials` ao Keycloak local (`tokenUrl`, `clientId`, `clientSecret` no environment) e o reaproveita até 30 s antes de expirar. Os requests usam `provider-a`, igual à claim `providerId` do token; outro provider no body recebe 403 `PROVIDER_IDENTITY_MISMATCH`. O secret do environment é local. Use ambiente local descartável: cada envio de abertura válida cria dados persistentes; a coleção não limpa o banco e não existe endpoint HTTP de exclusão.
 
 ## Sequência de smoke
 

@@ -3,11 +3,46 @@
     "_postman_id": "95a545f1-6ee0-40a6-87e1-613f99b2c733",
     "name": "Distributed Wagering Processor — Wallet HTTP",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Contratos HTTP: abertura/consulta de wallet, ledger, BET, replay, conflitos, consulta de transação e reconciliação. Pastas 1 a 4: smoke sequencial. Pasta 5: três APIs e disputa manual com lock PostgreSQL; Runner sequencial não comprova concorrência. Exemplos antigos são ilustrativos. Ambiente local sem autenticação. Guia: docs/postman/README.md."
+    "description": "Contratos HTTP: abertura/consulta de wallet, ledger, BET, replay, conflitos, consulta de transação e reconciliação. Pastas 1 a 4: smoke sequencial. Pasta 5: três APIs e disputa manual com lock PostgreSQL; Runner sequencial não comprova concorrência. Exemplos antigos são ilustrativos. Token client_credentials do Keycloak local obtido no pre-request da coleção. Guia: docs/postman/README.md."
   },
   "auth": {
-    "type": "noauth"
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
   },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Token client_credentials do Keycloak local; renova 30 s antes de expirar.",
+          "const expiresAt = Number(pm.environment.get('accessTokenExpiresAt') || 0);",
+          "if (!pm.environment.get('accessToken') || Date.now() >= expiresAt - 30000) {",
+          "  pm.sendRequest({",
+          "  url: pm.environment.get('tokenUrl'),",
+          "  method: 'POST',",
+          "  body: { mode: 'urlencoded', urlencoded: [",
+          "    { key: 'grant_type', value: 'client_credentials' },",
+          "    { key: 'client_id', value: pm.environment.get('clientId') },",
+          "    { key: 'client_secret', value: pm.environment.get('clientSecret') },",
+          "  ] },",
+          "}, (error, response) => {",
+          "  if (error || response.code !== 200) throw new Error('Keycloak token request failed');",
+          "  const body = response.json();",
+          "  pm.environment.set('accessToken', body.access_token);",
+          "  pm.environment.set('accessTokenExpiresAt', String(Date.now() + body.expires_in * 1000));",
+          "  });",
+          "}"
+        ]
+      }
+    }
+  ],
   "item": [
     {
       "name": "1 — Abertura positiva, duplicata e auditoria",
@@ -1737,7 +1772,7 @@
               "url": "{{baseUrl}}/wagering/transactions",
               "body": {
                 "mode": "raw",
-                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{betExternalA}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{betExternalA}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
                 "options": {
                   "raw": {
                     "language": "json"
@@ -1783,7 +1818,7 @@
               "url": "{{baseUrl}}/wagering/transactions",
               "body": {
                 "mode": "raw",
-                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{betExternalA}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{betExternalA}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
                 "options": {
                   "raw": {
                     "language": "json"
@@ -1828,7 +1863,7 @@
               "url": "{{baseUrl}}/wagering/transactions",
               "body": {
                 "mode": "raw",
-                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{betExternalB}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{betExternalB}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
                 "options": {
                   "raw": {
                     "language": "json"
@@ -1874,7 +1909,7 @@
               "url": "{{baseUrl}}/wagering/transactions",
               "body": {
                 "mode": "raw",
-                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{betExternalB}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{betExternalB}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
                 "options": {
                   "raw": {
                     "language": "json"
@@ -1919,7 +1954,7 @@
               "url": "{{baseUrl}}/wagering/transactions",
               "body": {
                 "mode": "raw",
-                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{betExternalA}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"79.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{betExternalA}}\",\n  \"playerId\": \"{{betPlayerId}}\",\n  \"walletId\": \"{{betWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"79.00\",\n    \"currency\": \"BRL\"\n  }\n}",
                 "options": {
                   "raw": {
                     "language": "json"
@@ -1984,7 +2019,7 @@
             "request": {
               "method": "GET",
               "header": [],
-              "url": "{{baseUrl}}/providers/provider-postman/wagering/transactions/{{betExternalB}}"
+              "url": "{{baseUrl}}/providers/provider-a/wagering/transactions/{{betExternalB}}"
             },
             "event": [
               {
@@ -2156,7 +2191,7 @@
               "url": "{{instance1Url}}/wagering/transactions",
               "body": {
                 "mode": "raw",
-                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{raceExternalA}}\",\n  \"playerId\": \"{{racePlayerId}}\",\n  \"walletId\": \"{{raceWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{raceExternalA}}\",\n  \"playerId\": \"{{racePlayerId}}\",\n  \"walletId\": \"{{raceWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
                 "options": {
                   "raw": {
                     "language": "json"
@@ -2203,7 +2238,7 @@
               "url": "{{instance2Url}}/wagering/transactions",
               "body": {
                 "mode": "raw",
-                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{raceExternalB}}\",\n  \"playerId\": \"{{racePlayerId}}\",\n  \"walletId\": \"{{raceWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{raceExternalB}}\",\n  \"playerId\": \"{{racePlayerId}}\",\n  \"walletId\": \"{{raceWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
                 "options": {
                   "raw": {
                     "language": "json"
@@ -2250,7 +2285,7 @@
               "url": "{{instance3Url}}/wagering/transactions",
               "body": {
                 "mode": "raw",
-                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{raceExternalA}}\",\n  \"playerId\": \"{{racePlayerId}}\",\n  \"walletId\": \"{{raceWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{raceExternalA}}\",\n  \"playerId\": \"{{racePlayerId}}\",\n  \"walletId\": \"{{raceWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
                 "options": {
                   "raw": {
                     "language": "json"
@@ -2296,7 +2331,7 @@
               "url": "{{instance3Url}}/wagering/transactions",
               "body": {
                 "mode": "raw",
-                "raw": "{\n  \"providerId\": \"provider-postman\",\n  \"externalTransactionId\": \"{{raceExternalB}}\",\n  \"playerId\": \"{{racePlayerId}}\",\n  \"walletId\": \"{{raceWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
+                "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{raceExternalB}}\",\n  \"playerId\": \"{{racePlayerId}}\",\n  \"walletId\": \"{{raceWalletId}}\",\n  \"roundId\": \"round-postman\",\n  \"gameId\": \"fortune-chimp\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"80.00\",\n    \"currency\": \"BRL\"\n  }\n}",
                 "options": {
                   "raw": {
                     "language": "json"

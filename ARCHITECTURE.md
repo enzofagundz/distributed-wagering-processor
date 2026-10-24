@@ -10,6 +10,7 @@ Este documento descreve a implementação atual. Os requisitos estão no [enunci
 | Criação da aplicação | `src/create-application.ts` | Recebe ORM do chamador e cria aplicação Nest |
 | Composição | `src/app.module.ts`, `src/{wallets,wagering,outbox}/*.module.ts` | Módulo raiz compõe funcionalidades; módulos declaram providers e controllers aplicáveis |
 | Transporte | `src/wallets/wallet.controller.ts`, `src/wallets/*dto.ts` | Wallets e reconciliação; validação estrutural |
+| Autenticação | `src/auth/auth.module.ts` | Guard global JWT (JWKS do Keycloak), `@Public()` e checagem de `providerId` |
 | Métricas | `src/metrics/` | Registro Prometheus em processo, gauges lidos do PostgreSQL e `GET /metrics` |
 | Erros compartilhados | `src/shared/domain-error.filter.ts` | Tradução global de erros conhecidos, registrada uma vez pelo módulo raiz |
 | Caso de uso e leitura | `src/wallets/wallet-service.ts` | Abertura atômica, reidratação, ledger keyset e reconciliação em snapshot único |
@@ -296,6 +297,8 @@ Referência consultada via Context7: [PostgreSQL 17 — READ COMMITTED](https://
 
 | Status | Códigos / comportamento |
 |---|---|
+| 401 | `UNAUTHORIZED`: token ausente ou inválido (assinatura, `iss`, `aud`, `exp`, claim `providerId`) |
+| 403 | `PROVIDER_IDENTITY_MISMATCH`: `providerId` do token difere do body ou da rota; nada é processado |
 | 400 | `INVALID_WALLET_PAYLOAD`, `INVALID_IDENTITY`, `INVALID_AMOUNT`, `INVALID_CURRENCY`, `INITIAL_BALANCE_NEGATIVE`, `INVALID_LEDGER_QUERY`; transações externas: `INVALID_TRANSACTION_PAYLOAD`, `INVALID_TRANSACTION_KIND`, `INVALID_IDEMPOTENCY_KEY`, `INVALID_PROVIDER`, `PLAYER_WALLET_MISMATCH`, `CURRENCY_MISMATCH` |
 | 404 | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND` |
 | 409 | `WALLET_ALREADY_EXISTS`, `TRANSACTION_ALREADY_EXISTS`, `IDEMPOTENCY_CONFLICT` |
@@ -305,6 +308,23 @@ Referência consultada via Context7: [PostgreSQL 17 — READ COMMITTED](https://
 | 500 | Falha inesperada: resposta genérica do NestJS, sem SQL/credenciais |
 
 Erros conhecidos retornam `{ "code": "..." }`, exceto a rejeição 422, que retorna o resultado financeiro auditado. Transação externa processada retorna 201, inclusive no replay. DTO rejeita campos extras, estruturas inválidas e dinheiro não textual, sem conversão implícita; falha estrutural precede formato. JSON malformado na submissão recebe `INVALID_TRANSACTION_PAYLOAD`. Falhas inesperadas não viram 400/409. WIN/REFUND/ROLLBACK com referência indisponível retorna 202 persistido; BET e LOSS são síncronas e nunca retornam 202. Kind desconhecido retorna 400. Após 503 ou perda da resposta, reenviar mesma chave/payload permite descobrir commit já ocorrido; não trocar chave. Erros 400 corrigem contrato; 409 exige resolver identidade/payload; 422 é resultado terminal, não retry para tentar obter outro saldo.
+
+## Autenticação
+
+Decisão em [ADR-0008](docs/adr/0008-autenticacao-com-keycloak.md). O Keycloak emite tokens `client_credentials`, um client por provedor, com `aud: wagering-api` e claim `providerId`. A API não guarda usuário nem senha.
+
+`AuthModule.register(config)` registra a estratégia `passport-jwt` e um `APP_GUARD`. A estratégia busca as chaves em `AUTH_JWKS_URI` por `jwks-rsa`, com cache e rate limit, e confere assinatura RS256, `iss`, `aud` e `exp` localmente; não há introspecção por request. Depois disso, o guard compara `providerId` do token com `providerId` do body e do parâmetro de rota, quando existem. Diferença gera 403 antes de pipes e do caso de uso, então nada é gravado. Rotas sem `providerId` (wallets, ledger, consulta por ID interno, métricas) só exigem token válido. Não há autorização por scope.
+
+Com o guard, `WageringService` continua validando provider reservado, dono da wallet e moeda para HTTP e SQS. O consumidor SQS não passa pelo guard: a fila é canal interno confiável e a identidade da mensagem segue só as regras de domínio.
+
+`createApplication(orm, logger, auth)` só instala o guard quando recebe `auth`. `main.ts` sempre lê a configuração do ambiente e falha no startup se faltar variável; testes antigos montam a aplicação sem guard, e `tests/integration/auth-http.test.ts` monta com uma chave gerada no teste.
+
+Limites:
+
+- token emitido vale até `exp` (5 minutos no realm) mesmo depois de desabilitar o client;
+- se o Keycloak cair, tokens assinados por chaves já em cache continuam aceitos; um `kid` novo que não pode ser buscado vira 401, não 503;
+- o realm versionado traz secrets fixos para desenvolvimento local; ambiente real precisa de secrets fora do repositório e HTTPS;
+- `/metrics` exige token, então um Prometheus precisaria de client próprio.
 
 ## Health
 
@@ -360,12 +380,15 @@ Evidências: [verificação](docs/verification.md#métricas--2026-10-24).
 
 Resolução de referências, consumo dos kinds externos e publicação de outbox têm workers separados. Pendências em [PROGRESS](PROGRESS.md).
 
-API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown para novas leituras e espera o consumidor e os workers antes de fechar HTTP e ORM. A espera pelo consumidor tem prazo (`WAGER_SHUTDOWN_DRAIN_MS`, padrão 20 s); workers e outbox ainda não têm.
+Shutdown para novas leituras e espera o consumidor e os workers antes de fechar HTTP e ORM. A espera pelo consumidor tem prazo (`WAGER_SHUTDOWN_DRAIN_MS`, padrão 20 s); workers e outbox ainda não têm.
 
 Setup, migrations e riscos de reversão: [README](README.md). Resultados executados e limites das provas: [evidências](docs/verification.md).
 
 ## Referências consultadas
 
+- [NestJS authentication/passport](https://docs.nestjs.com/recipes/passport) e [guards](https://docs.nestjs.com/guards): `PassportStrategy`, `AuthGuard`, `APP_GUARD` e `Reflector` para `@Public()`; APIs usadas com `@nestjs/passport` 12.0.0.
+- [passport-jwt](https://github.com/mikenicholson/passport-jwt) 4.0.1 e [jwks-rsa](https://github.com/auth0/node-jwks-rsa) 4.1.0: `secretOrKeyProvider`, `issuer`, `audience`, `algorithms`.
+- [Keycloak 26 server import](https://www.keycloak.org/server/importExport), [hostname v2](https://www.keycloak.org/server/hostname) e [health](https://www.keycloak.org/observability/health): `--import-realm`, `KC_HOSTNAME` fixando `iss` e readiness na porta 9000.
 - [MikroORM 6.6 EntitySchema](https://mikro-orm.io/docs/6.6/entity-schema): mapeamento sem decorators no domínio.
 - [MikroORM 6.6 migrations](https://mikro-orm.io/docs/6.6/migrations): execução programática e reversão.
 - [NestJS controllers](https://docs.nestjs.com/controllers): rotas, serialização e códigos padrão 201/200; implementação usa APIs presentes em 11.1.16.
