@@ -62,8 +62,14 @@ function canonical(value: unknown): unknown {
   if (value !== null && typeof value === "object")
     return Object.fromEntries(
       Object.entries(value)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .sort(([a], [b]) => compareKeys(a, b))
         .map(([key, item]) => [key, canonical(item)]),
     );
   return value;
+}
+
+function compareKeys(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
