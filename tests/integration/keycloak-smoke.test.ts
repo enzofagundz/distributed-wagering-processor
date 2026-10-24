@@ -9,6 +9,7 @@ if (!url || !new URL(url).pathname.endsWith("_test"))
   throw new Error("TEST_DATABASE_URL must end in _test");
 const keycloak = process.env.TEST_KEYCLOAK_URL ?? "http://127.0.0.1:8080";
 const realm = `${keycloak}/realms/wagering`;
+const issuer = process.env.TEST_KEYCLOAK_ISSUER ?? realm;
 const schema = `keycloak_${crypto.randomUUID().replaceAll("-", "")}`;
 let admin: MikroORM;
 let orm: MikroORM;
@@ -25,7 +26,7 @@ beforeAll(async () => {
   });
   await orm.migrator.up();
   app = await createApplication(orm, false, {
-    issuer: realm,
+    issuer,
     audience: "wagering-api",
     jwksUri: `${realm}/protocol/openid-connect/certs`,
   });
