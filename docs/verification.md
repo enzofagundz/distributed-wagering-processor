@@ -727,3 +727,25 @@ Documentar `FAILED` como inalcançável e removê-lo da matriz foi descartado. I
 Depois de replay e nova varredura, o estado continua imutável. `fail()` usa `assertPending` e `rehydrate` não reaplica transição. Replay lê o registro e devolve o resultado original, sem chamar domínio nem reabrir a operação. A varredura filtra `status = 'PENDING_REFERENCE'` e `reference_next_attempt_at <= at`; uma linha `FAILED` não entra na consulta, e a chamada direta devolve `SKIPPED`. O schema reforça o estado terminal com `failure_code` e `processed_at` obrigatórios e `reference_next_attempt_at` nulo.
 
 A prova não cobre BET nem LOSS, que não persistem estado não terminal. Um evento `WagerTransactionFailed` ficou fora do contrato, e o contador é por processo. A falha da própria marcação foi induzida por gatilho de banco, não por queda de conexão. Isso fecha a lacuna de `FAILED` registrada na prova final.
+
+## Outbox como domínio — 2026-10-24
+
+Ticket 02 moveu estado de publicação e política de retry para `src/domain/outbox-message.ts`. A verificação usou PostgreSQL e LocalStack reais.
+
+`bun test tests/domain/outbox-message.test.ts tests/integration/outbox.test.ts`: 12 testes, zero falhas, 204 assertions em 14,08 s. `bun run typecheck`, `bun run lint` e `bun run format:check` passaram. `bun test` completo: 320 testes, zero falhas, 2911 assertions em 33 arquivos (315,01 s). Inspeção pelo MCP do Nest Boost (`application_info`, `list_routes`, `module_graph`) devolveu 13 módulos, 4 controllers, 16 providers e 10 rotas; `evaluate` continua recusado. Nenhuma rota, mapping ou migration mudou.
+
+Cenários exercitados:
+
+- domínio: `enqueue` deriva `id`, `aggregateId`, `eventType`, `payload` e `occurredAt` do evento de integração e começa pendente, com zero tentativas e sem agenda; `rehydrate` preserva `attempts`, agenda e publicação; id fora de UUID, attempts negativo ou fracionário, data não finita, payload nulo ou em lista e `publishedAt` junto de `nextAttemptAt` são recusados com `INVALID_OUTBOX_MESSAGE`;
+- sequência de retry: dez chamadas a `scheduleRetry` a partir do mesmo instante produzem 2, 4, 8, 16, 32, 64, 128, 256, 300 e 300 segundos; `isDue` aceita o instante exato da agenda e qualquer um posterior, e recusa `now` inválido;
+- estado terminal: `markPublished` grava o instante e limpa `nextAttemptAt`; nova publicação ou retry depois disso lançam `INVALID_OUTBOX_STATE`;
+- integração real: envelope publicado com a mesma identidade, falha de envio com retry persistido, publisher morto por SIGKILL antes de marcar, dois processos com locks simultâneos e crash depois do envio aceito continuam com o comportamento anterior à refatoração;
+- persistência lida: as quatro linhas pendentes após a falha de rede ficaram com `attempts = 1` e atraso de até dois segundos, e nenhuma linha publicada ficou com agenda.
+
+Os atrasos da integração continuam afirmados por faixa porque o instante base vem do `clock_timestamp()` do PostgreSQL. A sequência exata é conferida no domínio, onde `now` chega por parâmetro: cada passo vira igualdade em segundos em vez de janela de espera, e o teto de 300 aparece sem depender de pressão de retry real.
+
+A consulta de claim lê `occurred_at`, `next_attempt_at`, `published_at` e `clock_timestamp()` como epoch em milissegundos. O driver devolve timestamptz como texto, e converter para `Date` no domínio a partir de string obrigaria a depender do formato da conexão. A linha reidratada carrega os três instantes, e as atualizações gravam `attempts`, `next_attempt_at` e `published_at` a partir desse estado.
+
+A recuperação depois de queda continua igual porque a marcação é persistida só depois de `SendMessage` retornar, dentro da transação que detém o lock da linha. Um processo morto antes desse commit não deixa agenda em memória nem escrita parcial: a linha volta com `attempts` e `next_attempt_at` anteriores, o próximo publisher a reivindica e o SQS recebe o mesmo `eventId`. O `SKIP LOCKED` e o lock transacional seguem no SQL, fora da classe de domínio.
+
+Nada mudou no envelope, na tabela ou na migration `20261023000700`, então o down continua preservando registros e apagando apenas contagem e agenda. O jitter continua ausente, e a defesa contra relógio do host adiantado em relação ao banco não existe: o instante base é sempre o do PostgreSQL.
