@@ -1,11 +1,12 @@
 import type { MoneyProps } from "./money";
 import { DomainError } from "./money";
 import type {
+  CommercialFailureCode,
   ExternalWagerKind,
-  FailureCode,
   WagerKind,
   WagerTransaction,
 } from "./wager-transaction";
+import { isCommercialFailureCode } from "./wager-transaction";
 import type { Wallet } from "./wallet";
 import type { WalletLedgerEntry } from "./wallet-ledger-entry";
 
@@ -85,7 +86,7 @@ export class WagerTransactionRejected extends IntegrationEvent<{
   walletId: string;
   kind: Exclude<ExternalWagerKind, "LOSS">;
   status: "REJECTED";
-  failureCode: FailureCode;
+  failureCode: CommercialFailureCode;
   money: MoneyProps;
   balance: MoneyProps;
   referenceExternalTransactionId?: string;
@@ -99,7 +100,8 @@ export class WagerTransactionRejected extends IntegrationEvent<{
       transaction.kind === "LOSS" ||
       transaction.status !== "REJECTED" ||
       !occurredAt ||
-      !failureCode
+      !failureCode ||
+      !isCommercialFailureCode(failureCode)
     ) {
       throw new DomainError("INVALID_TRANSACTION_STATE");
     }

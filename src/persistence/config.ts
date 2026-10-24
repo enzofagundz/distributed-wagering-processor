@@ -12,6 +12,7 @@ import { Migration20261023000500 } from "./migrations/Migration20261023000500";
 import { Migration20261023000600 } from "./migrations/Migration20261023000600";
 import { Migration20261023000700 } from "./migrations/Migration20261023000700";
 import { Migration20261023000800 } from "./migrations/Migration20261023000800";
+import { Migration20261023000900 } from "./migrations/Migration20261023000900";
 import { outboxMessageSchema } from "./outbox-message-record";
 import { wagerTransactionSchema } from "./wager-transaction-record";
 import { walletLedgerEntrySchema } from "./wallet-ledger-entry-record";
@@ -42,6 +43,7 @@ export function databaseConfig(clientUrl = process.env.DATABASE_URL) {
         Migration20261023000600,
         Migration20261023000700,
         Migration20261023000800,
+        Migration20261023000900,
       ],
       snapshot: false,
     },

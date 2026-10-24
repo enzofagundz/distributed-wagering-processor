@@ -8,7 +8,7 @@ export interface WagerTransactionRecord {
   currency: string;
   amount: string;
   kind: WagerKind;
-  status: "PROCESSED" | "REJECTED" | "PENDING_REFERENCE";
+  status: "PROCESSED" | "REJECTED" | "PENDING_REFERENCE" | "FAILED";
   providerId?: string | null;
   externalTransactionId?: string | null;
   idempotencyKey?: string | null;

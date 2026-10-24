@@ -11,14 +11,36 @@ export const externalWagerKinds = Object.freeze([
 export type ExternalWagerKind = (typeof externalWagerKinds)[number];
 export type WagerKind = "OPENING" | ExternalWagerKind;
 
-export type FailureCode =
-  | "INSUFFICIENT_FUNDS"
-  | "REFERENCE_MISMATCH"
-  | "REFERENCE_NOT_PROCESSED"
-  | "REFERENCE_NOT_FOUND"
-  | "REFERENCE_ALREADY_REFUNDED"
-  | "REFERENCE_ALREADY_ROLLED_BACK"
-  | "INSUFFICIENT_REVERSAL_FUNDS";
+export const commercialFailureCodes = Object.freeze([
+  "INSUFFICIENT_FUNDS",
+  "REFERENCE_MISMATCH",
+  "REFERENCE_NOT_PROCESSED",
+  "REFERENCE_NOT_FOUND",
+  "REFERENCE_ALREADY_REFUNDED",
+  "REFERENCE_ALREADY_ROLLED_BACK",
+  "INSUFFICIENT_REVERSAL_FUNDS",
+] as const);
+export type CommercialFailureCode = (typeof commercialFailureCodes)[number];
+const commercialCodeSet: ReadonlySet<string> = new Set(commercialFailureCodes);
+
+export const permanentInfrastructureFailureCode =
+  "PERMANENT_INFRASTRUCTURE_FAILURE" as const;
+export type InfrastructureFailureCode =
+  typeof permanentInfrastructureFailureCode;
+
+export function isCommercialFailureCode(
+  code: string,
+): code is CommercialFailureCode {
+  return commercialCodeSet.has(code);
+}
+
+export function isInfrastructureFailureCode(
+  code: string,
+): code is InfrastructureFailureCode {
+  return code === permanentInfrastructureFailureCode;
+}
+
+export type FailureCode = CommercialFailureCode | InfrastructureFailureCode;
 
 export interface CreateWagerTransactionProps {
   id: string;
@@ -48,7 +70,7 @@ export interface WagerReference {
 }
 
 export interface WagerTransactionState extends CreateWagerTransactionProps {
-  status: "PENDING" | "PENDING_REFERENCE" | "PROCESSED" | "REJECTED";
+  status: "PENDING" | "PENDING_REFERENCE" | "PROCESSED" | "REJECTED" | "FAILED";
   referenceTransactionId?: string | undefined;
   failureCode?: FailureCode | undefined;
   createdAt: Date;
@@ -303,8 +325,30 @@ export class WagerTransaction {
     });
   }
 
-  reject(code: FailureCode, at: Date): void {
+  fail(code: InfrastructureFailureCode, at: Date): void {
     this.assertPending(at);
+    if (
+      !isInfrastructureFailureCode(code) ||
+      (this.kind !== "WIN" &&
+        this.kind !== "REFUND" &&
+        this.kind !== "ROLLBACK") ||
+      !this.referenceExternalTransactionId
+    ) {
+      throw new DomainError("INVALID_TRANSACTION_STATE");
+    }
+    this.#state = Object.freeze({
+      ...this.#state,
+      status: "FAILED",
+      failureCode: code,
+      processedAt: new Date(at),
+    });
+  }
+
+  reject(code: CommercialFailureCode, at: Date): void {
+    this.assertPending(at);
+    if (!isCommercialFailureCode(code)) {
+      throw new DomainError("INVALID_TRANSACTION_STATE");
+    }
     if (
       this.kind === "BET"
         ? code !== "INSUFFICIENT_FUNDS"
