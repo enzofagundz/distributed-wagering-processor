@@ -4,7 +4,7 @@ Serviço financeiro desenvolvido em etapas para o [desafio técnico](README_TECH
 
 A API permite abrir wallet, consultar saldo, paginar ledger, reconciliar sem reparar dados e processar BET, WIN, LOSS, REFUND e ROLLBACK por HTTP. Transações podem ser consultadas por ID interno ou identidade do provedor. Abertura positiva e operações financeiras persistem saldo, transação, ledger e eventos pendentes na mesma transação SQL. LOSS confirma resultado e evento sem movimentar saldo. Um worker agendado resolve WIN, REFUND e ROLLBACK que chegaram antes da referência.
 
-O publisher envia eventos confirmados da outbox ao SQS no LocalStack. BET, WIN, LOSS, REFUND e ROLLBACK também entram por SQS, com inbox persistente e ack após commit. `GET /health/live` e `GET /health/ready` estão disponíveis; autenticação continua pendente. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. Métrica e log específicos de reconciliação estão disponíveis; observabilidade dos demais fluxos continua pendente. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
+O publisher envia eventos confirmados da outbox ao SQS no LocalStack. BET, WIN, LOSS, REFUND e ROLLBACK também entram por SQS, com inbox persistente e ack após commit. `GET /health/live` e `GET /health/ready` estão disponíveis; autenticação continua pendente. A referência ausente fica persistida como `PENDING_REFERENCE`, sem movimento; o worker aplica backoff persistido e encerra a pendência após dez tentativas sem resolução. A API escreve logs JSON no stdout, com `correlationId` e os identificadores de cada etapa. Só a reconciliação tem métrica; as demais métricas continuam pendentes. A [cobertura por requisito](PROGRESS.md) lista o que falta para concluir o desafio.
 
 ## Roteiro para leitura e avaliação
 
@@ -60,6 +60,16 @@ No container da API, o Compose define `DATABASE_URL`, `HOST` e `PORT`: banco em 
 `GET /health/live` responde 200 `{"status":"live"}` enquanto o processo atende HTTP. Não consulta dependências, então serve para decidir reinício.
 
 `GET /health/ready` consulta PostgreSQL (`select 1`) e as filas `WAGER_QUEUE_URL` e `OUTBOX_QUEUE_URL` (`GetQueueAttributes`) em paralelo. Responde 200 com `{"status":"ready","checks":{"postgres":"up","sqs":"up"}}` ou 503 com `"status":"not_ready"` e o check que falhou como `down`. Cada verificação espera no máximo `HEALTH_TIMEOUT_MS` (padrão 2000). A resposta não traz mensagem de erro, URL nem credencial. Os dois endpoints são públicos.
+
+### Logs
+
+`bun run start` escreve uma linha JSON por registro no stdout, no formato do `ConsoleLogger` do Nest: `level`, `pid`, `timestamp`, `context` e `message`. Nos registros de negócio, `message` é um objeto com `event` e identificadores. Para seguir uma transação, filtre pelo `correlationId`, que é o `transactionId`:
+
+```sh
+bun run start | grep '"correlationId":"<transactionId>"'
+```
+
+Na entrada por SQS, `WagerTransactionSubmitted` e `WagerMessageCommitted` também levam o `messageId` do envelope. Retry e DLQ do consumidor não chegam a ter `transactionId`, porque a transação foi desfeita; filtre pelo `messageId`. Os testes criam a aplicação com `logger: false`, salvo quando capturam logs.
 
 ## Publicar e inspecionar eventos
 

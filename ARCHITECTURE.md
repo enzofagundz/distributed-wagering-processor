@@ -71,7 +71,7 @@ Cada varredura tenta até 100 registros, com uma transação SQL por evento. `SE
 
 A fila de integração é standard, criada no LocalStack pelo Compose. O SDK faz uma tentativa por envio (`maxAttempts: 1`), com abort após cinco segundos. O próximo ciclo ocorre um segundo após o anterior terminar. Falha de envio incrementa `attempts` e persiste `next_attempt_at` na mesma transação que detém o lock. O backoff é `min(300, 2^attempts)` segundos: 2, 4, 8, 16, 32, 64, 128, 256 e 300 nas seguintes. O cálculo e a elegibilidade usam o relógio do PostgreSQL; o expoente é limitado antes do cálculo. A contagem registra falhas de envio, continua após sucesso e não limita a recuperação. Não há descarte nem DLQ de saída: indisponibilidade prolongada acumula eventos para envio posterior. Não há jitter neste incremento.
 
-Após agendar o retry, o lote continua sobre outros eventos elegíveis, até 100 tentativas por varredura. Sucesso define `published_at` e limpa a agenda. Erro SQL interrompe o lote. A chamada ao Logger Nest inclui `OutboxPublicationFailed`, tipo do erro e, para falha de envio, `eventId`, sem payload ou credenciais. O `logger: false` de `createApplication` silencia essa chamada no bootstrap; emissão operacional de logs continua pendente. Reinício lê contagem e agenda do banco, sem antecipar retries futuros. Queda antes de confirmar o agendamento desfaz apenas essa tentativa; a linha continua recuperável.
+Após agendar o retry, o lote continua sobre outros eventos elegíveis, até 100 tentativas por varredura. Sucesso define `published_at` e limpa a agenda. Erro SQL interrompe o lote. A chamada ao Logger Nest inclui `OutboxPublicationFailed`, tipo do erro e, para falha de envio, `eventId`, sem payload ou credenciais. Também inclui `correlationId`, `transactionId`, `walletId` e `eventType` lidos do envelope. Sucesso registra `OutboxEventPublished` com os mesmos campos. Reinício lê contagem e agenda do banco, sem antecipar retries futuros. Queda antes de confirmar o agendamento desfaz apenas essa tentativa; a linha continua recuperável.
 
 A migration `20261023000700` adiciona contagem não negativa, agenda finita e índice parcial para pendências. Registros antigos começam com zero falhas e sem prazo, prontos para envio. O down preserva envelopes e marcações, mas remove o histórico de tentativas e a agenda; após novo up, pendências voltam a ser imediatamente elegíveis. Pare publishers durante rollback do schema.
 
@@ -284,7 +284,7 @@ Decisão adotada no ticket 04 (§9): um único SELECT parametrizado lê wallet e
 
 O snapshot de comando em READ COMMITTED vê saldo e ledger no mesmo instante, sem bloquear escritor. Uma movimentação atômica concorrente aparece inteira ou não aparece. Alternativa: duas leituras em REPEATABLE READ; descartada por adicionar transação sem benefício para uma única consulta. Duas leituras em READ COMMITTED seriam incorretas. Resultado é diagnóstico daquele instante, não reserva nem garantia sobre escrita posterior.
 
-Nenhuma correção automática, mudança de versão ou escrita financeira. Cada divergência emite mensagem JSON `WalletReconciliationDivergence` via Logger Nest, apenas com walletId, sem saldos, player ou payload; envelope de saída segue logger configurado. Incrementa contador Prometheus sem labels, exposto em GET /metrics no mesmo módulo. Contador por processo, cumulativo por chamada, não persistente e não usado como garantia financeira; coletor deve agregar instâncias e tratar resets. Observabilidade global do §12 permanece pendente.
+Nenhuma correção automática, mudança de versão ou escrita financeira. Cada divergência emite mensagem JSON `WalletReconciliationDivergence` via Logger Nest, apenas com walletId, sem saldos, player ou payload; envelope de saída segue logger configurado. Incrementa contador Prometheus sem labels, exposto em GET /metrics no mesmo módulo. Contador por processo, cumulativo por chamada, não persistente e não usado como garantia financeira; coletor deve agregar instâncias e tratar resets. As demais métricas do §12 continuam pendentes.
 
 Teste HTTP com PostgreSQL real cobre zero, abertura além de Number.MAX_SAFE_INTEGER, duas direções de diferença, ausência de reparo, log, contador e transação concorrente parada entre alteração de saldo e inclusão de ledger. Fixture crédito/débito é sintética e isolada, não implementação de BET. Evidências: [verificação](docs/verification.md#reconciliação--2026-10-22).
 
@@ -311,13 +311,23 @@ Erros conhecidos retornam `{ "code": "..." }`, exceto a rejeição 422, que reto
 
 No SQS, `GetQueueAttributes` nas filas de entrada e de outbox prova endpoint acessível e fila existente. No PostgreSQL, o timeout limita a resposta, mas a query abandonada continua no pool até o driver desistir. Readiness não consulta a DLQ nem exige migrations aplicadas.
 
+## Logs correlacionados
+
+`main.ts` cria a aplicação com `ConsoleLogger({ json: true })`, que já vem no Nest 11. Os serviços continuam chamando `new Logger(Classe.name)` e passam objetos, não strings; o logger serializa a linha inteira. `createApplication` recebe o logger por parâmetro, com `false` como padrão, para os testes não poluírem a saída.
+
+O `correlationId` é o `transactionId`. Esse id já é o `correlationId` dos eventos da outbox e fica persistido, então o mesmo valor aparece no caso de uso, no ack do consumidor, em cada tentativa de publicação e nos eventos que saem para o SQS. Replay retorna o id original e loga o mesmo valor. Considerei propagar um header `X-Correlation-Id` com `AsyncLocalStorage`, mas exigiria guardar o id na transação para sobreviver a reinício e retry da outbox. Fica como extensão; hoje o header é ignorado.
+
+`WageringService.submit`, usado por HTTP e SQS, registra `WagerTransactionSubmitted` com `correlationId`, `transactionId`, `walletId`, `providerId`, `kind`, `status` e, pela fila, `messageId`. Falha antes do commit registra `WagerTransactionFailed` só com código e identificadores de entrada: não há `transactionId`, porque nada foi gravado. Nessa situação, o `messageId` liga a falha às decisões de retry ou DLQ do consumidor.
+
+Nenhum log leva valor, saldo, `playerId`, chave de idempotência, corpo da mensagem ou texto de exceção. Exceções viram `code` ou `errorType` (nome da classe), porque mensagens de driver podem trazer SQL, host ou parâmetros. O worker de referências passou a seguir essa regra; antes registrava `error.message`.
+
 ## Decisões
 
 [DECISIONS](DECISIONS.md) relaciona as decisões aos requisitos. As decisões D-001 a D-005 estão registradas nos ADRs 0001 a 0005, com os mesmos status e limites. O [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) registra a organização modular adotada. Os ADRs reúnem justificativas, alternativas e consequências.
 
 ## Ainda não entregue
 
-Observabilidade dos demais fluxos permanece em [PROGRESS](PROGRESS.md). Resolução de referências, consumo dos kinds externos e publicação de outbox têm workers separados. Próximo ticket: 25.
+Métricas além da reconciliação continuam pendentes em [PROGRESS](PROGRESS.md). Resolução de referências, consumo dos kinds externos e publicação de outbox têm workers separados. Próximo ticket: 26.
 
 API é local e sem autenticação. Decisão final de omissão/IdP e ponto de extensão exigidos pelo enunciado ainda pendentes; bind em loopback não os substitui. Shutdown para novas leituras e espera o consumidor e os workers antes de fechar HTTP e ORM. A espera pelo consumidor tem prazo (`WAGER_SHUTDOWN_DRAIN_MS`, padrão 20 s); workers e outbox ainda não têm.
 

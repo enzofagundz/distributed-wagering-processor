@@ -603,3 +603,21 @@ Smoke com `PORT=3199 bun run start` e containers do Compose no Podman:
 `bun test` completo: 288 testes, 2541 assertions, zero falhas em 26 arquivos (272.70s). `bun run typecheck`, `bun run lint` e `bun run format` passaram. Nest Boost MCP não rodou: o servidor configurado neste ambiente falhou ao importar `src/app.module.ts` por caminho Windows.
 
 Limites: o Compose não usa `/health/ready` no healthcheck do serviço `app`. A query de PostgreSQL abandonada pelo timeout continua no pool.
+
+## Logs correlacionados — 2026-10-24
+
+Ticket 25. `main.ts` usa `ConsoleLogger({ json: true })`; `correlationId` é o `transactionId`.
+
+`tests/integration/correlated-logs.test.ts` captura os logs da aplicação com PostgreSQL e LocalStack reais. Uma BET entra por HTTP e outra pela fila FIFO. Uma terceira mensagem aponta para wallet inexistente. O publisher roda uma vez contra fila inexistente e depois contra a fila certa. O teste confere:
+
+- para cada transação, `WagerTransactionSubmitted`, `OutboxPublicationFailed` e `OutboxEventPublished` com o mesmo `correlationId`, `transactionId` e `walletId`; pela fila, `messageId` no submit e no `WagerMessageCommitted`;
+- a mensagem inválida produz `WagerTransactionFailed` e `WagerMessageInvalid`, ligados pelo `messageId`;
+- nenhum log contém o valor `12.34`, as chaves de idempotência, os `playerId` ou a credencial `test`.
+
+A primeira rodada completa falhou em três testes de `outbox.test.ts`. O processo filho em `fixtures/outbox-instance.ts` sinaliza `ready` pelo stdout, e o novo log de publicação chegava antes. O fixture agora chama `Logger.overrideLogger(false)`; os sete testes do arquivo passaram em seguida.
+
+Smoke com `PORT=3199 bun run start` e filas do Compose (`.scratch/smoke/ticket25.ts`): uma BET HTTP (201) e uma BET pela fila `wager-transactions.fifo`. O stdout trouxe linhas JSON com `WagerTransactionSubmitted`, `WagerMessageCommitted` e `OutboxEventPublished`. Os dois eventos de cada transação repetiram o `correlationId` do submit. `grep` no log não encontrou a chave de idempotência, os dois `playerId`, o valor `7.77` nem `test`; o `messageId` apareceu duas vezes.
+
+`bun test` completo: 289 testes, 2578 assertions, zero falhas em 27 arquivos (279.58s). `bun run typecheck`, `bun run lint` e `bun run format` passaram. Nest Boost MCP não rodou, pela mesma falha de caminho Windows do ticket 24.
+
+Limites: o smoke não exercitou retry pela fila; retry da outbox e DLQ ficaram só no teste. O header `X-Correlation-Id` é ignorado. O bootstrap do Nest também escreve linhas JSON de inicialização, sem dados de negócio.
