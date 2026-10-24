@@ -19,7 +19,7 @@ Este documento descreve a implementação atual. Os requisitos estão no [enunci
 | Inbox | `src/wagering/wagering-inbox.ts` | Reserva, replay de transporte e checkpoint no EntityManager transacional recebido |
 | Referências pendentes | `src/wagering/pending-reference-batch-runner.ts`, `pending-reference-worker.ts` | Varredura paginada, contabilização por candidato e agendamento |
 | Consumo de BET SQS | `src/wagering/wager-consumer.ts`, `wager-message.ts` | Envelope, chamada ao caso de uso com contexto de inbox, ack após commit, retry e DLQ |
-| Domínio | `src/domain/` | Money, Wallet, WagerTransaction, WalletLedgerEntry, InboxMessage e eventos; sem NestJS/ORM |
+| Domínio | `src/domain/` | Money, Wallet, WalletMovement, WagerTransaction, WalletLedgerEntry, InboxMessage e eventos; sem NestJS/ORM |
 | Persistência | `src/persistence/persistence.module.ts`, `*record.ts`, `config.ts` | Provider MikroORM exportado explicitamente, EntitySchema e configuração |
 | Schema | `src/persistence/migrations/` | Constraints, FKs, trigger append-only e índices versionados |
 | Verificação | `tests/domain/`, `tests/integration/` | Invariantes, constraints, atomicidade e fronteira HTTP com PostgreSQL real |
@@ -28,7 +28,7 @@ Este documento descreve a implementação atual. Os requisitos estão no [enunci
 
 `createApplication(orm)` monta `AppModule.register(orm)`, que importa `WalletsModule.register(orm)`, `WageringModule.register(orm)` e `OutboxModule.register(orm)`. Os módulos importam `PersistenceModule.register(orm)`, que exporta o token `MikroORM`; factories explícitas injetam a mesma instância fornecida pelo chamador. Não há provider global, conexão adicional por funcionalidade, configuração mutável compartilhada ou Repository intermediário. Providers de um módulo pai não ficam automaticamente visíveis nos filhos.
 
-Controller recebe HTTP e delega; DTO valida estrutura; serviço coordena domínio e persistência. `Money`, `Wallet` e `WalletLedgerEntry` mantêm invariantes fora do NestJS, e `EntitySchema` continua separado do domínio. Para quem vem de Laravel: controller e service têm papéis semelhantes, mas módulo Nest declara a composição e a visibilidade de dependências; `WalletService` pode acessar ORM diretamente, sem transformar objetos de domínio em models Eloquent. Esse layout é convenção adotada, não obrigação de diretórios do framework.
+Controller recebe HTTP e delega; DTO valida estrutura; serviço coordena domínio e persistência. `Money`, `Wallet`, `WalletMovement` e `WalletLedgerEntry` mantêm invariantes fora do NestJS, e `EntitySchema` continua separado do domínio. Para quem vem de Laravel: controller e service têm papéis semelhantes, mas módulo Nest declara a composição e a visibilidade de dependências; `WalletService` pode acessar ORM diretamente, sem transformar objetos de domínio em models Eloquent. Esse layout é convenção adotada, não obrigação de diretórios do framework.
 
 `WageringModule` registra consulta, inbox e varredura como providers separados. `WageringService` continua coordenando submissão, resolução individual e liquidação compartilhada. Ele abre a transação SQL e passa o mesmo EntityManager a `WageringInbox.run`; a inbox não recebe ORM, não cria fork, não abre transação e não confirma escritas por conta própria. Wallet, transação financeira, ledger, inbox quando aplicável e outbox continuam no mesmo commit. A recuperação de uma corrida de unicidade primeiro aborta a tentativa inteira e depois confirma replay e inbox juntos em nova transação. Consulta e varredura têm seus próprios forks de leitura; cada candidato do lote delega a resolução transacional ao serviço. Essa separação mantém as decisões dos ADRs 0006 e 0007, sem Repository pass-through ou transação distribuída.
 
@@ -37,6 +37,26 @@ Chamador continua dono do ORM: execução inicializa em `main.ts`, testes fornec
 Nest Boost 0.4.0 exige export de classe, não aceita objeto `DynamicModule`. `PreviewAppModule` compõe a mesma cadeia sem ORM fornecido; a factory padrão fica em persistência, sem executar `databaseConfig` nem inicializar PostgreSQL durante o preview nativo do Nest. `nest-boost.json` aponta para essa classe; `evaluate` permanece desativado. Essa entrada é somente para inspeção: execução e testes usam `createApplication(orm)`. Inspeção de DI não substitui HTTP real com PostgreSQL.
 
 O [ADR-0006](docs/adr/0006-organizacao-modular-nest.md) registra a decisão e as alternativas. Os contratos financeiros e o ponto de teste permanecem os mesmos; a reorganização não adiciona testes de wiring.
+
+## Movimento atômico
+
+`WalletMovement` é um valor imutável com dois campos: a wallet resultante e o lançamento de ledger, que fica `null` quando o saldo não mudou. `Wallet.open`, `Wallet.debit` e `Wallet.credit` devolvem esse par, e quem chama informa a identidade da transação financeira e a do lançamento. A identidade vem de fora porque o agregado não gera UUID, e o mesmo ID que entra no lançamento identifica a transação persistida.
+
+O adaptador persiste o que o par contém, sem decidir se houve movimento. `WalletService.open` grava a wallet e, quando `entry` existe, a transação OPENING, o lançamento e dois eventos. A liquidação aplica `debit` ou `credit` e grava wallet, transação, lançamento e outbox. LOSS, rejeição e pendência não recebem par, então não escrevem saldo, versão nem ledger.
+
+| Operação | Par devolvido | Lançamento |
+|---|---|---|
+| Abertura com saldo zero | wallet e `entry` nulo | nenhum |
+| Abertura com saldo positivo | wallet e `entry` | CREDIT de `0.00` até o saldo |
+| `credit` | wallet e `entry` | CREDIT |
+| `debit` | wallet e `entry` | DEBIT |
+| Rejeição | exceção `DomainError` | nenhum |
+
+A abertura zero é o único par sem lançamento porque zero não é movimento. Criar a transação OPENING e um lançamento de valor zero violaria `LEDGER_AMOUNT_MUST_BE_POSITIVE` e inventaria auditoria para um saldo que ninguém creditou. O evento de abertura segue a mesma assimetria: sem lançamento, não há `WagerTransactionProcessed` nem `WalletBalanceChanged`.
+
+Um lançamento desbalanceado não passa pela factory. `WalletLedgerEntry.create` valida identidade, valor positivo, moeda, saldos não negativos e `balanceBefore ± money = balanceAfter`. `WalletMovement.of` acrescenta a conferência de que o lançamento pertence àquela wallet, termina no saldo dela e continua balanceado; um lançamento reidratado e inconsistente é recusado. Para produzir um par desbalanceado seria preciso contornar as duas fábricas.
+
+Alternativa descartada: devolver só a wallet e uma flag `walletChanged` para o serviço montar o lançamento. A flag devolve ao adaptador a decisão de escrever auditoria, e a invariante "saldo mudou, lançamento existe" volta a depender de disciplina. Com o par, a ausência do lançamento é a única representação de "não houve movimento" ([D-020](DECISIONS.md)).
 
 ## Abertura de wallet
 
@@ -50,7 +70,7 @@ sequenceDiagram
     C->>H: POST /wallets
     H->>S: Payload validado
     S->>D: Money.from e Wallet.open
-    D-->>S: Wallet e lançamento se saldo positivo
+    D-->>S: Par wallet+lançamento, com entry nulo se saldo zero
     S->>P: BEGIN
     S->>P: Persistir wallet
     opt Saldo positivo
@@ -61,7 +81,7 @@ sequenceDiagram
     S-->>C: 201 com wallet
 ```
 
-Falha antes do commit desfaz todas as escritas. `persist(...).flush()` envia SQL dentro da transação, não antecipa commit. Abertura zero persiste somente wallet; ambas começam em versão 1. OPENING é interna, sem IDs fictícios de provedor, rodada ou jogo, e nasce persistida como PROCESSED.
+Falha antes do commit desfaz todas as escritas. `persist(...).flush()` envia SQL dentro da transação, não antecipa commit. Abertura zero persiste somente wallet; ambas começam em versão 1. O serviço gera os IDs da transação `OPENING` e do lançamento, e o domínio devolve o par; o serviço não monta o lançamento nem decide se ele existe. OPENING é interna, sem IDs fictícios de provedor, rodada ou jogo, e nasce persistida como PROCESSED.
 
 A constraint única `(player_id, currency)` resolve aberturas concorrentes no PostgreSQL; duplicatas retornam 409. Abertura não reproduz resultado original; BET usa o replay descrito abaixo. O publisher consome a outbox após o commit, conforme a seção de publicação abaixo.
 
@@ -96,7 +116,7 @@ Referências consultadas via Context7: [AWS SDK v3](https://github.com/aws/aws-s
 - Dinheiro: centavos `bigint` no domínio; `numeric(30,2)` na persistência, lido como string. Limite SQL: 28 dígitos inteiros; overflow falha sem commit parcial. Nunca converter dinheiro para `number`.
 - Domínio encapsula estado; factories criam e `rehydrate` reconstrói sem reaplicar transições. Validação HTTP não substitui invariantes do domínio.
 - Banco protege saldo não negativo, unicidade, aritmética do ledger e consistência de identidade/moeda por FKs compostas. Trigger rejeita UPDATE, DELETE e TRUNCATE do ledger. Administrador capaz de remover trigger/schema não está contido por essa proteção.
-- Correspondência saldo/ledger depende do caso de uso transacional; schema não promete impedir toda escrita administrativa arbitrária. Separação entre usuário de migrations e aplicação ainda é necessária antes de exposição real.
+- A wallet produz o par wallet+lançamento e o adaptador grava os dois na mesma transação SQL. A correspondência entre saldo e ledger deixa de depender de uma flag do serviço, mas continua dependendo de o adaptador persistir o par; o schema não promete impedir toda escrita administrativa arbitrária. Separação entre usuário de migrations e aplicação ainda é necessária antes de exposição real.
 - Sem lock global. BET, WIN, LOSS, REFUND e ROLLBACK usam lock pessimista da wallet antes da leitura do saldo. Concorrência financeira de BET foi exercitada em três processos com pools independentes; isso não comprova os fluxos de mensageria.
 - Eventos persistidos: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference`, com envelope versionado e MoneyProps. Publicação real, backoff persistido e provas de crash e concorrência dos publishers estão cobertos nos tickets 15–17.
 
@@ -110,7 +130,7 @@ Referências consultadas via Context7: [AWS SDK v3](https://github.com/aws/aws-s
 
 O serviço valida player e moeda contra a wallet carregada antes de escrever. Provider tem validação de formato e nome reservado, não autenticação nem cadastro. A API permanece local e sem IdP.
 
-Com saldo suficiente, `Wallet.debit` retorna nova wallet imutável com versão incrementada. SQL confirma BET PROCESSED, saldo observado, um DEBIT, saldo materializado e eventos Processed/BalanceChanged juntos. Sem saldo, confirma BET REJECTED com `INSUFFICIENT_FUNDS` e evento Rejected; saldo, versão e ledger não mudam. Resposta sai após commit. Falha ao gravar qualquer evento desfaz também escritas anteriores. A publicação ocorre no worker separado, após commit.
+Com saldo suficiente, `Wallet.debit` devolve o par imutável com a wallet resultante, versão incrementada e o lançamento DEBIT. SQL confirma BET PROCESSED, saldo observado, esse DEBIT, saldo materializado e eventos Processed/BalanceChanged juntos. Sem saldo, confirma BET REJECTED com `INSUFFICIENT_FUNDS` e evento Rejected; saldo, versão e ledger não mudam. Resposta sai após commit. Falha ao gravar qualquer evento desfaz também escritas anteriores. A publicação ocorre no worker separado, após commit.
 
 `WagerTransaction.create` nasce PENDING; `markProcessed`, `reject` e `fail` levam a estados terminais, que recusam novas transições. `rehydrate` recompõe estado sem repetir regras. BET e LOSS persistem somente estados terminais; WIN, REFUND e ROLLBACK também podem persistir PENDING_REFERENCE e FAILED, conforme seções abaixo. `reject` aceita somente códigos comerciais; `fail` grava `PERMANENT_INFRASTRUCTURE_FAILURE` e é o único caminho para `FAILED`.
 
@@ -146,7 +166,7 @@ Alternativa seria optimistic locking com retry limitado ou update condicionado. 
 
 ## Crédito de WIN e referências
 
-Decisão D-012, ticket 09 (§6.2–6.4, §7, §9 e §11): WIN reutiliza `WageringService.submit`, a chave global e o lock por wallet do BET. `Wallet.credit` aplica dinheiro exato, e a mesma transação SQL persiste WIN PROCESSED, saldo observado, CREDIT, saldo/versão e eventos Processed/BalanceChanged. Qualquer falha antes do commit desfaz o conjunto. A resposta sai depois do commit; replay lê o resultado persistido, sem creditar novamente.
+Decisão D-012, ticket 09 (§6.2–6.4, §7, §9 e §11): WIN reutiliza `WageringService.submit`, a chave global e o lock por wallet do BET. `Wallet.credit` devolve o par com o crédito exato, e a mesma transação SQL persiste WIN PROCESSED, saldo observado, o lançamento CREDIT, saldo/versão e eventos Processed/BalanceChanged. Qualquer falha antes do commit desfaz o conjunto. A resposta sai depois do commit; replay lê o resultado persistido, sem creditar novamente.
 
 Mapeamentos monetários usam instância explícita de `StringType` com `columnType: 'numeric(30,2)'`. PostgreSQL continua responsável pela representação numérica exata; ORM compara strings canônicas. O `DecimalType` instalado em 6.6.8 converte para `number` em `compareValues`, e deixou de detectar um crédito de `0.01` sobre `9007199254740993.01` no teste HTTP. Declarar apenas `type: 'string'` ou passar a classe `StringType` não bastou: discovery voltou a inferir DecimalType pela coluna. A instância explícita evita essa substituição, sem tipo monetário customizado nem alteração SQL.
 
@@ -190,7 +210,7 @@ Referência incompatível resulta em REJECTED com `REFERENCE_MISMATCH`; BET term
 
 Após validar a referência e ainda sob lock da wallet, o serviço procura REFUND PROCESSED para a mesma BET. Nova tentativa com identidade própria é auditada como REJECTED com `REFERENCE_ALREADY_REFUNDED`. Migration `20261023000400` adiciona índice único parcial `wager_transactions_refund_reference_unique` sobre `reference_transaction_id` somente para REFUND PROCESSED. Essa é a garantia final contra dois créditos; pendências e rejeições não reservam a BET. O lock serializa tentativas válidas da mesma wallet e permite registrar rejeição de negócio, em vez de expor violação de unicidade como erro inesperado.
 
-No sucesso, `Wallet.credit` devolve o valor integral; saldo/versão, REFUND PROCESSED, CREDIT e eventos Processed/BalanceChanged confirmam juntos. Flush não antecipa commit; falha na outbox desfaz inclusive a reserva no índice. Replay mantém identidade, status, failure code e saldo originais, sem consultar novamente a BET ou emitir evento. Replay de pendência não a resolve; o worker segue a [política de referências](#resolução-de-referências-pendentes).
+No sucesso, `Wallet.credit` devolve o par com o valor integral; saldo/versão, REFUND PROCESSED, o lançamento CREDIT e eventos Processed/BalanceChanged confirmam juntos. Flush não antecipa commit; falha na outbox desfaz inclusive a reserva no índice. Replay mantém identidade, status, failure code e saldo originais, sem consultar novamente a BET ou emitir evento. Replay de pendência não a resolve; o worker segue a [política de referências](#resolução-de-referências-pendentes).
 
 Alternativa descartada: índice único sobre todas as tentativas, que faria uma rejeição por valor inválido impedir devolução válida posterior. Checar apenas no serviço, sem índice, deixaria a unicidade dependente da disciplina dos escritores. Não há lock adicional na BET: uma referência válida pertence à wallet já bloqueada.
 
@@ -202,7 +222,7 @@ Referências consultadas: [MikroORM 6.6 — transações e concorrência](https:
 
 Decisão D-015, ticket 12 (§6.3, §7, §9 e §11): ROLLBACK exige referência externa e aceita BET, WIN ou REFUND PROCESSED. O domínio valida provider, identidade externa, player, wallet, moeda, rodada e valor integral. Jogo pode diferir. OPENING, LOSS e ROLLBACK são inelegíveis e resultam em `REFERENCE_MISMATCH`; referência terminal sem processamento resulta em `REFERENCE_NOT_PROCESSED`. Referência ausente ou não terminal fica PENDING_REFERENCE, sem movimento.
 
-`WagerTransaction.ledgerDirectionFor` define a direção: BET é revertida com CREDIT; WIN e REFUND, com DEBIT. A verificação de saldo ocorre sob lock da wallet antes de aplicar o débito. Insuficiência gera REJECTED com `INSUFFICIENT_REVERSAL_FUNDS`, distinto de `INSUFFICIENT_FUNDS` da BET. Rejeição persiste saldo observado e evento Rejected, sem ledger ou incremento de versão.
+`WagerTransaction.ledgerDirectionFor` define a direção: BET é revertida com CREDIT; WIN e REFUND, com DEBIT. A verificação de saldo ocorre sob lock da wallet antes de aplicar o débito, e `Wallet.credit` ou `Wallet.debit` devolve o par com o lançamento na direção escolhida. Insuficiência gera REJECTED com `INSUFFICIENT_REVERSAL_FUNDS`, distinto de `INSUFFICIENT_FUNDS` da BET. Rejeição persiste saldo observado e evento Rejected, sem ledger ou incremento de versão.
 
 Após resolver a referência, o serviço procura reversão PROCESSED do mesmo tipo sob o lock existente. Segunda tentativa ROLLBACK recebe `REFERENCE_ALREADY_ROLLED_BACK`. Migration `20261023000500` acrescenta `wager_transactions_rollback_reference_unique`, índice único parcial sobre a referência somente para ROLLBACK PROCESSED. REFUND mantém seu índice separado. As duas operações podem reverter a mesma BET uma vez cada: proibição cruzada ampliaria §7.4 sem base no enunciado. Tentativas rejeitadas ou pendentes não reservam sucesso.
 

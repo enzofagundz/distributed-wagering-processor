@@ -20,7 +20,11 @@ Identidade UUID recebida como `playerId`, associada à wallet; não existe cadas
 
 ## Wallet
 
-Carteira identificada por UUID, com player, saldo, moeda, versão e datas encapsulados. Abertura, consulta e débito de BET estão disponíveis. `debit` retorna nova instância imutável ([processamento de BET](ARCHITECTURE.md#processamento-de-bet)).
+Carteira identificada por UUID, com player, saldo, moeda, versão e datas encapsulados. Abertura, consulta, débito de BET e crédito de WIN, REFUND e ROLLBACK estão disponíveis. `debit` e `credit` não devolvem só a wallet: devolvem o par imutável descrito em [Movimento](#movimento), sem alterar a instância que recebeu a chamada ([processamento de BET](ARCHITECTURE.md#processamento-de-bet)).
+
+## Movimento
+
+Par imutável `WalletMovement` com a wallet resultante e o lançamento de ledger; o lançamento fica `null` quando o saldo não mudou. `Wallet.open`, `Wallet.debit` e `Wallet.credit` devolvem o par, então mover saldo e escrever auditoria são o mesmo ato. A transação e o lançamento recebem a identidade de quem chama, porque o agregado não gera UUID. Operação rejeitada não devolve par. O lançamento existe se e somente se o saldo mudou, e a abertura zero é o único caso de par com `entry` nulo ([movimento atômico](ARCHITECTURE.md#movimento-atômico)).
 
 ## Saldo
 
@@ -28,11 +32,11 @@ Valor monetário materializado na wallet, não negativo. Abertura positiva gera 
 
 ## Versão da wallet
 
-Inteiro positivo persistido como `version`, iniciado em 1 e exposto em respostas e no evento `WalletBalanceChanged`. Incrementa quando BET muda saldo; rejeição não incrementa. Lock pessimista da wallet controla concorrência, não comparação otimista de versão.
+Inteiro positivo persistido como `version`, iniciado em 1 e exposto em respostas e no evento `WalletBalanceChanged`. Incrementa quando o saldo muda, seja por BET, WIN, REFUND ou ROLLBACK; rejeição, LOSS e pendência não incrementam. Lock pessimista da wallet controla concorrência, não comparação otimista de versão.
 
 ## Abertura / OPENING
 
-Abertura cria wallet com saldo inicial não negativo. Se positivo, cria também transação interna `OPENING` já `PROCESSED`, crédito no ledger e dois eventos na mesma transação SQL; se zero, cria somente wallet, sem transação financeira, ledger ou evento ([ADR-0002](docs/adr/0002-persistencia-e-concorrencia-da-abertura.md)).
+Abertura cria wallet com saldo inicial não negativo. `Wallet.open` recebe a identidade da transação `OPENING` e a do lançamento, e devolve o par. Se o saldo for positivo, o par traz um crédito no ledger e o serviço persiste também a transação interna `OPENING` já `PROCESSED` e dois eventos na mesma transação SQL; se for zero, o par traz `entry` nulo e só a wallet é persistida, sem transação financeira, ledger ou evento ([ADR-0002](docs/adr/0002-persistencia-e-concorrencia-da-abertura.md)).
 
 ## Transação financeira
 
@@ -44,11 +48,11 @@ Fronteira atômica de `EntityManager.fork().transactional()`: confirma todas as 
 
 ## Ledger / lançamento
 
-Ledger é o histórico append-only em `wallet_ledger_entries`; cada `WalletLedgerEntry` registra transação, direção, valor positivo, saldo anterior, saldo posterior e data. Domínio e schema validam aritmética e moeda; trigger impede UPDATE, DELETE e TRUNCATE no uso normal ([ADR-0003](docs/adr/0003-auditoria-da-abertura.md)).
+Ledger é o histórico append-only em `wallet_ledger_entries`; cada `WalletLedgerEntry` registra transação, direção, valor positivo, saldo anterior, saldo posterior e data. Lançamento novo só nasce pela factory `WalletLedgerEntry.create`, que valida identidade, valor positivo, moeda, saldos não negativos e a aritmética; por isso o par produzido pela wallet não pode nascer desbalanceado. Domínio e schema repetem essas garantias, e o trigger impede UPDATE, DELETE e TRUNCATE no uso normal ([ADR-0003](docs/adr/0003-auditoria-da-abertura.md)).
 
 ## CREDIT / DEBIT
 
-Direções aceitas pelo lançamento: `CREDIT` soma o valor ao saldo anterior; `DEBIT` subtrai. Abertura positiva produz CREDIT; BET processada produz DEBIT. BET rejeitada não gera lançamento.
+Direções aceitas pelo lançamento: `CREDIT` soma o valor ao saldo anterior; `DEBIT` subtrai. A direção é consequência da operação: `credit` produz CREDIT; `debit` produz DEBIT. Abertura positiva produz CREDIT; BET processada produz DEBIT. BET rejeitada não gera lançamento.
 
 ## Evento de integração
 

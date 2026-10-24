@@ -803,3 +803,26 @@ Nest Boost por MCP, em processos separados para a base e o estado final, com `ap
 `bun run typecheck`, `bun run lint` e `bun run format:check` passaram nas duas pontas sem correção aplicada.
 
 Limites: a auditoria compara árvores Git e o resultado da suíte; não examina bytecode. A equivalência vale para as entradas que a suíte cobre; entradas fora dela não foram exercitadas nas duas versões. O PostgreSQL de testes e o LocalStack são compartilhados entre execuções, mas cada teste cria schema, banco ou fila próprios. O `## Answer` do ticket fica em `.scratch/`, que não é versionado.
+
+## Movimento atômico no agregado — 2026-10-24
+
+Ticket 02 de `.scratch/fortalecer-nucleo-financeiro`. `Wallet.open`, `Wallet.debit` e `Wallet.credit` passaram a devolver `WalletMovement`, um par imutável com a wallet resultante e o lançamento. O serviço de abertura e a liquidação gravam o que o par contém, sem montar lançamento nem decidir se ele existe. A abertura zero devolve `entry` nulo; a positiva, um CREDIT de `0.00` até o saldo.
+
+Ambiente: Bun 1.3.14, Node 22.23.4 para o servidor MCP, PostgreSQL 17.6, LocalStack 4.11.1 e Keycloak 26.4.0 nos containers Podman preexistentes, portas 55433, 4566 e 8080. Mesma máquina, mesma base e mesmos containers nas duas pontas:
+
+- baseline, árvore em `ed24c28`: `bun test` devolveu 321 testes, 2926 assertions, 33 arquivos, zero falhas, 280,39 s;
+- estado final: `bun test` devolveu 332 testes, 3018 assertions, 35 arquivos, zero falhas, 279,93 s.
+
+Os 11 testes novos:
+
+- `tests/domain/wallet.test.ts` continua cobrindo abertura zero, abertura positiva exata em três valores, saldo inicial negativo, reidratação sem transição e crédito além do inteiro seguro. Os casos agora leem o par, e entraram abertura com identidade inválida, débito até zero, rejeição de débito por saldo insuficiente, moeda divergente nas duas operações e overflow de `numeric(30,2)`;
+- `tests/domain/wallet-movement.test.ts` cobre par válido, par sem lançamento, lançamento de outra wallet, saldo final divergente, lançamento desbalanceado reidratado e imutabilidade das duas pontas;
+- `tests/integration/movement.test.ts` percorre abertura, BET, WIN, LOSS, REFUND e ROLLBACK na mesma wallet. Confere as cinco linhas do ledger com direção, valor, `balanceBefore` e `balanceAfter`, a versão 5 no GET, a reconciliação em `100.00` com `checkedEntries: 5` e a contagem de lançamentos por kind no banco: BET, OPENING, REFUND, ROLLBACK e WIN com um cada, LOSS com zero.
+
+As 92 assertions novas vêm desses testes. Os casos financeiros anteriores continuam verdes sem afrouxamento de asserção, inclusive as contagens de lançamento dos testes de BET, WIN, LOSS, REFUND e ROLLBACK.
+
+`bun run typecheck`, `bun run lint` e `bun run format:check` passaram sem correção pendente.
+
+Nest Boost por MCP, com `application_info`, `list_routes` e `module_graph` em processos separados antes e depois: saída idêntica, 13 módulos, 4 controllers, 16 providers e 10 rotas. `evaluate` não foi chamado. A composição não mudou e o preview continua sem ORM.
+
+Limites: o teste de integração novo usa o banco de testes compartilhado, com player próprio. O arquivo roda em cerca de 1,4 s sozinho, e a suíte completa não ficou mais lenta (280,39 s antes, 279,93 s depois). A mudança não toca contrato HTTP, envelope, evento, schema ou migration. A garantia de que um lançamento desbalanceado não nasce vem da validação das fábricas e dos testes de domínio, não de uma varredura exaustiva de entradas.
