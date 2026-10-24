@@ -31,7 +31,7 @@ docker compose up -d app
 docker compose logs app
 ```
 
-Antes de chamar a API, espere `curl -fsS http://127.0.0.1:3000/health/ready` responder 200. A imagem usa Bun 1.3.14 e dependências de produção com lockfile congelado; este modo dispensa Bun no host. Execute as migrations explicitamente: o startup nunca as executa.
+Antes de chamar a API, espere `curl -fsS http://127.0.0.1:3000/health/ready` responder 200. Esse 200 também confirma que as migrations foram aplicadas; sem elas, o readiness responde 503 com `"migrations":"down"`. A imagem usa Bun 1.3.14 e dependências de produção com lockfile congelado; este modo dispensa Bun no host. Execute as migrations explicitamente: o startup nunca as executa.
 
 O `Dockerfile` tem dois estágios finais. `production` é o padrão do serviço `app` e carrega só dependências de produção. `development` inclui TypeScript, Biome, `@types/bun` e `tests/`; o serviço `app-dev` usa esse estágio para lint, formatação, typecheck e testes, sem Bun no host. O `app-dev` fica no profile `tools`, então `docker compose up` não o inicia; invoque-o com `docker compose run`.
 
@@ -63,7 +63,9 @@ No container da API, o Compose define `DATABASE_URL`, `HOST` e `PORT`: banco em 
 
 `GET /health/live` responde 200 `{"status":"live"}` enquanto o processo atende HTTP. Não consulta dependências, então serve para decidir reinício.
 
-`GET /health/ready` consulta PostgreSQL (`select 1`) e as filas `WAGER_QUEUE_URL` e `OUTBOX_QUEUE_URL` (`GetQueueAttributes`) em paralelo. Responde 200 com `{"status":"ready","checks":{"postgres":"up","sqs":"up"}}` ou 503 com `"status":"not_ready"` e o check que falhou como `down`. Cada verificação espera no máximo `HEALTH_TIMEOUT_MS` (padrão 2000). A resposta não traz mensagem de erro, URL nem credencial. Os dois endpoints são públicos.
+`GET /health/ready` consulta PostgreSQL (`select 1`), as migrations aplicadas e as filas `WAGER_QUEUE_URL` e `OUTBOX_QUEUE_URL` (`GetQueueAttributes`) em paralelo. Responde 200 com `{"status":"ready","checks":{"postgres":"up","migrations":"up","sqs":"up"}}` ou 503 com `"status":"not_ready"` e o check que falhou como `down`. Cada verificação espera no máximo `HEALTH_TIMEOUT_MS` (padrão 2000). A resposta não traz mensagem de erro, URL nem credencial. Os dois endpoints são públicos.
+
+O check `migrations` lê `mikro_orm_migrations` e fica `down` quando a tabela não existe ou quando alguma migration do código ainda não foi aplicada. Ele não cria banco nem tabela: só consulta. Aplicar as migrations pendentes volta o readiness a 200 sem reiniciar o processo. Subir a API sem elas deixa o serviço fora de rotação em vez de responder 500 nas rotas de negócio.
 
 ### Autenticação
 

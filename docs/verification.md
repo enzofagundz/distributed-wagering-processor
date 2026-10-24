@@ -915,3 +915,22 @@ Estados e comandos usados, em Podman rootless com `podman compose` e o provider 
 Uma execução intermediária da suíte falhou em um teste: o smoke do Keycloak recebia 401 porque o teste usava `TEST_KEYCLOAK_URL` como emissor esperado. No container o token vem de `http://keycloak:8080`, mas `KC_HOSTNAME` faz o `iss` ser `http://127.0.0.1:8080/realms/wagering`. O teste passou a aceitar `TEST_KEYCLOAK_ISSUER`, com padrão no próprio `TEST_KEYCLOAK_URL`, e o Compose define os dois; nova execução do arquivo isolado: 1 teste, 8 assertions, zero falhas.
 
 Limites: a verificação usou Podman rootless com o provider Docker Compose, não o binário `docker`; os caminhos são os mesmos comandos documentados. `app-dev` monta `src/` e `tests/` do host, então a imagem do estágio `development` foi exercitada com o código do working tree, não congelada como `production`. Nenhum contrato HTTP, SQS, schema, migration ou regra de domínio mudou; a única alteração de código foi o emissor configurável do teste de smoke.
+
+## Readiness exige migrations aplicadas — 2026-10-24
+
+A API subia com banco vazio, respondia 200 em `/health/ready` e devolvia 500 genérico nas rotas de negócio. Reproduzido com a imagem de produção contra o banco `scratch_clean`, sem migrations: `live` 200, `ready` 200 `{"status":"ready","checks":{"postgres":"up","sqs":"up"}}` e `POST /wallets` com token válido 500 `{"statusCode":500,"message":"Internal server error"}`. Quem avaliasse sem rodar `migration:up` não tinha pista do que faltava.
+
+O teste veio antes da implementação. `tests/integration/health-http.test.ts` passou a criar dois schemas no banco de testes, um com migrations aplicadas e outro vazio, e a esperar `migrations` em cada resposta. Antes da mudança, os quatro testes falharam: três pela chave ausente e o do schema vazio porque o readiness respondia 200.
+
+Implementação: `src/persistence/config.ts` exporta `migrationList` e `MIGRATIONS_TABLE`, e a configuração do ORM usa a mesma lista. `HealthChecks` ganhou `requireAppliedMigrations`, que lê `mikro_orm_migrations` e falha quando falta alguma migration do código. A API do `Migrator` ficou de fora porque `getExecutedMigrations` e `getPendingMigrations` chamam `ensureDatabase`, que cria banco e tabela; um probe não deve escrever. O contrato passou a `{"postgres":"up","migrations":"up","sqs":"up"}`, com 503 quando algum check está `down`.
+
+Executados em container:
+
+- `bun test tests/integration/health-http.test.ts`: 4 testes, 16 assertions, zero falhas.
+- `bun run typecheck`, `bun run lint` e `bun run format:check`: aprovados. O formatter acusou a assinatura de `check()` acima de 80 colunas; a quebra foi aplicada.
+- Imagem `production` reconstruída. Contra banco novo sem migrations: `ready` 503 `{"postgres":"up","migrations":"down","sqs":"up"}` e `live` 200. Depois de `bun run migration:up` no mesmo banco, sem reiniciar o processo: `ready` 200 com `migrations":"up"` e `POST /wallets` 201.
+- `bun test`: 366 testes, 3120 assertions, 36 arquivos, zero falhas, 282,36 s.
+
+O delta sobre a suíte anterior é de um teste e quatro assertions: o caso de migrations pendentes. Os outros três testes do arquivo foram reescritos para criar schema próprio e aplicar migrations, em vez de depender do schema `public` usado por outras execuções.
+
+Limites: o check compara só o que o código espera, então banco com migration aplicada a mais continua `up`. O readiness agora depende do estado do schema: durante um rollout, a nova versão fica fora de rotação até alguém aplicar as migrations. O `select 1` e o check de migrations compartilham o pool e o prazo `HEALTH_TIMEOUT_MS`.

@@ -375,9 +375,11 @@ Limites:
 
 ## Health
 
-`HealthModule` expõe `/health/live` e `/health/ready` sem autenticação. Liveness responde sem I/O: queda de PostgreSQL ou SQS não deve fazer o orquestrador reiniciar um processo que voltaria no mesmo estado. Readiness verifica as duas dependências em paralelo, cada uma com prazo de `HEALTH_TIMEOUT_MS`, e devolve 503 quando qualquer uma falha. O corpo só diz `up`/`down` por dependência; exceções são descartadas para não vazar host, usuário ou senha.
+`HealthModule` expõe `/health/live` e `/health/ready` sem autenticação. Liveness responde sem I/O: queda de PostgreSQL ou SQS não deve fazer o orquestrador reiniciar um processo que voltaria no mesmo estado. Readiness verifica PostgreSQL, migrations e SQS em paralelo, cada verificação com prazo de `HEALTH_TIMEOUT_MS`, e devolve 503 quando qualquer uma falha. O corpo só diz `up`/`down` por dependência; exceções são descartadas para não vazar host, usuário ou senha.
 
-No SQS, `GetQueueAttributes` nas filas de entrada e de outbox prova endpoint acessível e fila existente. No PostgreSQL, o timeout limita a resposta, mas a query abandonada continua no pool até o driver desistir. Readiness não consulta a DLQ nem exige migrations aplicadas.
+No SQS, `GetQueueAttributes` nas filas de entrada e de outbox prova endpoint acessível e fila existente. No PostgreSQL, o timeout limita a resposta, mas a query abandonada continua no pool até o driver desistir. Readiness não consulta a DLQ.
+
+O check de migrations lê `mikro_orm_migrations` e responde `down` quando a tabela não existe ou quando falta alguma migration de `migrationList` em `src/persistence/config.ts`. Tabela ausente e migration pendente têm o mesmo efeito para quem chama: o processo não serve tráfego de negócio. A leitura é SQL direto, não a API do `Migrator`, porque `getExecutedMigrations` e `getPendingMigrations` chamam `ensureDatabase`, que cria banco e tabela. Um probe de health não deve escrever. Migrations aplicadas depois do startup passam a valer na consulta seguinte, sem reinício.
 
 ## Logs correlacionados
 
