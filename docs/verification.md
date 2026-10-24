@@ -558,4 +558,8 @@ Integração em `tests/integration/bet-sqs.test.ts`, com PostgreSQL e LocalStack
 
 Smoke com `bun run start` e as filas do Compose, script temporário `.scratch/smoke/ticket22.ts`: wallet com 10.00 BRL recebeu uma BET de 50.00 e um envelope com campo extra. A DLQ recebeu só o envelope inválido, com `INVALID_MESSAGE_ENVELOPE`, `PERMANENT` e `receiveCount=1`. A BET aparece em `GET /providers/smoke/wagering/transactions/{id}` como REJECTED/INSUFFICIENT_FUNDS; reconciliação em 10.00 BRL, diferença 0.00. SIGTERM encerrou a API com código 0.
 
-`bun run typecheck`, `bun run lint` e `bun run format` passaram antes do commit. Suíte completa não foi executada. Redrive manual descrito no ADR não foi exercitado.
+`bun run typecheck`, `bun run lint` e `bun run format` passaram antes do commit. `bun test` completo passou com 282 testes, 2509 assertions e zero falhas em 25 arquivos (263.39s). Essa execução começou antes do teste de redrive abaixo ser adicionado.
+
+Redrive: o teste de falha 40001 repetida agora remove o trigger, reenvia o corpo da DLQ à fila de entrada e consome. A BET confirma uma vez (75.00 BRL, dois lançamentos, inbox PROCESSED). Um segundo redrive do mesmo corpo vira replay pela inbox, sem novo débito e sem voltar à DLQ. `bun test tests/integration/bet-sqs.test.ts -t "repeated infrastructure"` passou: 1 teste, 29 assertions (42.85s).
+
+Nest Boost MCP, iniciado no notebook com `bun run nest-boost mcp`: `module_graph` mostrou WagerConsumer, WageringService e WageringInbox em WageringModule; `list_routes` confirmou `GET /providers/:providerId/wagering/transactions/:externalTransactionId`, rota usada antes do redrive. O servidor configurado no clone Windows falhou ao importar `src/app.module.ts` (caminho `c:` não aceito pelo loader ESM).
